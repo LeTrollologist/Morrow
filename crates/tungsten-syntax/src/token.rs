@@ -70,6 +70,8 @@ pub enum TokenKind {
     Exclamation, // !
     Question,    // ?
     Ampersand,   // &
+    AmpAmp,      // &&
+    PipePipe,    // ||
     DotDotEq,    // ..=
     DotDot,      // ..
 

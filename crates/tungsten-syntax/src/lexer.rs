@@ -135,7 +135,24 @@ impl<'a> Lexer<'a> {
                     }
                 }
                 '?' => { self.advance(); TokenKind::Question }
-                '&' => { self.advance(); TokenKind::Ampersand }
+                '&' => {
+                    self.advance();
+                    if self.peek_char() == Some('&') {
+                        self.advance();
+                        TokenKind::AmpAmp
+                    } else {
+                        TokenKind::Ampersand
+                    }
+                }
+                '|' => {
+                    self.advance();
+                    if self.peek_char() == Some('|') {
+                        self.advance();
+                        TokenKind::PipePipe
+                    } else {
+                        return Err(format!("Unexpected character '|' at line {}, column {}", start_line, start_col));
+                    }
+                }
                 '<' => {
                     self.advance();
                     if self.peek_char() == Some('=') {

@@ -201,6 +201,8 @@ impl Evaluator {
             ExprKind::Ident(name) => {
                 if let Some(v) = self.lookup_var(name) {
                     EvalSignal::Normal(v)
+                } else if self.functions.contains_key(name) {
+                    EvalSignal::Normal(Value::Fn(name.clone()))
                 } else {
                     EvalSignal::Error(format!("Undefined variable '{}'", name))
                 }
@@ -273,6 +275,10 @@ impl Evaluator {
                     }
                 }
 
+                if method == "to_string" && eval_args.is_empty() {
+                    return EvalSignal::Normal(Value::Str(target_val.to_string()));
+                }
+
                 if method == "saturating_add" && eval_args.len() == 1 {
                     let cur = target_val.as_int().unwrap_or(0);
                     let delta = eval_args[0].as_int().unwrap_or(0);
@@ -340,19 +346,34 @@ impl Evaluator {
                 EvalSignal::Error(format!("Path call not found: {:?}", path))
             }
             ExprKind::Call { callee, args } => {
-                if let ExprKind::Ident(fname) = &callee.kind {
-                    let mut eval_args = Vec::new();
-                    for a in args {
-                        match self.eval_expr(a) {
-                            EvalSignal::Normal(v) => eval_args.push(v),
-                            early => return early,
-                        }
+                let mut eval_args = Vec::new();
+                for a in args {
+                    match self.eval_expr(a) {
+                        EvalSignal::Normal(v) => eval_args.push(v),
+                        early => return early,
                     }
+                }
+
+                if let ExprKind::Ident(fname) = &callee.kind {
                     if let Some(fdecl) = self.functions.get(fname).cloned() {
                         return self.eval_fn(&fdecl, eval_args);
                     }
                 }
-                EvalSignal::Error("Indirect calls not supported".to_string())
+
+                let callee_val = match self.eval_expr(callee) {
+                    EvalSignal::Normal(v) => v,
+                    early => return early,
+                };
+
+                if let Value::Fn(fname) = callee_val {
+                    if let Some(fdecl) = self.functions.get(&fname).cloned() {
+                        return self.eval_fn(&fdecl, eval_args);
+                    } else {
+                        return EvalSignal::Error(format!("Function '{}' not found", fname));
+                    }
+                }
+
+                EvalSignal::Error(format!("Cannot call non-function value '{}'", callee_val))
             }
             ExprKind::MacroCall { name, args } => {
                 let mut eval_args = Vec::new();

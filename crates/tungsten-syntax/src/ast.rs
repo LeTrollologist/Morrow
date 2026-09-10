@@ -23,6 +23,7 @@ pub struct TypeAlias {
 #[derive(Debug, Clone, PartialEq)]
 pub struct StructDecl {
     pub name: String,
+    pub type_params: Vec<String>,
     pub fields: Vec<FieldDef>,
     pub span: Span,
 }
@@ -52,6 +53,8 @@ pub struct EffectOpDef {
 #[derive(Debug, Clone, PartialEq)]
 pub struct FnDecl {
     pub name: String,
+    pub type_params: Vec<String>,
+    pub effect_params: Vec<String>,
     pub params: Vec<Param>,
     pub return_type: Option<TypeExpr>,
     pub yields_effects: Vec<String>,
@@ -70,6 +73,11 @@ pub struct Param {
 #[derive(Debug, Clone, PartialEq)]
 pub enum TypeExpr {
     Named(String, Span),
+    Generic {
+        name: String,
+        args: Vec<TypeExpr>,
+        span: Span,
+    },
     Refined {
         base: String,
         min: i64,
@@ -77,9 +85,20 @@ pub enum TypeExpr {
         inclusive: bool,
         span: Span,
     },
+    Relational {
+        base: String,
+        predicate: Box<Expr>,
+        span: Span,
+    },
     Ref {
         is_mut: bool,
         inner: Box<TypeExpr>,
+        span: Span,
+    },
+    Fn {
+        params: Vec<TypeExpr>,
+        return_type: Box<TypeExpr>,
+        yields_effects: Vec<String>,
         span: Span,
     },
     Unit(Span),
@@ -89,8 +108,11 @@ impl TypeExpr {
     pub fn span(&self) -> Span {
         match self {
             TypeExpr::Named(_, s) => *s,
+            TypeExpr::Generic { span, .. } => *span,
             TypeExpr::Refined { span, .. } => *span,
+            TypeExpr::Relational { span, .. } => *span,
             TypeExpr::Ref { span, .. } => *span,
+            TypeExpr::Fn { span, .. } => *span,
             TypeExpr::Unit(s) => *s,
         }
     }
@@ -128,7 +150,7 @@ pub enum Stmt {
     },
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinOp {
     Add,
     Sub,
@@ -140,6 +162,8 @@ pub enum BinOp {
     LtEq,
     Gt,
     GtEq,
+    And,
+    Or,
 }
 
 #[derive(Debug, Clone, PartialEq)]

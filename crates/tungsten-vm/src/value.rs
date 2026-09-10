@@ -14,6 +14,7 @@ pub enum Value {
         fields: HashMap<String, Value>,
     },
     Ref(Rc<RefCell<Value>>),
+    Fn(String),
 }
 
 impl Value {
@@ -76,6 +77,7 @@ impl fmt::Display for Value {
                 write!(f, "{} {{ {} }}", name, field_strs.join(", "))
             }
             Value::Ref(r) => write!(f, "&{}", r.borrow()),
+            Value::Fn(name) => write!(f, "<fn {}>", name),
         }
     }
 }
@@ -87,6 +89,7 @@ impl PartialEq for Value {
             (Value::Str(a), Value::Str(b)) => a == b,
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Unit, Value::Unit) => true,
+            (Value::Fn(a), Value::Fn(b)) => a == b,
             (Value::Ref(a), b) => *a.borrow() == *b,
             (a, Value::Ref(b)) => *a == *b.borrow(),
             (Value::Struct { name: n1, fields: f1 }, Value::Struct { name: n2, fields: f2 }) => {

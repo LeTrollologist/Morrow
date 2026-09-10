@@ -1,0 +1,39 @@
+struct Container<T> {
+    value: T,
+}
+
+fn wrap<T>(item: T) -> Container<T> {
+    Container {
+        value: item,
+    }
+}
+
+fn subslice_len(start: usize, end: usize(>= start)) -> usize {
+    end - start
+}
+
+fn apply<T, U, E>(val: T, f: fn(T) yields [E] -> U) -> U yields [E] {
+    f(val)
+}
+
+fn compute_power(base: i64) -> i64 {
+    base * base
+}
+
+fn effectful_log(msg: String) -> () yields [IO] {
+    IO::print(msg);
+}
+
+fn main() {
+    let box_val = wrap(50);
+    println!("Container wrapped value: {}", box_val.value);
+    let len = subslice_len(10, 42);
+    println!("Validated slice length: {}", len);
+    let power = apply(7, compute_power);
+    println!("Computed power: {}", power);
+    handle {
+        apply("Effects Polymorphic Pipeline Active!".to_string(), effectful_log);
+    } with IO {
+        print(s) => println!("[IO] {}", s),
+    }
+}

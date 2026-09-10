@@ -48,7 +48,12 @@ impl Formatter {
             }
             Item::Struct(st) => {
                 self.indent();
-                self.write(&format!("struct {} {{\n", st.name));
+                let generics = if st.type_params.is_empty() {
+                    String::new()
+                } else {
+                    format!("<{}>", st.type_params.join(", "))
+                };
+                self.write(&format!("struct {}{} {{\n", st.name, generics));
                 self.indent_level += 1;
                 for field in &st.fields {
                     self.indent();
@@ -60,7 +65,12 @@ impl Formatter {
             }
             Item::Fn(f) => {
                 self.indent();
-                self.write(&format!("fn {}(", f.name));
+                let generics = if f.type_params.is_empty() {
+                    String::new()
+                } else {
+                    format!("<{}>", f.type_params.join(", "))
+                };
+                self.write(&format!("fn {}{}(", f.name, generics));
                 for (i, p) in f.params.iter().enumerate() {
                     if i > 0 {
                         self.write(", ");
@@ -106,9 +116,16 @@ impl Formatter {
     fn format_type(&self, ty: &TypeExpr) -> String {
         match ty {
             TypeExpr::Named(name, _) => name.clone(),
+            TypeExpr::Generic { name, args, .. } => {
+                let arg_strs: Vec<String> = args.iter().map(|a| self.format_type(a)).collect();
+                format!("{}<{}>", name, arg_strs.join(", "))
+            }
             TypeExpr::Refined { base, min, max, inclusive, .. } => {
                 let op = if *inclusive { "..=" } else { ".." };
                 format!("{}({}{}{})", base, min, op, max)
+            }
+            TypeExpr::Relational { base, predicate, .. } => {
+                format!("{}({})", base, self.format_expr(predicate))
             }
             TypeExpr::Ref { is_mut, inner, .. } => {
                 if *is_mut {
@@ -116,6 +133,15 @@ impl Formatter {
                 } else {
                     format!("&{}", self.format_type(inner))
                 }
+            }
+            TypeExpr::Fn { params, return_type, yields_effects, .. } => {
+                let p_strs: Vec<String> = params.iter().map(|p| self.format_type(p)).collect();
+                let mut s = format!("fn({})", p_strs.join(", "));
+                if !yields_effects.is_empty() {
+                    s.push_str(&format!(" yields [{}]", yields_effects.join(", ")));
+                }
+                s.push_str(&format!(" -> {}", self.format_type(return_type)));
+                s
             }
             TypeExpr::Unit(_) => "()".to_string(),
         }
@@ -198,7 +224,14 @@ impl Formatter {
                     BinOp::LtEq => "<=",
                     BinOp::Gt => ">",
                     BinOp::GtEq => ">=",
+                    BinOp::And => "&&",
+                    BinOp::Or => "||",
                 };
+                if let ExprKind::Ident(ref name) = left.kind {
+                    if name == "_val" {
+                        return format!("{} {}", op_str, self.format_expr(right));
+                    }
+                }
                 format!("{} {} {}", self.format_expr(left), op_str, self.format_expr(right))
             }
             ExprKind::FieldAccess { target, field } => {
@@ -320,6 +353,11 @@ impl Formatter {
 pub fn format(program: &Program) -> String {
     let formatter = Formatter::new();
     formatter.format_program(program)
+}
+
+pub fn format_expr(expr: &Expr) -> String {
+    let formatter = Formatter::new();
+    formatter.format_expr(expr)
 }
 
 pub fn format_source(source: &str) -> Result<String, String> {

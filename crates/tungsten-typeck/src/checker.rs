@@ -23,7 +23,9 @@ impl TypeError {
 pub struct TypeChecker {
     pub types: HashMap<String, Type>,
     pub structs: HashMap<String, HashMap<String, Type>>,
+    pub generic_structs: HashMap<String, StructDecl>,
     pub functions: HashMap<String, FnSig>,
+    pub generic_functions: HashMap<String, FnDecl>,
     pub known_effects: HashSet<String>,
     pub errors: Vec<TypeError>,
 }
@@ -31,6 +33,7 @@ pub struct TypeChecker {
 #[derive(Debug, Clone)]
 pub struct FnSig {
     pub params: Vec<(String, Type, bool)>, // (name, ty, is_mut)
+    pub param_type_exprs: Vec<TypeExpr>,
     pub return_type: Type,
     pub yields_effects: HashSet<String>,
 }
@@ -45,6 +48,7 @@ pub struct FnChecker<'a> {
     scopes: Vec<Scope>,
     allowed_yields: HashSet<String>,
     handled_effects: Vec<HashSet<String>>,
+    pub relational_ctx: crate::relational::RelationalContext,
     errors: Vec<TypeError>,
 }
 
@@ -53,7 +57,9 @@ impl TypeChecker {
         let mut tc = Self {
             types: HashMap::new(),
             structs: HashMap::new(),
+            generic_structs: HashMap::new(),
             functions: HashMap::new(),
+            generic_functions: HashMap::new(),
             known_effects: HashSet::new(),
             errors: Vec::new(),
         };
@@ -64,6 +70,7 @@ impl TypeChecker {
         tc.types.insert("u32".into(), Type::U32);
         tc.types.insert("u64".into(), Type::U64);
         tc.types.insert("i64".into(), Type::I64);
+        tc.types.insert("usize".into(), Type::Usize);
         tc.types.insert("bool".into(), Type::Bool);
         tc.types.insert("String".into(), Type::String);
 
@@ -124,11 +131,17 @@ impl TypeChecker {
     }
 
     pub fn resolve_type_expr(&self, ty_expr: &TypeExpr) -> Result<Type, TypeError> {
+        self.resolve_type_expr_with_generics(ty_expr, &[])
+    }
+
+    pub fn resolve_type_expr_with_generics(&self, ty_expr: &TypeExpr, type_params: &[String]) -> Result<Type, TypeError> {
         match ty_expr {
             TypeExpr::Named(name, span) => {
-                if let Some(ty) = self.types.get(name) {
+                if type_params.iter().any(|tp| tp == name) {
+                    Ok(Type::GenericParam(name.clone()))
+                } else if let Some(ty) = self.types.get(name) {
                     Ok(ty.clone())
-                } else if self.structs.contains_key(name) {
+                } else if self.structs.contains_key(name) || self.generic_structs.contains_key(name) {
                     Ok(Type::Struct(name.clone()))
                 } else {
                     Err(TypeError::new(format!("Unknown type '{}'", name), *span))
@@ -150,8 +163,47 @@ impl TypeChecker {
                     name: None,
                 })
             }
+            TypeExpr::Generic { name, args, span } => {
+                let mut resolved_args = Vec::new();
+                for a in args {
+                    resolved_args.push(self.resolve_type_expr_with_generics(a, type_params)?);
+                }
+                if self.structs.contains_key(name) || self.generic_structs.contains_key(name) {
+                    Ok(Type::Instantiated {
+                        name: name.clone(),
+                        args: resolved_args,
+                    })
+                } else if self.types.contains_key(name) {
+                    Ok(Type::Instantiated {
+                        name: name.clone(),
+                        args: resolved_args,
+                    })
+                } else {
+                    Err(TypeError::new(format!("Unknown generic type '{}'", name), *span))
+                }
+            }
+            TypeExpr::Relational { base, predicate, span: _ } => {
+                let base_ty = self.types.get(base).cloned().unwrap_or(Type::Usize);
+                let pred_desc = tungsten_syntax::fmt::format_expr(predicate);
+                Ok(Type::Relational {
+                    base: Box::new(base_ty),
+                    predicate_desc: pred_desc,
+                })
+            }
+            TypeExpr::Fn { params, return_type, yields_effects, .. } => {
+                let mut p_types = Vec::new();
+                for p in params {
+                    p_types.push(self.resolve_type_expr_with_generics(p, type_params)?);
+                }
+                let ret_type = self.resolve_type_expr_with_generics(return_type, type_params)?;
+                Ok(Type::Fn {
+                    params: p_types,
+                    return_type: Box::new(ret_type),
+                    yields_effects: yields_effects.clone(),
+                })
+            }
             TypeExpr::Ref { is_mut, inner, .. } => {
-                let inner_ty = self.resolve_type_expr(inner)?;
+                let inner_ty = self.resolve_type_expr_with_generics(inner, type_params)?;
                 Ok(Type::Ref {
                     is_mut: *is_mut,
                     inner: Box::new(inner_ty),
@@ -180,46 +232,58 @@ impl TypeChecker {
         // Pass 2: Register Structs
         for item in &program.items {
             if let Item::Struct(st) = item {
-                let mut fields = HashMap::new();
-                for f in &st.fields {
-                    match self.resolve_type_expr(&f.ty) {
-                        Ok(ty) => {
-                            fields.insert(f.name.clone(), ty);
+                if !st.type_params.is_empty() {
+                    self.generic_structs.insert(st.name.clone(), st.clone());
+                    self.types.insert(st.name.clone(), Type::Struct(st.name.clone()));
+                } else {
+                    let mut fields = HashMap::new();
+                    for f in &st.fields {
+                        match self.resolve_type_expr(&f.ty) {
+                            Ok(ty) => {
+                                fields.insert(f.name.clone(), ty);
+                            }
+                            Err(e) => self.errors.push(e),
                         }
-                        Err(e) => self.errors.push(e),
                     }
+                    self.structs.insert(st.name.clone(), fields);
+                    self.types.insert(st.name.clone(), Type::Struct(st.name.clone()));
                 }
-                self.structs.insert(st.name.clone(), fields);
-                self.types.insert(st.name.clone(), Type::Struct(st.name.clone()));
             }
         }
 
         // Pass 3: Register Functions
         for item in &program.items {
             if let Item::Fn(f) = item {
-                let mut params = Vec::new();
-                for p in &f.params {
-                    match self.resolve_type_expr(&p.ty) {
-                        Ok(ty) => params.push((p.name.clone(), ty, p.is_mut)),
-                        Err(e) => self.errors.push(e),
-                    }
-                }
-                let ret_ty = match &f.return_type {
-                    Some(rt) => self.resolve_type_expr(rt).unwrap_or(Type::Unit),
-                    None => Type::Unit,
-                };
-                let yields_set: HashSet<String> = f.yields_effects.iter().cloned().collect();
                 for eff in &f.yields_effects {
                     self.known_effects.insert(eff.clone());
                 }
-                self.functions.insert(
-                    f.name.clone(),
-                    FnSig {
-                        params,
-                        return_type: ret_ty,
-                        yields_effects: yields_set,
-                    },
-                );
+
+                if !f.type_params.is_empty() || !f.effect_params.is_empty() {
+                    self.generic_functions.insert(f.name.clone(), f.clone());
+                } else {
+                    let mut params = Vec::new();
+                    for p in &f.params {
+                        match self.resolve_type_expr(&p.ty) {
+                            Ok(ty) => params.push((p.name.clone(), ty, p.is_mut)),
+                            Err(e) => self.errors.push(e),
+                        }
+                    }
+                    let ret_ty = match &f.return_type {
+                        Some(rt) => self.resolve_type_expr(rt).unwrap_or(Type::Unit),
+                        None => Type::Unit,
+                    };
+                    let yields_set: HashSet<String> = f.yields_effects.iter().cloned().collect();
+                    let param_type_exprs = f.params.iter().map(|p| p.ty.clone()).collect();
+                    self.functions.insert(
+                        f.name.clone(),
+                        FnSig {
+                            params,
+                            param_type_exprs,
+                            return_type: ret_ty,
+                            yields_effects: yields_set,
+                        },
+                    );
+                }
             }
         }
 
@@ -230,13 +294,21 @@ impl TypeChecker {
         // Pass 4: Check Function Bodies
         for item in &program.items {
             if let Item::Fn(f) = item {
-                let sig = self.functions.get(&f.name).unwrap().clone();
-                let mut fn_checker = FnChecker::new(self, sig.yields_effects.clone());
+                let yields_set: HashSet<String> = f.yields_effects.iter().cloned().collect();
+                let mut fn_checker = FnChecker::new(self, yields_set);
                 fn_checker.push_scope();
-                for (p_name, p_ty, p_mut) in &sig.params {
-                    fn_checker.define_var(p_name.clone(), p_ty.clone(), *p_mut);
+
+                let type_params = &f.type_params;
+                for p in &f.params {
+                    let ty = self.resolve_type_expr_with_generics(&p.ty, type_params).unwrap_or(Type::Unit);
+                    fn_checker.define_var(p.name.clone(), ty, p.is_mut);
                 }
-                fn_checker.check_block(&f.body, &sig.return_type);
+                let ret_ty = match &f.return_type {
+                    Some(rt) => self.resolve_type_expr_with_generics(rt, type_params).unwrap_or(Type::Unit),
+                    None => Type::Unit,
+                };
+
+                fn_checker.check_block(&f.body, &ret_ty);
                 fn_checker.pop_scope();
 
                 self.errors.extend(fn_checker.errors);
@@ -251,6 +323,7 @@ impl TypeChecker {
     }
 }
 
+
 impl<'a> FnChecker<'a> {
     fn new(parent: &'a TypeChecker, allowed_yields: HashSet<String>) -> Self {
         Self {
@@ -258,6 +331,7 @@ impl<'a> FnChecker<'a> {
             scopes: Vec::new(),
             allowed_yields,
             handled_effects: Vec::new(),
+            relational_ctx: crate::relational::RelationalContext::new(),
             errors: Vec::new(),
         }
     }
@@ -424,6 +498,23 @@ impl<'a> FnChecker<'a> {
                     } else {
                         (Type::Unit, false)
                     }
+                } else if let Type::Instantiated { name: sname, args } = inner_ty {
+                    if let Some(st_decl) = self.parent.generic_structs.get(sname) {
+                        if let Some(fdef) = st_decl.fields.iter().find(|f| f.name == *field) {
+                            let mut subst = crate::unify::Subst::new();
+                            for (tp, arg_ty) in st_decl.type_params.iter().zip(args.iter()) {
+                                subst.bind(tp.clone(), arg_ty.clone());
+                            }
+                            let raw_ty = self.parent.resolve_type_expr_with_generics(&fdef.ty, &st_decl.type_params).unwrap_or(Type::Unit);
+                            let resolved = crate::unify::substitute(&raw_ty, &subst);
+                            (resolved, is_mut)
+                        } else {
+                            self.errors.push(TypeError::new(format!("Generic struct '{}' has no field '{}'", sname, field), expr.span));
+                            (Type::Unit, false)
+                        }
+                    } else {
+                        (Type::Unit, false)
+                    }
                 } else {
                     self.errors.push(TypeError::new(format!("Cannot access field '{}' on non-struct '{}'", field, target_ty), expr.span));
                     (Type::Unit, false)
@@ -447,6 +538,26 @@ impl<'a> FnChecker<'a> {
                 if let Some((ty, _)) = self.lookup_var(name) {
                     let interval = ty.default_interval();
                     (ty, interval)
+                } else if let Some(sig) = self.parent.functions.get(name) {
+                    let p_types = sig.params.iter().map(|(_, ty, _)| ty.clone()).collect();
+                    let fn_ty = Type::Fn {
+                        params: p_types,
+                        return_type: Box::new(sig.return_type.clone()),
+                        yields_effects: sig.yields_effects.iter().cloned().collect(),
+                    };
+                    (fn_ty, None)
+                } else if let Some(fdecl) = self.parent.generic_functions.get(name) {
+                    let p_types = fdecl.params.iter().map(|p| self.parent.resolve_type_expr_with_generics(&p.ty, &fdecl.type_params).unwrap_or(Type::Unit)).collect();
+                    let ret_ty = match &fdecl.return_type {
+                        Some(rt) => self.parent.resolve_type_expr_with_generics(rt, &fdecl.type_params).unwrap_or(Type::Unit),
+                        None => Type::Unit,
+                    };
+                    let fn_ty = Type::Fn {
+                        params: p_types,
+                        return_type: Box::new(ret_ty),
+                        yields_effects: fdecl.yields_effects.clone(),
+                    };
+                    (fn_ty, None)
                 } else {
                     self.errors.push(TypeError::new(format!("Undefined variable '{}'", name), expr.span));
                     (Type::Unit, None)
@@ -486,12 +597,30 @@ impl<'a> FnChecker<'a> {
                             self.errors.push(TypeError::new(format!("Field '{}' not found on struct '{}'", field, sname), expr.span));
                         }
                     }
+                } else if let Type::Instantiated { name: sname, args } = base_ty {
+                    if let Some(st_decl) = self.parent.generic_structs.get(sname) {
+                        if let Some(fdef) = st_decl.fields.iter().find(|f| f.name == *field) {
+                            let mut subst = crate::unify::Subst::new();
+                            for (tp, arg_ty) in st_decl.type_params.iter().zip(args.iter()) {
+                                subst.bind(tp.clone(), arg_ty.clone());
+                            }
+                            let raw_ty = self.parent.resolve_type_expr_with_generics(&fdef.ty, &st_decl.type_params).unwrap_or(Type::Unit);
+                            let resolved = crate::unify::substitute(&raw_ty, &subst);
+                            return (resolved.clone(), resolved.default_interval());
+                        } else {
+                            self.errors.push(TypeError::new(format!("Field '{}' not found on generic struct '{}'", field, sname), expr.span));
+                        }
+                    }
                 }
                 (Type::Unit, None)
             }
             ExprKind::MethodCall { target, method, args } => {
                 let (target_ty, target_int) = self.check_expr(target);
                 let arg_types: Vec<_> = args.iter().map(|a| self.check_expr(a)).collect();
+
+                if method == "to_string" && args.is_empty() {
+                    return (Type::String, None);
+                }
 
                 // Built-in refinement-safe methods like `saturating_add`
                 if method == "saturating_add" && args.len() == 1 {
@@ -546,13 +675,73 @@ impl<'a> FnChecker<'a> {
             }
             ExprKind::Call { callee, args } => {
                 if let ExprKind::Ident(ref fname) = callee.kind {
+                    // 1. Check if it's a generic function
+                    if let Some(fdecl) = self.parent.generic_functions.get(fname).cloned() {
+                        let mut subst = crate::unify::Subst::new();
+                        let mut arg_types = Vec::new();
+                        for a in args {
+                            arg_types.push(self.check_expr(a));
+                        }
+
+                        // Unify argument types with parameter types
+                        for ((arg_expr, (arg_ty, _)), param) in args.iter().zip(arg_types.iter()).zip(fdecl.params.iter()) {
+                            let expected_param_ty = self.parent.resolve_type_expr_with_generics(&param.ty, &fdecl.type_params).unwrap_or(Type::Unit);
+                            if let Err(err) = crate::unify::unify(&expected_param_ty, arg_ty, &mut subst) {
+                                self.errors.push(TypeError::new(
+                                    format!("Type unification error for argument in call to '{}': {}", fname, err),
+                                    arg_expr.span,
+                                ));
+                            }
+
+                            // If param is relational, verify predicate
+                            if let TypeExpr::Relational { ref predicate, .. } = param.ty {
+                                if let Err(err) = self.relational_ctx.verify_predicate(arg_expr, predicate) {
+                                    self.errors.push(TypeError::new(
+                                        format!("Relational refinement check failed for parameter '{}': {}", param.name, err),
+                                        arg_expr.span,
+                                    ));
+                                }
+                            }
+                        }
+
+                        // Check effect permissions for generic function yields
+                        for eff in &fdecl.yields_effects {
+                            if let Some(bound_effs) = subst.effect_bindings.get(eff) {
+                                for b_eff in bound_effs {
+                                    self.check_effect_permission(b_eff, expr.span);
+                                }
+                            } else if !fdecl.effect_params.contains(eff) {
+                                self.check_effect_permission(eff, expr.span);
+                            }
+                        }
+
+                        let ret_ty = match &fdecl.return_type {
+                            Some(rt) => {
+                                let raw_ret = self.parent.resolve_type_expr_with_generics(rt, &fdecl.type_params).unwrap_or(Type::Unit);
+                                crate::unify::substitute(&raw_ret, &subst)
+                            }
+                            None => Type::Unit,
+                        };
+
+                        return (ret_ty, None);
+                    }
+
+                    // 2. Check regular monomorphic function
                     if let Some(sig) = self.parent.functions.get(fname).cloned() {
                         // Check effects yielded by callee
                         for eff in &sig.yields_effects {
                             self.check_effect_permission(eff, expr.span);
                         }
 
-                        for (arg_expr, (param_name, param_ty, _)) in args.iter().zip(sig.params.iter()) {
+                        // Create temporary local relational context for call arguments
+                        let mut call_rel_ctx = self.relational_ctx.clone();
+                        for (arg_expr, (param_name, _, _)) in args.iter().zip(sig.params.iter()) {
+                            if let ExprKind::Int(v) = arg_expr.kind {
+                                call_rel_ctx.add_interval(param_name.clone(), Interval::point(v));
+                            }
+                        }
+
+                        for ((arg_expr, (param_name, param_ty, _)), p_ty_expr) in args.iter().zip(sig.params.iter()).zip(sig.param_type_exprs.iter()) {
                             let (arg_ty, _) = self.check_expr(arg_expr);
                             if !arg_ty.is_compatible_with(param_ty) {
                                 self.errors.push(TypeError::new(
@@ -560,11 +749,39 @@ impl<'a> FnChecker<'a> {
                                     arg_expr.span,
                                 ));
                             }
+
+                            // Relational predicate verification
+                            if let TypeExpr::Relational { ref predicate, .. } = p_ty_expr {
+                                if let Err(err) = call_rel_ctx.verify_predicate(arg_expr, predicate) {
+                                    self.errors.push(TypeError::new(
+                                        format!("Relational refinement check failed for parameter '{}': {}", param_name, err),
+                                        arg_expr.span,
+                                    ));
+                                }
+                            }
                         }
                         return (sig.return_type, None);
                     }
                 }
-                self.check_expr(callee);
+
+                // 3. Higher-order function / function variable call
+                let (callee_ty, _) = self.check_expr(callee);
+                if let Type::Fn { params, return_type, yields_effects } = callee_ty {
+                    for eff in &yields_effects {
+                        self.check_effect_permission(eff, expr.span);
+                    }
+                    for (arg_expr, param_ty) in args.iter().zip(params.iter()) {
+                        let (arg_ty, _) = self.check_expr(arg_expr);
+                        if !arg_ty.is_compatible_with(param_ty) {
+                            self.errors.push(TypeError::new(
+                                format!("Type mismatch in function call: expected '{}', found '{}'", param_ty, arg_ty),
+                                arg_expr.span,
+                            ));
+                        }
+                    }
+                    return (*return_type, None);
+                }
+
                 for a in args {
                     self.check_expr(a);
                 }
@@ -606,6 +823,24 @@ impl<'a> FnChecker<'a> {
                         }
                     }
                     (Type::Struct(name.clone()), None)
+                } else if let Some(st_decl) = self.parent.generic_structs.get(name).cloned() {
+                    let mut subst = crate::unify::Subst::new();
+                    for (fname, fval) in fields {
+                        let (val_ty, _) = self.check_expr(fval);
+                        if let Some(fdef) = st_decl.fields.iter().find(|f| f.name == *fname) {
+                            let expected_field_ty = self.parent.resolve_type_expr_with_generics(&fdef.ty, &st_decl.type_params).unwrap_or(Type::Unit);
+                            if let Err(err) = crate::unify::unify(&expected_field_ty, &val_ty, &mut subst) {
+                                self.errors.push(TypeError::new(
+                                    format!("Type mismatch for generic struct field '{}': {}", fname, err),
+                                    fval.span,
+                                ));
+                            }
+                        } else {
+                            self.errors.push(TypeError::new(format!("Unknown field '{}' for struct '{}'", fname, name), fval.span));
+                        }
+                    }
+                    let args: Vec<Type> = st_decl.type_params.iter().map(|tp| subst.get(tp).cloned().unwrap_or(Type::Unit)).collect();
+                    (Type::Instantiated { name: name.clone(), args }, None)
                 } else {
                     self.errors.push(TypeError::new(format!("Unknown struct '{}'", name), expr.span));
                     (Type::Unit, None)

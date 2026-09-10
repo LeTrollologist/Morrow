@@ -10,8 +10,8 @@
 |:---|:---|:---|:---:|
 | **v0.1** | **Working Prototype** | Parser, Typechecker, Refinement Intervals, Effect VM, CLI | **Completed** |
 | **v0.2** | **Developer Experience** | Standard Library (`std`), Formatter (`forge fmt`), Language Server (`tungsten-lsp`) | **Completed** |
-| **v0.3** | **Advanced Type System** | Relational Refinements, Generics, Effect Polymorphism | **Next Priority** |
-| **v0.4** | **Tungsten IR & Optimization** | SSA / CFG Intermediate Representation (TIR), Continuation Lowering | Planned |
+| **v0.3** | **Advanced Type System** | Relational Refinements, Generics, Effect Polymorphism | **Completed** |
+| **v0.4** | **Tungsten IR & Optimization** | SSA / CFG Intermediate Representation (TIR), Continuation Lowering | **Next Priority** |
 | **v0.5** | **Native Codegen** | Cranelift (Fast JIT/Debug) & LLVM (Release) Code Generation | Planned |
 | **v0.6** | **Colorless Concurrency** | M:N Work-Stealing Fiber Scheduler via Algebraic Effects | Planned |
 | **v0.7** | **Physical Region Allocator** | Machine-level Arena Scopes & $\mathcal{O}(1)$ Region Teardown | Planned |
@@ -45,6 +45,20 @@
   - Real-time diagnostics with exact source spans on document open and edit.
   - Hover tooltips detailing inferred types, refinement intervals, and effect rows.
   - Editor "Format on Save" provider.
+
+### v0.3: Advanced Type System & Frontier PL
+- [x] **Relational Refinement Types**:
+  - Express inter-parameter inequalities: `fn subslice_len(start: usize, end: usize(>= start)) -> usize`.
+  - Linear arithmetic verification between function parameters, return values, and struct fields.
+  - Statically proven bounds checking and compile-time rejection of relational contract violations.
+- [x] **Generics & Parametric Polymorphism**:
+  - Parametric structs: `struct Container<T> { value: T }`.
+  - Generic functions: `fn wrap<T>(item: T) -> Container<T>`.
+  - Bidirectional Hindley-Milner-style unification and type substitution (`Subst`, `unify`, `substitute`).
+- [x] **Effect Polymorphism & Higher-Order Functions**:
+  - First-class function types: `fn apply<T, U, E>(val: T, f: fn(T) yields [E] -> U) -> U yields [E]`.
+  - Caller-agnostic higher-order abstraction over arbitrary effect rows without color segregation.
+  - Transparent execution across both pure and effectful handlers in `tungsten-vm`.
 
 ---
 
@@ -138,9 +152,9 @@
 
 ---
 
-## Suggested Next Immediate Sprint: Phase 1 (v0.3)
+## Suggested Next Immediate Sprint: Phase 2 (v0.4)
 
-To maintain momentum, the recommended immediate next sprint is **Phase 1: Relational Refinement Types & Effect Polymorphism**:
-1. **Relational Constraints**: Enable `usize(>= min && <= max)` parameterized by in-scope variables.
-2. **Generic Types & Functions**: Add type parameters `<T>` to structs and functions.
-3. **Effect Polymorphism**: Add effect row variables `yields [E, ...]` to enable functional primitives (`map`, `filter`, `fold`) over effectful callbacks.
+To maintain momentum, the recommended immediate next sprint is **Phase 2: Compiler Backend & Optimization (v0.4)**:
+1. **TIR Intermediate Representation**: Define a Static Single Assignment (SSA) / Control Flow Graph (CFG) IR crate (`tungsten-tir` or inside compiler).
+2. **AST to TIR Lowering**: Lower AST functions, relational refinement assertions, and effect points into basic blocks and SSA instructions.
+3. **Continuation Lowering & Optimization**: Lower delimited effect handlers into state machines and apply constant folding and redundant bounds check elimination.

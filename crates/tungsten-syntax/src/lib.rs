@@ -8,7 +8,7 @@ use ast::Program;
 use lexer::Lexer;
 use parser::Parser;
 
-pub use fmt::{format, format_source};
+pub use fmt::{format, format_expr, format_source};
 
 pub fn parse(source: &str) -> Result<Program, String> {
     let mut lexer = Lexer::new(source);

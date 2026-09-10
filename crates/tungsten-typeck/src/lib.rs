@@ -1,7 +1,9 @@
 pub mod checker;
 pub mod effects;
 pub mod interval;
+pub mod relational;
 pub mod types;
+pub mod unify;
 
 use checker::{TypeChecker, TypeError};
 use tungsten_syntax::ast::Program;
@@ -72,5 +74,60 @@ mod tests {
         assert!(res.is_err(), "Should reject unhandled effect");
         let errs = res.unwrap_err();
         assert!(errs.iter().any(|e| e.message.contains("Unhandled algebraic effect 'Db'")));
+    }
+
+    #[test]
+    fn test_generics_and_relational_typechecking() {
+        let code = r#"
+        struct Box<T> {
+            val: T,
+        }
+
+        fn wrap<T>(item: T) -> Box<T> {
+            Box { val: item }
+        }
+
+        fn slice_bounds(start: usize, end: usize(>= start)) -> usize {
+            end - start
+        }
+
+        fn apply<T, U>(val: T, f: fn(T) -> U) -> U {
+            f(val)
+        }
+
+        fn double(n: i64) -> i64 {
+            n * 2
+        }
+
+        fn main() {
+            let b = wrap(42);
+            let diff = slice_bounds(10, 20);
+            let res = apply(21, double);
+        }
+        "#;
+
+        let ast = parse(code).expect("syntax parse ok");
+        let res = check(&ast);
+        assert!(res.is_ok(), "Generics and relational type checking should succeed: {:?}", res.err());
+    }
+
+    #[test]
+    fn test_relational_violation_rejection() {
+        let code = r#"
+        fn slice_bounds(start: usize, end: usize(>= start)) -> usize {
+            end - start
+        }
+
+        fn main() {
+            // Constant bounds violation: 5 is not >= 10
+            let diff = slice_bounds(10, 5);
+        }
+        "#;
+
+        let ast = parse(code).expect("syntax parse ok");
+        let res = check(&ast);
+        assert!(res.is_err(), "Should reject invalid relational argument");
+        let errs = res.unwrap_err();
+        assert!(errs.iter().any(|e| e.message.contains("Relational refinement check failed")));
     }
 }

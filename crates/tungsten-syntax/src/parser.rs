@@ -108,6 +108,19 @@ impl Parser {
     fn parse_struct_decl(&mut self) -> Result<StructDecl, String> {
         let start_tok = self.expect(TokenKind::Struct)?;
         let (name, _) = self.expect_ident()?;
+
+        let mut type_params = Vec::new();
+        if self.match_token(&TokenKind::Lt) {
+            while !self.check(&TokenKind::Gt) && !self.check(&TokenKind::Eof) {
+                let (p, _) = self.expect_ident()?;
+                type_params.push(p);
+                if !self.match_token(&TokenKind::Comma) {
+                    break;
+                }
+            }
+            self.expect(TokenKind::Gt)?;
+        }
+
         self.expect(TokenKind::LBrace)?;
 
         let mut fields = Vec::new();
@@ -125,6 +138,7 @@ impl Parser {
         let end_tok = self.expect(TokenKind::RBrace)?;
         Ok(StructDecl {
             name,
+            type_params,
             fields,
             span: Span::new(start_tok.span.start, end_tok.span.end, start_tok.span.line, start_tok.span.column),
         })
@@ -133,6 +147,19 @@ impl Parser {
     fn parse_fn_decl(&mut self) -> Result<FnDecl, String> {
         let start_tok = self.expect(TokenKind::Fn)?;
         let (name, _) = self.expect_ident()?;
+
+        let mut type_params = Vec::new();
+        let effect_params = Vec::new();
+        if self.match_token(&TokenKind::Lt) {
+            while !self.check(&TokenKind::Gt) && !self.check(&TokenKind::Eof) {
+                let (p, _) = self.expect_ident()?;
+                type_params.push(p);
+                if !self.match_token(&TokenKind::Comma) {
+                    break;
+                }
+            }
+            self.expect(TokenKind::Gt)?;
+        }
 
         self.expect(TokenKind::LParen)?;
         let mut params = Vec::new();
@@ -163,15 +190,19 @@ impl Parser {
 
         let mut yields_effects = Vec::new();
         if self.match_token(&TokenKind::Yields) {
-            self.expect(TokenKind::LBracket)?;
-            while !self.check(&TokenKind::RBracket) && !self.check(&TokenKind::Eof) {
+            if self.match_token(&TokenKind::LBracket) {
+                while !self.check(&TokenKind::RBracket) && !self.check(&TokenKind::Eof) {
+                    let (eff, _) = self.expect_ident()?;
+                    yields_effects.push(eff);
+                    if !self.match_token(&TokenKind::Comma) {
+                        break;
+                    }
+                }
+                self.expect(TokenKind::RBracket)?;
+            } else {
                 let (eff, _) = self.expect_ident()?;
                 yields_effects.push(eff);
-                if !self.match_token(&TokenKind::Comma) {
-                    break;
-                }
             }
-            self.expect(TokenKind::RBracket)?;
         }
 
         let body = self.parse_block()?;
@@ -179,6 +210,8 @@ impl Parser {
 
         Ok(FnDecl {
             name,
+            type_params,
+            effect_params,
             params,
             return_type,
             yields_effects,
@@ -190,6 +223,45 @@ impl Parser {
     pub fn parse_type_expr(&mut self) -> Result<TypeExpr, String> {
         let tok = self.peek().clone();
         match tok.kind {
+            TokenKind::Fn => {
+                let start_tok = self.advance();
+                self.expect(TokenKind::LParen)?;
+                let mut params = Vec::new();
+                while !self.check(&TokenKind::RParen) && !self.check(&TokenKind::Eof) {
+                    params.push(self.parse_type_expr()?);
+                    if !self.match_token(&TokenKind::Comma) {
+                        break;
+                    }
+                }
+                self.expect(TokenKind::RParen)?;
+                let mut yields_effects = Vec::new();
+                if self.match_token(&TokenKind::Yields) {
+                    if self.match_token(&TokenKind::LBracket) {
+                        while !self.check(&TokenKind::RBracket) && !self.check(&TokenKind::Eof) {
+                            let (eff, _) = self.expect_ident()?;
+                            yields_effects.push(eff);
+                            if !self.match_token(&TokenKind::Comma) {
+                                break;
+                            }
+                        }
+                        self.expect(TokenKind::RBracket)?;
+                    } else {
+                        let (eff, _) = self.expect_ident()?;
+                        yields_effects.push(eff);
+                    }
+                }
+                let mut ret_ty = TypeExpr::Unit(start_tok.span);
+                if self.match_token(&TokenKind::Arrow) {
+                    ret_ty = self.parse_type_expr()?;
+                }
+                let end_span = ret_ty.span().end;
+                Ok(TypeExpr::Fn {
+                    params,
+                    return_type: Box::new(ret_ty),
+                    yields_effects,
+                    span: Span::new(start_tok.span.start, end_span, start_tok.span.line, start_tok.span.column),
+                })
+            }
             TokenKind::Ampersand => {
                 let start_tok = self.advance();
                 let is_mut = self.match_token(&TokenKind::Mut);
@@ -203,28 +275,58 @@ impl Parser {
             }
             TokenKind::Ident(base_name) => {
                 self.advance();
-                // Check if it is a refinement: `u8(0..=100)`
-                if self.match_token(&TokenKind::LParen) {
-                    let min_tok = self.expect_int()?;
-                    let inclusive = if self.match_token(&TokenKind::DotDotEq) {
-                        true
-                    } else if self.match_token(&TokenKind::DotDot) {
-                        false
-                    } else {
-                        return Err(format!("Expected '..=' or '..' in refinement range at line {}", tok.span.line));
-                    };
-                    let max_tok = self.expect_int()?;
-                    let rparen = self.expect(TokenKind::RParen)?;
-                    Ok(TypeExpr::Refined {
-                        base: base_name,
-                        min: min_tok,
-                        max: max_tok,
-                        inclusive,
-                        span: Span::new(tok.span.start, rparen.span.end, tok.span.line, tok.span.column),
-                    })
-                } else {
-                    Ok(TypeExpr::Named(base_name, tok.span))
+                // Check if it is a generic type instantiation: `Box<T>`
+                if self.match_token(&TokenKind::Lt) {
+                    let mut args = Vec::new();
+                    while !self.check(&TokenKind::Gt) && !self.check(&TokenKind::Eof) {
+                        args.push(self.parse_type_expr()?);
+                        if !self.match_token(&TokenKind::Comma) {
+                            break;
+                        }
+                    }
+                    let end_gt = self.expect(TokenKind::Gt)?;
+                    return Ok(TypeExpr::Generic {
+                        name: base_name,
+                        args,
+                        span: Span::new(tok.span.start, end_gt.span.end, tok.span.line, tok.span.column),
+                    });
                 }
+
+                // Check if it is a refinement or relational predicate: `u8(0..=100)` or `usize(>= start && <= arr_len)`
+                if self.match_token(&TokenKind::LParen) {
+                    // Check if it's a numeric range: `Int` followed by `..=` or `..`
+                    if let TokenKind::Int(min_val) = self.peek().kind {
+                        if matches!(self.peek_next().kind, TokenKind::DotDot | TokenKind::DotDotEq) {
+                            self.advance(); // consume min_val
+                            let inclusive = if self.match_token(&TokenKind::DotDotEq) {
+                                true
+                            } else {
+                                self.advance(); // consume DotDot
+                                false
+                            };
+                            let max_val = self.expect_int()?;
+                            let rparen = self.expect(TokenKind::RParen)?;
+                            return Ok(TypeExpr::Refined {
+                                base: base_name,
+                                min: min_val,
+                                max: max_val,
+                                inclusive,
+                                span: Span::new(tok.span.start, rparen.span.end, tok.span.line, tok.span.column),
+                            });
+                        }
+                    }
+
+                    // Otherwise, parse as a relational predicate expression
+                    let predicate = self.parse_expr()?;
+                    let rparen = self.expect(TokenKind::RParen)?;
+                    return Ok(TypeExpr::Relational {
+                        base: base_name,
+                        predicate: Box::new(predicate),
+                        span: Span::new(tok.span.start, rparen.span.end, tok.span.line, tok.span.column),
+                    });
+                }
+
+                Ok(TypeExpr::Named(base_name, tok.span))
             }
             TokenKind::LParen => {
                 let start_tok = self.advance();
@@ -346,7 +448,7 @@ impl Parser {
         if self.check(&TokenKind::Handle) {
             return self.parse_handle_expr();
         }
-        self.parse_comparison()
+        self.parse_logical_or()
     }
 
     fn parse_handle_expr(&mut self) -> Result<Expr, String> {
@@ -404,7 +506,56 @@ impl Parser {
         ))
     }
 
+    fn parse_logical_or(&mut self) -> Result<Expr, String> {
+        let mut left = self.parse_logical_and()?;
+        while self.match_token(&TokenKind::PipePipe) {
+            let right = self.parse_logical_and()?;
+            let span = Span::new(left.span.start, right.span.end, left.span.line, left.span.column);
+            left = Expr::new(
+                ExprKind::Binary {
+                    op: BinOp::Or,
+                    left: Box::new(left),
+                    right: Box::new(right),
+                },
+                span,
+            );
+        }
+        Ok(left)
+    }
+
+    fn parse_logical_and(&mut self) -> Result<Expr, String> {
+        let mut left = self.parse_comparison()?;
+        while self.match_token(&TokenKind::AmpAmp) {
+            let right = self.parse_comparison()?;
+            let span = Span::new(left.span.start, right.span.end, left.span.line, left.span.column);
+            left = Expr::new(
+                ExprKind::Binary {
+                    op: BinOp::And,
+                    left: Box::new(left),
+                    right: Box::new(right),
+                },
+                span,
+            );
+        }
+        Ok(left)
+    }
+
     fn parse_comparison(&mut self) -> Result<Expr, String> {
+        // Support unary relational comparisons like `>= start`
+        if let Some(op) = self.match_comparison_op() {
+            let right = self.parse_additive()?;
+            let span = right.span;
+            let implicit_left = Expr::new(ExprKind::Ident("_val".to_string()), span);
+            return Ok(Expr::new(
+                ExprKind::Binary {
+                    op,
+                    left: Box::new(implicit_left),
+                    right: Box::new(right),
+                },
+                span,
+            ));
+        }
+
         let mut left = self.parse_additive()?;
 
         while let Some(op) = self.match_comparison_op() {
