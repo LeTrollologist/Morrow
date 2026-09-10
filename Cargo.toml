@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/tungsten-syntax",
+    "crates/tungsten-typeck",
+    "crates/tungsten-vm",
+    "crates/tungsten-lsp",
+    "crates/forge",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Tungsten Language Contributors"]
+license = "MIT OR Apache-2.0"

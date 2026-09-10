@@ -1,0 +1,31 @@
+// Tungsten Standard Library - Algebraic Effects
+// Abstract capabilities decoupled from execution runtimes
+
+// Input/Output effect
+effect IO {
+    fn print(msg: String) -> ();
+    fn read_line() -> String;
+}
+
+// Pseudo-Random Number Generation effect
+effect Random {
+    fn next_u64() -> u64;
+    fn between(min: i64, max: i64) -> i64;
+}
+
+// Stateful computation effect
+effect State {
+    fn get() -> i64;
+    fn set(val: i64) -> ();
+}
+
+// Cooperative concurrency yield effect
+effect Yield {
+    fn yield_now() -> ();
+}
+
+// Time and Clock effect
+effect Time {
+    fn now_ms() -> u64;
+    fn sleep_ms(duration: u64) -> ();
+}

@@ -1,0 +1,22 @@
+type Health = u8(0..=100);
+
+struct Player {
+    name: String,
+    hp: Health,
+}
+
+fn illegal_heal(player: &mut Player, amount: u8) {
+    // This should fail compile-time check because normal addition can overflow
+    // the [0..=100] refinement bound!
+    player.hp = player.hp + amount;
+}
+
+fn unhandled_call() {
+    // Calling Db without yields or handle block should fail
+    Db::query("SELECT 1", 0)?;
+}
+
+fn main() {
+    let bad_hp = 150 as Health;
+    println!("Should not compile");
+}

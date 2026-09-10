@@ -1,0 +1,7 @@
+// Tungsten Standard Prelude
+// Automatically available in every Tungsten module
+
+type Percentage = u8(0..=100);
+type Port = u16(1..=65535);
+type NonZeroU32 = u32(1..=4294967295);
+type Byte = u8(0..=255);

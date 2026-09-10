@@ -1,0 +1,12 @@
+[package]
+name = "forge"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+tungsten-syntax = { path = "../tungsten-syntax" }
+tungsten-typeck = { path = "../tungsten-typeck" }
+tungsten-vm = { path = "../tungsten-vm" }
+tungsten-lsp = { path = "../tungsten-lsp" }

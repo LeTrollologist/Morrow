@@ -1,0 +1,30 @@
+type Health = u8(0..=100);
+
+struct Player {
+    name: String,
+    hp: Health,
+}
+
+fn fetch_player(id: u64) -> Player yields [Db, IOError] {
+    let record = Db::query("SELECT * FROM players WHERE id = ?", id)?;
+    Player {
+        name: record.name,
+        hp: record.hp as Health,
+    }
+}
+
+fn heal_player(player: &mut Player, amount: u8) {
+    player.hp = player.hp.saturating_add(amount);
+}
+
+fn main() {
+    handle {
+        let mut player = fetch_player(42)!;
+        heal_player(&mut player, 20);
+        println!("Player {} has {} HP", player.name, player.hp);
+    } with Db {
+        query(sql, args) => PostgresPool::execute(sql, args).await,
+    } with IOError {
+        err => println!("Failed to fetch player: {}", err),
+    }
+}

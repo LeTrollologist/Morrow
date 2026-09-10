@@ -1,0 +1,38 @@
+struct ServerConfig {
+    port: Port,
+    max_load: Percentage,
+    workers: NonZeroU32,
+}
+
+fn roll_dice() -> i64 yields [Random] {
+    let roll = Random::between(1, 6);
+    roll
+}
+
+fn log_server_start(config: &ServerConfig) yields [IO, Time] {
+    let now = Time::now_ms();
+    println!("Server initialized at timestamp: {}", now);
+    println!("Listening on port {}, worker pool: {}", config.port, config.workers);
+}
+
+fn main() {
+    let config = ServerConfig {
+        port: 8080 as Port,
+        max_load: 85 as Percentage,
+        workers: 8 as NonZeroU32,
+    };
+    handle {
+        log_server_start(&config)!;
+        let d1 = roll_dice()!;
+        let d2 = roll_dice()!;
+        println!("Server health check dice roll: {} + {} = {}", d1, d2, d1 + d2);
+    } with Random {
+        between(min, max) => 4,
+        next_u64() => 42,
+    } with IO {
+        print(msg) => println!("{}", msg),
+    } with Time {
+        now_ms() => 1725900000000,
+        sleep_ms(ms) => println!("Sleeping for {} ms", ms),
+    }
+}
