@@ -6,6 +6,7 @@ members = [
     "crates/tungsten-vm",
     "crates/tungsten-lsp",
     "crates/tungsten-tir",
+    "crates/tungsten-codegen",
     "crates/forge",
 ]
 

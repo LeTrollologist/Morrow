@@ -23,10 +23,18 @@ fn main() {
         "run" => {
             if args.len() < 3 {
                 eprintln!("Error: 'forge run' requires a path to a .tg file");
-                eprintln!("Usage: forge run <file.tg>");
+                eprintln!("Usage: forge run [--native] <file.tg>");
                 process::exit(1);
             }
-            run_file(&args[2]);
+            run_file(&args[2..]);
+        }
+        "build" => {
+            if args.len() < 3 {
+                eprintln!("Error: 'forge build' requires a path to a .tg file");
+                eprintln!("Usage: forge build <file.tg>");
+                process::exit(1);
+            }
+            run_build(&args[2..]);
         }
         "fmt" => {
             if args.len() < 3 {
@@ -77,14 +85,15 @@ USAGE:
     forge <SUBCOMMAND> [OPTIONS]
 
 SUBCOMMANDS:
-    check <file.tg>       Typecheck, verify refinement bounds, and check effect rows
-    run <file.tg>         Compile, check, and execute a Tungsten program
-    fmt [--check] <file>  Format Tungsten source code according to canonical style
-    tir [--opt] <file.tg> Compile and print Tungsten Intermediate Representation (TIR)
-    lsp                   Start the Tungsten Language Server (JSON-RPC 2.0 over stdio)
-    new <project_name>    Create a new Tungsten project
-    version               Display version information
-    help                  Display this help message
+    check <file.tg>           Typecheck, verify refinement bounds, and check effect rows
+    run [--native] <file.tg>  Compile, check, and execute (tree-walking VM or native Cranelift JIT)
+    build <file.tg>           Compile a Tungsten program to native machine code
+    fmt [--check] <file>      Format Tungsten source code according to canonical style
+    tir [--opt] <file.tg>     Compile and print Tungsten Intermediate Representation (TIR)
+    lsp                       Start the Tungsten Language Server (JSON-RPC 2.0 over stdio)
+    new <project_name>        Create a new Tungsten project
+    version                   Display version information
+    help                      Display this help message
 "#
     );
 }
@@ -124,8 +133,27 @@ fn run_check(filepath: &str) {
     }
 }
 
-fn run_file(filepath: &str) {
-    let source = match fs::read_to_string(filepath) {
+fn run_file(args: &[String]) {
+    let mut native = false;
+    let mut file = None;
+
+    for arg in args {
+        if arg == "--native" || arg == "-n" {
+            native = true;
+        } else if file.is_none() {
+            file = Some(arg.clone());
+        }
+    }
+
+    let filepath = match file {
+        Some(f) => f,
+        None => {
+            eprintln!("Error: 'forge run' requires a path to a .tg file");
+            process::exit(1);
+        }
+    };
+
+    let source = match fs::read_to_string(&filepath) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("Error reading file '{}': {}", filepath, e);
@@ -152,12 +180,32 @@ fn run_file(filepath: &str) {
         process::exit(1);
     }
 
-    // 3. VM Execution
-    match tungsten_vm::execute(&ast) {
-        Ok(_) => {}
-        Err(runtime_err) => {
-            eprintln!("\n[Runtime Error]: {}", runtime_err);
-            process::exit(1);
+    if native {
+        // Native Cranelift JIT Execution
+        let mut tir_module = match tungsten_tir::compile(&ast) {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("\n[TIR Lowering Error]: {}", e);
+                process::exit(1);
+            }
+        };
+        tungsten_tir::optimize(&mut tir_module);
+
+        match tungsten_codegen::compile_and_run(&tir_module) {
+            Ok(_) => {}
+            Err(err) => {
+                eprintln!("\n[Native Execution Error]: {}", err);
+                process::exit(1);
+            }
+        }
+    } else {
+        // VM Execution
+        match tungsten_vm::execute(&ast) {
+            Ok(_) => {}
+            Err(runtime_err) => {
+                eprintln!("\n[Runtime Error]: {}", runtime_err);
+                process::exit(1);
+            }
         }
     }
 }
@@ -331,4 +379,71 @@ fn run_tir(args: &[String]) {
 
     // 4. Print TIR
     print!("{}", tungsten_tir::print(&module));
+}
+
+fn run_build(args: &[String]) {
+    let mut file = None;
+    for arg in args {
+        if file.is_none() {
+            file = Some(arg.clone());
+        }
+    }
+
+    let filepath = match file {
+        Some(f) => f,
+        None => {
+            eprintln!("Error: 'forge build' requires a path to a .tg file");
+            process::exit(1);
+        }
+    };
+
+    let source = match fs::read_to_string(&filepath) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error reading file '{}': {}", filepath, e);
+            process::exit(1);
+        }
+    };
+
+    // 1. Parsing
+    let ast = match tungsten_syntax::parse(&source) {
+        Ok(prog) => prog,
+        Err(err) => {
+            eprintln!("\n[Syntax Error] in {}:", filepath);
+            eprintln!("  {}", err);
+            process::exit(1);
+        }
+    };
+
+    // 2. Type Checking
+    if let Err(errs) = tungsten_typeck::check(&ast) {
+        eprintln!("\n[Type & Effect Error] {} error(s) found in {}:", errs.len(), filepath);
+        for (idx, err) in errs.iter().enumerate() {
+            eprintln!("  {}. [Line {}, Col {}]: {}", idx + 1, err.span.line, err.span.column, err.message);
+        }
+        process::exit(1);
+    }
+
+    // 3. TIR Lowering & Optimization
+    let mut module = match tungsten_tir::compile(&ast) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("\n[TIR Lowering Error]: {}", e);
+            process::exit(1);
+        }
+    };
+    let stats = tungsten_tir::optimize(&mut module);
+
+    println!("Compiling {} with Cranelift JIT/AOT backend...", filepath);
+    println!("  - Optimized: {} constant folds, {} bounds checks eliminated", stats.const_folds, stats.bounds_checks_eliminated);
+
+    match tungsten_codegen::compile_and_run(&module) {
+        Ok(_) => {
+            println!("Finished build: verification run successful.");
+        }
+        Err(e) => {
+            eprintln!("Build verification failed: {}", e);
+            process::exit(1);
+        }
+    }
 }

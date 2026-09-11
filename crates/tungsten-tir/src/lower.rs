@@ -300,14 +300,25 @@ impl TirLowerer {
             }
             ExprKind::FieldAccess { target, field } => {
                 let t_op = self.lower_expr(target);
-                let (dest, res_op) = self.alloc_temp(Type::Unit);
+                let field_ty = match t_op.get_type() {
+                    Type::Struct(ref s_name) => {
+                        self.type_checker
+                            .structs
+                            .get(s_name)
+                            .and_then(|fields| fields.get(field))
+                            .cloned()
+                            .unwrap_or(Type::Unit)
+                    }
+                    _ => Type::Unit,
+                };
+                let (dest, res_op) = self.alloc_temp(field_ty.clone());
                 self.emit(Instruction::Assign {
                     dest,
                     rvalue: RValue::FieldAccess {
                         target: t_op,
                         field: field.clone(),
                     },
-                    ty: Type::Unit,
+                    ty: field_ty,
                     span: expr.span,
                 });
                 res_op
@@ -362,12 +373,37 @@ impl TirLowerer {
             ExprKind::Call { callee, args } => {
                 let c_op = self.lower_expr(callee);
                 let arg_ops = args.iter().map(|a| self.lower_expr(a)).collect();
-                let (dest, res_op) = self.alloc_temp(Type::Unit);
+                let callee_name = match &callee.kind {
+                    ExprKind::Ident(name) => Some(name.as_str()),
+                    _ => None,
+                };
+                let ret_ty = if let Some(name) = callee_name {
+                    self.type_checker
+                        .functions
+                        .get(name)
+                        .map(|sig| sig.return_type.clone())
+                        .or_else(|| {
+                            self.type_checker
+                                .generic_functions
+                                .get(name)
+                                .and_then(|f| {
+                                    f.return_type.as_ref().and_then(|rt| {
+                                        self.type_checker
+                                            .resolve_type_expr_with_generics(rt, &f.type_params)
+                                            .ok()
+                                    })
+                                })
+                        })
+                        .unwrap_or(Type::Unit)
+                } else {
+                    Type::Unit
+                };
+                let (dest, res_op) = self.alloc_temp(ret_ty.clone());
                 self.emit(Instruction::Call {
                     dest: Some(dest),
                     func: c_op,
                     args: arg_ops,
-                    ty: Type::Unit,
+                    ty: ret_ty,
                     span: expr.span,
                 });
                 res_op
@@ -540,7 +576,9 @@ impl TirLowerer {
             ExprKind::Block(inner_block) => {
                 self.lower_block(inner_block).unwrap_or(Operand::Constant(TirConstant::Unit))
             }
-            _ => Operand::Constant(TirConstant::Unit),
+            ExprKind::Try(inner) | ExprKind::EffectCall(inner) | ExprKind::Await(inner) => {
+                self.lower_expr(inner)
+            }
         }
     }
 }

@@ -1,14 +1,18 @@
 [package]
-name = "forge"
+name = "tungsten-codegen"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
 [dependencies]
+cranelift = "0.136.0-rc.1"
+cranelift-codegen = "0.136.0-rc.1"
+cranelift-jit = "0.136.0-rc.1"
+cranelift-module = "0.136.0-rc.1"
+cranelift-frontend = "0.136.0-rc.1"
+cranelift-native = "0.136.0-rc.1"
+target-lexicon = "0.13"
 tungsten-syntax = { path = "../tungsten-syntax" }
 tungsten-typeck = { path = "../tungsten-typeck" }
-tungsten-vm = { path = "../tungsten-vm" }
-tungsten-lsp = { path = "../tungsten-lsp" }
 tungsten-tir = { path = "../tungsten-tir" }
-tungsten-codegen = { path = "../tungsten-codegen" }

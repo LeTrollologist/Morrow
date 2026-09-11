@@ -12,8 +12,8 @@
 | **v0.2** | **Developer Experience** | Standard Library (`std`), Formatter (`forge fmt`), Language Server (`tungsten-lsp`) | **Completed** |
 | **v0.3** | **Advanced Type System** | Relational Refinements, Generics, Effect Polymorphism | **Completed** |
 | **v0.4** | **Tungsten IR & Optimization** | SSA / CFG Intermediate Representation (TIR), Continuation Lowering | **Completed** |
-| **v0.5** | **Native Codegen** | Cranelift (Fast JIT/Debug) & LLVM (Release) Code Generation | **Next Priority** |
-| **v0.6** | **Colorless Concurrency** | M:N Work-Stealing Fiber Scheduler via Algebraic Effects | Planned |
+| **v0.5** | **Native Codegen** | Cranelift (Fast JIT/Debug) & Host Runtime ABI Code Generation | **Completed** |
+| **v0.6** | **Colorless Concurrency** | M:N Work-Stealing Fiber Scheduler via Algebraic Effects | **Next Priority** |
 | **v0.7** | **Physical Region Allocator** | Machine-level Arena Scopes & $\mathcal{O}(1)$ Region Teardown | Planned |
 | **v1.0** | **Production & Ecosystem** | `Forge.lock` Package Manager, Stdlib Expansion, Self-Hosting | Planned |
 
@@ -73,6 +73,23 @@
   - Redundant refinement bounds check elimination (`bounds_elim`) proving zero-cost abstraction for safe intervals.
 - [x] **CLI Tooling**:
   - `forge tir [--opt] <file.tg>` for inspecting unoptimized and optimized intermediate representation.
+
+### v0.5: Native Codegen via Cranelift & JIT Execution
+- [x] **Machine Codegen Backend (`tungsten-codegen`)**:
+  - Direct translation of TIR basic blocks into Cranelift IR and native machine assembly (x86_64 / AArch64).
+  - Native ABI and runtime bridge:
+    - Zero-overhead C-ABI host imports: `tungsten_print_i64`, `tungsten_println_i64`, `tungsten_print_str`, `tungsten_println_str`, `tungsten_io_print`.
+    - Native refinement trap & panic handler (`tungsten_refinement_panic`).
+    - Heap memory allocation bridge (`tungsten_alloc`).
+  - Native string constant pools and null-terminated string representation.
+  - First-class function pointers and indirect native calls (`call_indirect`).
+  - Dynamic struct allocation and offset-based field access.
+- [x] **In-Memory JIT Compilation Engine**:
+  - `JitEngine` compiling TIR modules into executable machine code in memory.
+  - Verification across effectful database records, higher-order functions, and generic containers.
+- [x] **CLI Tooling**:
+  - `forge run --native <file.tg>` for direct native JIT execution.
+  - `forge build <file.tg>` subcommand for native compilation.
 
 ---
 
@@ -166,9 +183,9 @@
 
 ---
 
-## Suggested Next Immediate Sprint: Phase 2.5 (v0.5)
+## Suggested Next Immediate Sprint: Phase 3 (v0.6)
 
-To maintain momentum, the recommended immediate next sprint is **Phase 2.5: Native Codegen (v0.5)**:
-1. **Cranelift Backend (`tungsten-codegen`)**: Fast JIT/AOT compiler generating native machine code (x86_64 / aarch64) directly from TIR basic blocks.
-2. **Runtime Integration**: ABI lowering for stack-allocated delimited continuations and effect dispatch in machine code.
-3. **`forge build` Subcommand**: Compile `.tg` files into standalone native executable binaries.
+To maintain momentum, the recommended immediate next sprint is **Phase 3: Fearless Concurrency via Algebraic Effects (v0.6)**:
+1. **Fiber Engine**: Stackful delimited continuations driven by an `Async` / `Spawn` effect handler without `async`/`await` coloring.
+2. **M:N Work-Stealing Runtime**: Multi-threaded fiber executor multiplexing concurrent Tungsten tasks across CPU cores.
+3. **Structured Concurrency Nurseries**: Nursery scopes guaranteeing zero-leak lifetime boundaries for spawned tasks.
