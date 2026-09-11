@@ -36,6 +36,14 @@ fn main() {
             }
             run_fmt(&args[2..]);
         }
+        "tir" | "ir" => {
+            if args.len() < 3 {
+                eprintln!("Error: 'forge tir' requires a path to a .tg file");
+                eprintln!("Usage: forge tir [--opt] <file.tg>");
+                process::exit(1);
+            }
+            run_tir(&args[2..]);
+        }
         "lsp" => {
             run_lsp();
         }
@@ -72,6 +80,7 @@ SUBCOMMANDS:
     check <file.tg>       Typecheck, verify refinement bounds, and check effect rows
     run <file.tg>         Compile, check, and execute a Tungsten program
     fmt [--check] <file>  Format Tungsten source code according to canonical style
+    tir [--opt] <file.tg> Compile and print Tungsten Intermediate Representation (TIR)
     lsp                   Start the Tungsten Language Server (JSON-RPC 2.0 over stdio)
     new <project_name>    Create a new Tungsten project
     version               Display version information
@@ -252,4 +261,74 @@ fn main() {
     let _ = fs::write(project_path.join("src").join("main.tg"), main_tg);
 
     println!("Created new Tungsten project `{}`", name);
+}
+
+fn run_tir(args: &[String]) {
+    let mut optimize = false;
+    let mut file = None;
+
+    for arg in args {
+        if arg == "--opt" || arg == "-O" {
+            optimize = true;
+        } else if file.is_none() {
+            file = Some(arg.clone());
+        }
+    }
+
+    let filepath = match file {
+        Some(f) => f,
+        None => {
+            eprintln!("Error: 'forge tir' requires a path to a .tg file");
+            process::exit(1);
+        }
+    };
+
+    let source = match fs::read_to_string(&filepath) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error reading file '{}': {}", filepath, e);
+            process::exit(1);
+        }
+    };
+
+    // 1. Parsing
+    let ast = match tungsten_syntax::parse(&source) {
+        Ok(prog) => prog,
+        Err(err) => {
+            eprintln!("\n[Syntax Error] in {}:", filepath);
+            eprintln!("  {}", err);
+            process::exit(1);
+        }
+    };
+
+    // 2. Type Checking
+    if let Err(errs) = tungsten_typeck::check(&ast) {
+        eprintln!("\n[Type & Effect Error] {} error(s) found in {}:", errs.len(), filepath);
+        for (idx, err) in errs.iter().enumerate() {
+            eprintln!("  {}. [Line {}, Col {}]: {}", idx + 1, err.span.line, err.span.column, err.message);
+        }
+        process::exit(1);
+    }
+
+    // 3. TIR Lowering
+    let mut module = match tungsten_tir::compile(&ast) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("\n[TIR Lowering Error]: {}", e);
+            process::exit(1);
+        }
+    };
+
+    if optimize {
+        let stats = tungsten_tir::optimize(&mut module);
+        println!(";; Optimization Passes Applied:");
+        println!(";;   - Constant folds: {}", stats.const_folds);
+        println!(";;   - Redundant bounds checks eliminated: {}", stats.bounds_checks_eliminated);
+        println!(";;   - Dead instructions/blocks pruned: {}", stats.dead_code_pruned);
+        println!(";;   - Iterations to fixpoint: {}", stats.iterations);
+        println!();
+    }
+
+    // 4. Print TIR
+    print!("{}", tungsten_tir::print(&module));
 }

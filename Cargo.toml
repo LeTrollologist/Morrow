@@ -5,6 +5,7 @@ members = [
     "crates/tungsten-typeck",
     "crates/tungsten-vm",
     "crates/tungsten-lsp",
+    "crates/tungsten-tir",
     "crates/forge",
 ]
 

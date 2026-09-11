@@ -11,8 +11,8 @@
 | **v0.1** | **Working Prototype** | Parser, Typechecker, Refinement Intervals, Effect VM, CLI | **Completed** |
 | **v0.2** | **Developer Experience** | Standard Library (`std`), Formatter (`forge fmt`), Language Server (`tungsten-lsp`) | **Completed** |
 | **v0.3** | **Advanced Type System** | Relational Refinements, Generics, Effect Polymorphism | **Completed** |
-| **v0.4** | **Tungsten IR & Optimization** | SSA / CFG Intermediate Representation (TIR), Continuation Lowering | **Next Priority** |
-| **v0.5** | **Native Codegen** | Cranelift (Fast JIT/Debug) & LLVM (Release) Code Generation | Planned |
+| **v0.4** | **Tungsten IR & Optimization** | SSA / CFG Intermediate Representation (TIR), Continuation Lowering | **Completed** |
+| **v0.5** | **Native Codegen** | Cranelift (Fast JIT/Debug) & LLVM (Release) Code Generation | **Next Priority** |
 | **v0.6** | **Colorless Concurrency** | M:N Work-Stealing Fiber Scheduler via Algebraic Effects | Planned |
 | **v0.7** | **Physical Region Allocator** | Machine-level Arena Scopes & $\mathcal{O}(1)$ Region Teardown | Planned |
 | **v1.0** | **Production & Ecosystem** | `Forge.lock` Package Manager, Stdlib Expansion, Self-Hosting | Planned |
@@ -59,6 +59,20 @@
   - First-class function types: `fn apply<T, U, E>(val: T, f: fn(T) yields [E] -> U) -> U yields [E]`.
   - Caller-agnostic higher-order abstraction over arbitrary effect rows without color segregation.
   - Transparent execution across both pure and effectful handlers in `tungsten-vm`.
+
+### v0.4: Intermediate Representation (TIR) & Optimization Passes
+- [x] **SSA Intermediate Representation (`tungsten-tir`)**:
+  - Linearized Basic-Block Control Flow Graph (CFG) preserving types, refinement intervals, and effect signatures.
+  - Verification pass (`verify::verify_module`) ensuring CFG integrity, block reachability, and valid terminators.
+- [x] **AST to TIR Lowering**:
+  - Lowers expressions, loops, branching, and function calls into SSA instructions and explicit branch jumps.
+  - Delimited algebraic effect lowering (`handle { ... } with Effect { ... }`) into `HandleEffect` frames and `Resume` continuations.
+- [x] **Middle-End Optimization Pipeline**:
+  - Constant folding and propagation pass (`const_fold`).
+  - Dead code and unreachable block elimination (`dce`).
+  - Redundant refinement bounds check elimination (`bounds_elim`) proving zero-cost abstraction for safe intervals.
+- [x] **CLI Tooling**:
+  - `forge tir [--opt] <file.tg>` for inspecting unoptimized and optimized intermediate representation.
 
 ---
 
@@ -152,9 +166,9 @@
 
 ---
 
-## Suggested Next Immediate Sprint: Phase 2 (v0.4)
+## Suggested Next Immediate Sprint: Phase 2.5 (v0.5)
 
-To maintain momentum, the recommended immediate next sprint is **Phase 2: Compiler Backend & Optimization (v0.4)**:
-1. **TIR Intermediate Representation**: Define a Static Single Assignment (SSA) / Control Flow Graph (CFG) IR crate (`tungsten-tir` or inside compiler).
-2. **AST to TIR Lowering**: Lower AST functions, relational refinement assertions, and effect points into basic blocks and SSA instructions.
-3. **Continuation Lowering & Optimization**: Lower delimited effect handlers into state machines and apply constant folding and redundant bounds check elimination.
+To maintain momentum, the recommended immediate next sprint is **Phase 2.5: Native Codegen (v0.5)**:
+1. **Cranelift Backend (`tungsten-codegen`)**: Fast JIT/AOT compiler generating native machine code (x86_64 / aarch64) directly from TIR basic blocks.
+2. **Runtime Integration**: ABI lowering for stack-allocated delimited continuations and effect dispatch in machine code.
+3. **`forge build` Subcommand**: Compile `.tg` files into standalone native executable binaries.
