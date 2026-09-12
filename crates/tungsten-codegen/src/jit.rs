@@ -32,6 +32,12 @@ impl JitEngine {
         builder.symbol("tungsten_io_print", runtime::tungsten_io_print as *const u8);
         builder.symbol("tungsten_refinement_panic", runtime::tungsten_refinement_panic as *const u8);
         builder.symbol("tungsten_alloc", runtime::tungsten_alloc as *const u8);
+        builder.symbol("tungsten_fiber_spawn", runtime::tungsten_fiber_spawn as *const u8);
+        builder.symbol("tungsten_fiber_yield", runtime::tungsten_fiber_yield as *const u8);
+        builder.symbol("tungsten_fiber_sleep", runtime::tungsten_fiber_sleep as *const u8);
+        builder.symbol("tungsten_channel_new", runtime::tungsten_channel_new as *const u8);
+        builder.symbol("tungsten_channel_send", runtime::tungsten_channel_send as *const u8);
+        builder.symbol("tungsten_channel_recv", runtime::tungsten_channel_recv as *const u8);
 
         let mut module = JITModule::new(builder);
         let ptr_type = module.target_config().pointer_type();
@@ -99,6 +105,52 @@ impl JitEngine {
             .declare_function("tungsten_alloc", Linkage::Import, &sig)
             .map_err(|e| e.to_string())?;
 
+        // fiber_spawn: (func_ptr: ptr, arg1: I64, arg2: I64) -> I64
+        let mut sig = module.make_signature();
+        sig.params.push(AbiParam::new(ptr_type));
+        sig.params.push(AbiParam::new(types::I64));
+        sig.params.push(AbiParam::new(types::I64));
+        sig.returns.push(AbiParam::new(types::I64));
+        let fiber_spawn = module
+            .declare_function("tungsten_fiber_spawn", Linkage::Import, &sig)
+            .map_err(|e| e.to_string())?;
+
+        // fiber_yield: () -> ()
+        let sig = module.make_signature();
+        let fiber_yield = module
+            .declare_function("tungsten_fiber_yield", Linkage::Import, &sig)
+            .map_err(|e| e.to_string())?;
+
+        // fiber_sleep: (ms: I64) -> ()
+        let mut sig = module.make_signature();
+        sig.params.push(AbiParam::new(types::I64));
+        let fiber_sleep = module
+            .declare_function("tungsten_fiber_sleep", Linkage::Import, &sig)
+            .map_err(|e| e.to_string())?;
+
+        // channel_new: () -> I64
+        let mut sig = module.make_signature();
+        sig.returns.push(AbiParam::new(types::I64));
+        let channel_new = module
+            .declare_function("tungsten_channel_new", Linkage::Import, &sig)
+            .map_err(|e| e.to_string())?;
+
+        // channel_send: (cid: I64, val: I64) -> ()
+        let mut sig = module.make_signature();
+        sig.params.push(AbiParam::new(types::I64));
+        sig.params.push(AbiParam::new(types::I64));
+        let channel_send = module
+            .declare_function("tungsten_channel_send", Linkage::Import, &sig)
+            .map_err(|e| e.to_string())?;
+
+        // channel_recv: (cid: I64) -> I64
+        let mut sig = module.make_signature();
+        sig.params.push(AbiParam::new(types::I64));
+        sig.returns.push(AbiParam::new(types::I64));
+        let channel_recv = module
+            .declare_function("tungsten_channel_recv", Linkage::Import, &sig)
+            .map_err(|e| e.to_string())?;
+
         Ok(RuntimeFuncs {
             print_i64,
             println_i64,
@@ -107,7 +159,14 @@ impl JitEngine {
             io_print,
             refinement_panic,
             alloc,
+            fiber_spawn,
+            fiber_yield,
+            fiber_sleep,
+            channel_new,
+            channel_send,
+            channel_recv,
         })
+
     }
 
     pub fn compile_and_run(&mut self, tir_module: &TirModule) -> Result<i64, String> {

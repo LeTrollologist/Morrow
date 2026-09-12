@@ -13,9 +13,10 @@
 | **v0.3** | **Advanced Type System** | Relational Refinements, Generics, Effect Polymorphism | **Completed** |
 | **v0.4** | **Tungsten IR & Optimization** | SSA / CFG Intermediate Representation (TIR), Continuation Lowering | **Completed** |
 | **v0.5** | **Native Codegen** | Cranelift (Fast JIT/Debug) & Host Runtime ABI Code Generation | **Completed** |
-| **v0.6** | **Colorless Concurrency** | M:N Work-Stealing Fiber Scheduler via Algebraic Effects | **Next Priority** |
-| **v0.7** | **Physical Region Allocator** | Machine-level Arena Scopes & $\mathcal{O}(1)$ Region Teardown | Planned |
+| **v0.6** | **Colorless Concurrency** | M:N Work-Stealing Fiber Scheduler via Algebraic Effects | **Completed** |
+| **v0.7** | **Physical Region Allocator** | Machine-level Arena Scopes & $\mathcal{O}(1)$ Region Teardown | **Next Priority** |
 | **v1.0** | **Production & Ecosystem** | `Forge.lock` Package Manager, Stdlib Expansion, Self-Hosting | Planned |
+
 
 ---
 
@@ -91,7 +92,24 @@
   - `forge run --native <file.tg>` for direct native JIT execution.
   - `forge build <file.tg>` subcommand for native compilation.
 
+### v0.6: Colorless Concurrency via Algebraic Effects & M:N Work-Stealing Fiber Runtime
+- [x] **Fiber Engine & Structured Concurrency (`tungsten-fiber`)**:
+  - Multi-threaded M:N work-stealing scheduler (`Scheduler`) distributing fibers across worker threads with local queues and global injector queue.
+  - Structured concurrency nursery scopes (`Nursery<T>`) guaranteeing lexical lifecycle boundaries and deterministic fiber joins.
+  - Cross-thread unbounded and bounded message channels (`Channel<T>`) with thread-safe send, recv, and try_recv.
+- [x] **Concurrency Algebraic Effects in Typechecker (`tungsten-typeck`)**:
+  - Registered `Async`, `Channel`, and `FiberHandle` in core type system.
+  - Type inference and effect validation for `Async::spawn`, `Async::yield_now`, `Async::await_fiber`, `Async::sleep`, `Channel::new`, `Channel::send`, and `Channel::recv`.
+- [x] **Thread-Safe Runtime Execution (`tungsten-vm`)**:
+  - Converted heap reference values to thread-safe `Arc<Mutex<Value>>`.
+  - Effect dispatch integration routing `Async` and `Channel` operations through multi-threaded fiber scheduler.
+- [x] **Native Codegen & Cranelift JIT Concurrency (`tungsten-codegen`)**:
+  - C-ABI runtime bindings for fiber spawning, yielding, sleep, and channel message passing.
+  - Cranelift IR lowering for `Async` and `Channel` algebraic effect operations into direct native host calls.
+  - Tested and verified end-to-end via `examples/fibers_and_concurrency.tg` on both VM and native JIT (`--native`).
+
 ---
+
 
 ## Upcoming Milestones
 
@@ -183,9 +201,10 @@
 
 ---
 
-## Suggested Next Immediate Sprint: Phase 3 (v0.6)
+## Suggested Next Immediate Sprint: Phase 4 (v0.7)
 
-To maintain momentum, the recommended immediate next sprint is **Phase 3: Fearless Concurrency via Algebraic Effects (v0.6)**:
-1. **Fiber Engine**: Stackful delimited continuations driven by an `Async` / `Spawn` effect handler without `async`/`await` coloring.
-2. **M:N Work-Stealing Runtime**: Multi-threaded fiber executor multiplexing concurrent Tungsten tasks across CPU cores.
-3. **Structured Concurrency Nurseries**: Nursery scopes guaranteeing zero-leak lifetime boundaries for spawned tasks.
+To maintain momentum, the recommended immediate next sprint is **Phase 4: Native Region-Based Memory Management (v0.7)**:
+1. **Compile-Time Region Inference**: Tofte-Talpin region inference with lexical arena frame partitioning.
+2. **$\mathcal{O}(1)$ Bulk Deallocation**: Arena scopes freed in single pointer resets without garbage collection overhead.
+3. **Linear Escape Analysis**: Compiler guarantees preventing pointers from outliving enclosing arena lifecycles.
+

@@ -1,0 +1,11 @@
+[package]
+name = "tungsten-fiber"
+version = "0.1.0"
+edition = "2021"
+authors = ["Tungsten Language Contributors"]
+license = "MIT OR Apache-2.0"
+description = "M:N work-stealing fiber scheduler and structured concurrency engine for Tungsten"
+
+[dependencies]
+thiserror = "1.0"
+

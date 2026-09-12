@@ -16,3 +16,4 @@ target-lexicon = "0.13"
 tungsten-syntax = { path = "../tungsten-syntax" }
 tungsten-typeck = { path = "../tungsten-typeck" }
 tungsten-tir = { path = "../tungsten-tir" }
+tungsten-fiber = { path = "../tungsten-fiber" }

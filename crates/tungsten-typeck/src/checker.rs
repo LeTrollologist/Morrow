@@ -84,6 +84,11 @@ impl TypeChecker {
         tc.known_effects.insert("State".into());
         tc.known_effects.insert("Time".into());
         tc.known_effects.insert("Yield".into());
+        tc.known_effects.insert("Async".into());
+        tc.known_effects.insert("Channel".into());
+
+        // Concurrency types
+        tc.types.insert("FiberHandle".into(), Type::Struct("FiberHandle".into()));
 
         // Standard prelude refinement types
         tc.types.insert(
@@ -665,6 +670,28 @@ impl<'a> FnChecker<'a> {
                         }
                         if namespace == "IO" {
                             return (Type::Unit, None);
+                        }
+                        if namespace == "Async" {
+                            if op == "spawn" {
+                                return (Type::Struct("FiberHandle".into()), None);
+                            }
+                            if op == "yield_now" {
+                                return (Type::Unit, None);
+                            }
+                            if op == "await_fiber" {
+                                return (Type::I64, None);
+                            }
+                            if op == "sleep" {
+                                return (Type::Unit, None);
+                            }
+                        }
+                        if namespace == "Channel" {
+                            if op == "send" {
+                                return (Type::Unit, None);
+                            }
+                            if op == "recv" {
+                                return (Type::I64, None);
+                            }
                         }
                     } else {
                         // External driver or library call (e.g. PostgresPool::execute)

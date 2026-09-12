@@ -1,7 +1,6 @@
-use std::cell::RefCell;
-use std::collections::HashMap;
+﻿use std::collections::HashMap;
 use std::fmt;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone)]
 pub enum Value {
@@ -13,7 +12,7 @@ pub enum Value {
         name: String,
         fields: HashMap<String, Value>,
     },
-    Ref(Rc<RefCell<Value>>),
+    Ref(Arc<Mutex<Value>>),
     Fn(String),
 }
 
@@ -21,7 +20,7 @@ impl Value {
     pub fn as_int(&self) -> Option<i64> {
         match self {
             Value::Int(n) => Some(*n),
-            Value::Ref(r) => r.borrow().as_int(),
+            Value::Ref(r) => r.lock().unwrap().as_int(),
             _ => None,
         }
     }
@@ -29,7 +28,7 @@ impl Value {
     pub fn as_str(&self) -> Option<String> {
         match self {
             Value::Str(s) => Some(s.clone()),
-            Value::Ref(r) => r.borrow().as_str(),
+            Value::Ref(r) => r.lock().unwrap().as_str(),
             _ => None,
         }
     }
@@ -37,7 +36,7 @@ impl Value {
     pub fn as_bool(&self) -> Option<bool> {
         match self {
             Value::Bool(b) => Some(*b),
-            Value::Ref(r) => r.borrow().as_bool(),
+            Value::Ref(r) => r.lock().unwrap().as_bool(),
             _ => None,
         }
     }
@@ -45,7 +44,7 @@ impl Value {
     pub fn get_field(&self, field: &str) -> Option<Value> {
         match self {
             Value::Struct { fields, .. } => fields.get(field).cloned(),
-            Value::Ref(r) => r.borrow().get_field(field),
+            Value::Ref(r) => r.lock().unwrap().get_field(field),
             _ => None,
         }
     }
@@ -56,7 +55,7 @@ impl Value {
                 fields.insert(field.to_string(), new_val);
                 Ok(())
             }
-            Value::Ref(r) => r.borrow_mut().set_field(field, new_val),
+            Value::Ref(r) => r.lock().unwrap().set_field(field, new_val),
             _ => Err(format!("Cannot set field '{}' on non-struct", field)),
         }
     }
@@ -76,7 +75,7 @@ impl fmt::Display for Value {
                     .collect();
                 write!(f, "{} {{ {} }}", name, field_strs.join(", "))
             }
-            Value::Ref(r) => write!(f, "&{}", r.borrow()),
+            Value::Ref(r) => write!(f, "&{}", r.lock().unwrap()),
             Value::Fn(name) => write!(f, "<fn {}>", name),
         }
     }
@@ -90,8 +89,8 @@ impl PartialEq for Value {
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Unit, Value::Unit) => true,
             (Value::Fn(a), Value::Fn(b)) => a == b,
-            (Value::Ref(a), b) => *a.borrow() == *b,
-            (a, Value::Ref(b)) => *a == *b.borrow(),
+            (Value::Ref(a), b) => *a.lock().unwrap() == *b,
+            (a, Value::Ref(b)) => *a == *b.lock().unwrap(),
             (Value::Struct { name: n1, fields: f1 }, Value::Struct { name: n2, fields: f2 }) => {
                 n1 == n2 && f1 == f2
             }

@@ -1,16 +1,18 @@
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
-
+use std::sync::{Arc, Mutex};
+use tungsten_fiber::{Channel, FiberHandle, Scheduler};
 use tungsten_syntax::ast::*;
 use crate::effects::ActiveHandler;
 use crate::value::Value;
 
 pub struct Evaluator {
     functions: HashMap<String, FnDecl>,
-    scopes: Vec<HashMap<String, Rc<RefCell<Value>>>>,
+    scopes: Vec<HashMap<String, Arc<Mutex<Value>>>>,
     handler_stack: Vec<Vec<ActiveHandler>>,
     pub stdout_lines: Vec<String>,
+    pub scheduler: Arc<Scheduler>,
+    fiber_handles: HashMap<u64, FiberHandle<Value>>,
+    channels: Arc<Mutex<HashMap<u64, Arc<Channel<Value>>>>>,
 }
 
 #[derive(Debug)]
@@ -27,6 +29,9 @@ impl Evaluator {
             scopes: vec![HashMap::new()],
             handler_stack: Vec::new(),
             stdout_lines: Vec::new(),
+            scheduler: Scheduler::new(0),
+            fiber_handles: HashMap::new(),
+            channels: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -59,27 +64,27 @@ impl Evaluator {
 
     fn define_var(&mut self, name: String, val: Value) {
         if let Some(scope) = self.scopes.last_mut() {
-            scope.insert(name, Rc::new(RefCell::new(val)));
+            scope.insert(name, Arc::new(Mutex::new(val)));
         }
     }
 
-    fn define_var_cell(&mut self, name: String, cell: Rc<RefCell<Value>>) {
+    fn define_var_cell(&mut self, name: String, cell: Arc<Mutex<Value>>) {
         if let Some(scope) = self.scopes.last_mut() {
             scope.insert(name, cell);
         }
     }
 
-    fn lookup_cell(&self, name: &str) -> Option<Rc<RefCell<Value>>> {
+    fn lookup_cell(&self, name: &str) -> Option<Arc<Mutex<Value>>> {
         for scope in self.scopes.iter().rev() {
             if let Some(cell) = scope.get(name) {
-                return Some(Rc::clone(cell));
+                return Some(Arc::clone(cell));
             }
         }
         None
     }
 
     fn lookup_var(&self, name: &str) -> Option<Value> {
-        self.lookup_cell(name).map(|c| c.borrow().clone())
+        self.lookup_cell(name).map(|c| c.lock().unwrap().clone())
     }
 
     pub fn eval_fn(&mut self, f: &FnDecl, args: Vec<Value>) -> EvalSignal {
@@ -170,7 +175,7 @@ impl Evaluator {
         match &target.kind {
             ExprKind::Ident(name) => {
                 if let Some(cell) = self.lookup_cell(name) {
-                    *cell.borrow_mut() = new_val;
+                    *cell.lock().unwrap() = new_val;
                     Ok(())
                 } else {
                     Err(format!("Undefined variable '{}' in assignment", name))
@@ -180,7 +185,7 @@ impl Evaluator {
                 match &inner_target.kind {
                     ExprKind::Ident(name) => {
                         if let Some(cell) = self.lookup_cell(name) {
-                            cell.borrow_mut().set_field(field, new_val)?;
+                            cell.lock().unwrap().set_field(field, new_val)?;
                             Ok(())
                         } else {
                             Err(format!("Undefined variable '{}' in field assignment", name))
@@ -248,7 +253,7 @@ impl Evaluator {
                         EvalSignal::Normal(v) => v,
                         early => return early,
                     };
-                    EvalSignal::Normal(Value::Ref(Rc::new(RefCell::new(val))))
+                    EvalSignal::Normal(Value::Ref(Arc::new(Mutex::new(val))))
                 }
             }
             ExprKind::FieldAccess { target, field } => {
@@ -340,6 +345,106 @@ impl Evaluator {
                         println!("{}", msg);
                         self.stdout_lines.push(msg);
                         return EvalSignal::Normal(Value::Unit);
+                    }
+
+                    // Async & Fiber runtime operations
+                    if namespace == "Async" {
+                        if op == "spawn" && !eval_args.is_empty() {
+                            let f_val = &eval_args[0];
+                            let func_name = match f_val {
+                                Value::Fn(name) => name.clone(),
+                                _ => f_val.to_string(),
+                            };
+
+                            if let Some(target_fn) = self.functions.get(&func_name).cloned() {
+                                let mut fiber_eval = Evaluator::new();
+                                fiber_eval.functions = self.functions.clone();
+                                fiber_eval.channels = Arc::clone(&self.channels);
+                                fiber_eval.scheduler = Arc::clone(&self.scheduler);
+                                let pass_args: Vec<Value> = eval_args[1..].to_vec();
+
+                                let handle = self.scheduler.spawn(move || {
+                                    match fiber_eval.eval_fn(&target_fn, pass_args) {
+                                        EvalSignal::Normal(v) | EvalSignal::Return(v) => Ok(v),
+                                        EvalSignal::Error(e) => Err(e),
+                                    }
+                                });
+
+                                let h_id = handle.id.0;
+                                self.fiber_handles.insert(h_id, handle);
+
+                                let mut fields = HashMap::new();
+                                fields.insert("id".to_string(), Value::Int(h_id as i64));
+                                return EvalSignal::Normal(Value::Struct {
+                                    name: "FiberHandle".into(),
+                                    fields,
+                                });
+                            } else {
+                                return EvalSignal::Error(format!("Async::spawn: function '{}' not found", func_name));
+                            }
+                        }
+
+                        if op == "yield_now" {
+                            std::thread::yield_now();
+                            return EvalSignal::Normal(Value::Unit);
+                        }
+
+                        if op == "sleep" && !eval_args.is_empty() {
+                            let ms = eval_args[0].as_int().unwrap_or(0);
+                            std::thread::sleep(std::time::Duration::from_millis(ms.max(0) as u64));
+                            return EvalSignal::Normal(Value::Unit);
+                        }
+
+                        if op == "await_fiber" && !eval_args.is_empty() {
+                            let h_id = match &eval_args[0] {
+                                Value::Struct { fields, .. } => fields.get("id").and_then(|v| v.as_int()).unwrap_or(0) as u64,
+                                Value::Int(n) => *n as u64,
+                                _ => 0,
+                            };
+
+                            if let Some(handle) = self.fiber_handles.get(&h_id) {
+                                match handle.join() {
+                                    Ok(res) => return EvalSignal::Normal(res),
+                                    Err(e) => return EvalSignal::Error(e),
+                                }
+                            } else {
+                                return EvalSignal::Error(format!("Fiber {} not found", h_id));
+                            }
+                        }
+                    }
+
+                    // Channel messaging operations
+                    if namespace == "Channel" {
+                        if op == "new" {
+                            static CH_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+                            let cid = CH_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            let ch = Arc::new(Channel::unbounded());
+                            self.channels.lock().unwrap().insert(cid, ch);
+                            return EvalSignal::Normal(Value::Int(cid as i64));
+                        }
+                        if op == "send" && eval_args.len() >= 2 {
+                            let cid = eval_args[0].as_int().unwrap_or(1) as u64;
+                            let val = eval_args[1].clone();
+                            let ch_opt = self.channels.lock().unwrap().get(&cid).cloned();
+                            if let Some(ch) = ch_opt {
+                                let _ = ch.send(val);
+                                return EvalSignal::Normal(Value::Unit);
+                            } else {
+                                return EvalSignal::Error(format!("Channel {} not found", cid));
+                            }
+                        }
+                        if op == "recv" && !eval_args.is_empty() {
+                            let cid = eval_args[0].as_int().unwrap_or(1) as u64;
+                            let ch_opt = self.channels.lock().unwrap().get(&cid).cloned();
+                            if let Some(ch) = ch_opt {
+                                match ch.recv() {
+                                    Ok(val) => return EvalSignal::Normal(val),
+                                    Err(e) => return EvalSignal::Error(e),
+                                }
+                            } else {
+                                return EvalSignal::Error(format!("Channel {} not found", cid));
+                            }
+                        }
                     }
                 }
 

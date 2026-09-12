@@ -8,3 +8,4 @@ license.workspace = true
 [dependencies]
 tungsten-syntax = { path = "../tungsten-syntax" }
 tungsten-typeck = { path = "../tungsten-typeck" }
+tungsten-fiber = { path = "../tungsten-fiber" }

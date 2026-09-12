@@ -1,0 +1,25 @@
+fn compute_task(ch: i64, input_val: i64) yields [Channel] {
+    let result = input_val * 2 + 10;
+    Channel::send(ch, result);
+}
+
+fn worker_stage_two(ch_in: i64, ch_out: i64) yields [Channel] {
+    let received = Channel::recv(ch_in);
+    let stage2_result = received * 3;
+    Channel::send(ch_out, stage2_result);
+}
+
+fn main() yields [Async, Channel] {
+    let ch1 = Channel::new();
+    let ch2 = Channel::new();
+    println!("Spawning M:N work-stealing fibers across worker threads...");
+    let f1 = Async::spawn(compute_task, ch1, 16);
+    let f2 = Async::spawn(compute_task, ch1, 45);
+    let val1 = Channel::recv(ch1);
+    let val2 = Channel::recv(ch1);
+    println!("Stage 1 output received from fibers: {} and {}", val1, val2);
+    let f3 = Async::spawn(worker_stage_two, ch1, ch2);
+    Channel::send(ch1, 20);
+    let final_val = Channel::recv(ch2);
+    println!("Pipeline final output: {}", final_val);
+}

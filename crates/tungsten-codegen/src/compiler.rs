@@ -15,7 +15,14 @@ pub struct RuntimeFuncs {
     pub io_print: FuncId,
     pub refinement_panic: FuncId,
     pub alloc: FuncId,
+    pub fiber_spawn: FuncId,
+    pub fiber_yield: FuncId,
+    pub fiber_sleep: FuncId,
+    pub channel_new: FuncId,
+    pub channel_send: FuncId,
+    pub channel_recv: FuncId,
 }
+
 
 pub struct FunctionCompiler;
 
@@ -130,9 +137,77 @@ impl FunctionCompiler {
                                 val_map.insert(d.clone(), record_ptr);
                             }
                             continue;
+                        } else if effect == "Async" {
+                            if op == "spawn" {
+                                let func_arg = args.first().cloned().unwrap_or(Operand::Constant(TirConstant::Int(0)));
+                                let func_v = Self::lower_operand(&func_arg, &mut builder, module, &val_map, func_ids, ptr_type)?;
+                                let arg1_v = if let Some(a1) = args.get(1) {
+                                    Self::lower_operand(a1, &mut builder, module, &val_map, func_ids, ptr_type)?
+                                } else {
+                                    builder.ins().iconst(types::I64, 0)
+                                };
+                                let arg2_v = if let Some(a2) = args.get(2) {
+                                    Self::lower_operand(a2, &mut builder, module, &val_map, func_ids, ptr_type)?
+                                } else {
+                                    builder.ins().iconst(types::I64, 0)
+                                };
+
+                                let arg1_i64 = Self::coerce_to_type(&mut builder, arg1_v, types::I64);
+                                let arg2_i64 = Self::coerce_to_type(&mut builder, arg2_v, types::I64);
+
+                                let spawn_ref = module.declare_func_in_func(runtime.fiber_spawn, &mut builder.func);
+                                let call_inst = builder.ins().call(spawn_ref, &[func_v, arg1_i64, arg2_i64]);
+                                let handle_v = builder.inst_results(call_inst)[0];
+                                if let Some(d) = dest {
+                                    val_map.insert(d.clone(), handle_v);
+                                }
+                                continue;
+                            } else if op == "yield_now" {
+                                let yield_ref = module.declare_func_in_func(runtime.fiber_yield, &mut builder.func);
+                                builder.ins().call(yield_ref, &[]);
+                            } else if op == "sleep" {
+                                let ms_v = if let Some(a) = args.first() {
+                                    Self::lower_operand(a, &mut builder, module, &val_map, func_ids, ptr_type)?
+                                } else {
+                                    builder.ins().iconst(types::I64, 0)
+                                };
+                                let ms_i64 = Self::coerce_to_type(&mut builder, ms_v, types::I64);
+                                let sleep_ref = module.declare_func_in_func(runtime.fiber_sleep, &mut builder.func);
+                                builder.ins().call(sleep_ref, &[ms_i64]);
+                            }
+                        } else if effect == "Channel" {
+                            if op == "new" {
+                                let new_ref = module.declare_func_in_func(runtime.channel_new, &mut builder.func);
+                                let call_inst = builder.ins().call(new_ref, &[]);
+                                let cid_v = builder.inst_results(call_inst)[0];
+                                if let Some(d) = dest {
+                                    val_map.insert(d.clone(), cid_v);
+                                }
+                                continue;
+                            } else if op == "send" && args.len() >= 2 {
+                                let cid_v = Self::lower_operand(&args[0], &mut builder, module, &val_map, func_ids, ptr_type)?;
+                                let cid_i64 = Self::coerce_to_type(&mut builder, cid_v, types::I64);
+                                let val_v = Self::lower_operand(&args[1], &mut builder, module, &val_map, func_ids, ptr_type)?;
+                                let val_i64 = Self::coerce_to_type(&mut builder, val_v, types::I64);
+
+                                let send_ref = module.declare_func_in_func(runtime.channel_send, &mut builder.func);
+                                builder.ins().call(send_ref, &[cid_i64, val_i64]);
+                            } else if op == "recv" && !args.is_empty() {
+                                let cid_v = Self::lower_operand(&args[0], &mut builder, module, &val_map, func_ids, ptr_type)?;
+                                let cid_i64 = Self::coerce_to_type(&mut builder, cid_v, types::I64);
+
+                                let recv_ref = module.declare_func_in_func(runtime.channel_recv, &mut builder.func);
+                                let call_inst = builder.ins().call(recv_ref, &[cid_i64]);
+                                let res_v = builder.inst_results(call_inst)[0];
+                                if let Some(d) = dest {
+                                    val_map.insert(d.clone(), res_v);
+                                }
+                                continue;
+                            }
                         }
                         if let Some(d) = dest {
                             let dummy = builder.ins().iconst(types::I64, 0);
+
                             val_map.insert(d.clone(), dummy);
                         }
                     }

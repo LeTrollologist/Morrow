@@ -109,4 +109,30 @@ mod tests {
         assert_eq!(logs.len(), 1);
         assert_eq!(logs[0], "Doubled: 84, Span: 15");
     }
+
+    #[test]
+    fn test_execute_fiber_concurrency_and_channels() {
+        let code = r#"
+        fn worker_task(ch: i64, value: i64) yields [Channel] {
+            Channel::send(ch, value * 2);
+        }
+
+        fn main() yields [Async, Channel] {
+            let ch = Channel::new();
+            let f1 = Async::spawn(worker_task, ch, 21);
+            let f2 = Async::spawn(worker_task, ch, 50);
+            
+            let res1 = Channel::recv(ch);
+            let res2 = Channel::recv(ch);
+            println!("Received fiber outputs: {} and {}", res1, res2);
+        }
+        "#;
+
+        let ast = parse(code).expect("syntax parse ok");
+        check(&ast).expect("typecheck ok");
+
+        let (_, logs) = execute_and_capture(&ast).expect("runtime execution ok");
+        assert_eq!(logs.len(), 1);
+        assert!(logs[0].contains("42") && logs[0].contains("100"));
+    }
 }
