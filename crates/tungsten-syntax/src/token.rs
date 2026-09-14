@@ -37,6 +37,8 @@ pub enum TokenKind {
     Region,
     Effect,
     Resume,
+    Import,
+    Pub,
 
 
     // Identifiers & Literals

@@ -1,0 +1,10 @@
+[package]
+name = "app_pkg"
+version = "0.1.0"
+edition = "2026"
+authors = ["Tungsten Devs"]
+license = "MIT"
+description = "Sample application consuming math_pkg"
+
+[dependencies]
+math_pkg = { version = "1.0.0", path = "../math_pkg" }

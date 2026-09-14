@@ -3,6 +3,16 @@ use std::fs;
 use std::path::Path;
 use std::process;
 
+mod lockfile;
+mod manifest;
+mod package;
+mod resolver;
+
+use lockfile::Lockfile;
+use manifest::{DependencySpec, DetailedDependency, Manifest};
+use package::{compile_package_ast, find_manifest, ProjectPackage};
+use resolver::DependencyResolver;
+
 fn main() {
     let args: Vec<String> = env::args().collect();
 
@@ -13,27 +23,12 @@ fn main() {
 
     match args[1].as_str() {
         "check" => {
-            if args.len() < 3 {
-                eprintln!("Error: 'forge check' requires a path to a .tg file");
-                eprintln!("Usage: forge check <file.tg>");
-                process::exit(1);
-            }
-            run_check(&args[2]);
+            run_check(&args[2..]);
         }
         "run" => {
-            if args.len() < 3 {
-                eprintln!("Error: 'forge run' requires a path to a .tg file");
-                eprintln!("Usage: forge run [--native] <file.tg>");
-                process::exit(1);
-            }
             run_file(&args[2..]);
         }
         "build" => {
-            if args.len() < 3 {
-                eprintln!("Error: 'forge build' requires a path to a .tg file");
-                eprintln!("Usage: forge build <file.tg>");
-                process::exit(1);
-            }
             run_build(&args[2..]);
         }
         "fmt" => {
@@ -58,13 +53,24 @@ fn main() {
         "new" => {
             if args.len() < 3 {
                 eprintln!("Error: 'forge new' requires a project name");
-                eprintln!("Usage: forge new <project_name>");
+                eprintln!("Usage: forge new <project_name> [--lib]");
                 process::exit(1);
             }
-            create_new_project(&args[2]);
+            create_new_project(&args[2..]);
+        }
+        "add" => {
+            if args.len() < 3 {
+                eprintln!("Error: 'forge add' requires a dependency name");
+                eprintln!("Usage: forge add <dependency> [--path <path>] [--version <ver>]");
+                process::exit(1);
+            }
+            run_add(&args[2..]);
+        }
+        "lock" => {
+            run_lock();
         }
         "version" | "--version" | "-V" => {
-            println!("forge 0.1.0 (tungsten-lang 2026)");
+            println!("forge 0.2.0 (tungsten-lang 2026)");
         }
         "help" | "--help" | "-h" => {
             print_usage();
@@ -79,97 +85,93 @@ fn main() {
 
 fn print_usage() {
     println!(
-        r#"forge - The Tungsten Build Tool & Runtime
+        r#"forge - The Tungsten Build Tool & Package Manager
 
 USAGE:
     forge <SUBCOMMAND> [OPTIONS]
 
 SUBCOMMANDS:
-    check <file.tg>           Typecheck, verify refinement bounds, and check effect rows
-    run [--native] <file.tg>  Compile, check, and execute (tree-walking VM or native Cranelift JIT)
-    build <file.tg>           Compile a Tungsten program to native machine code
-    fmt [--check] <file>      Format Tungsten source code according to canonical style
-    tir [--opt] <file.tg>     Compile and print Tungsten Intermediate Representation (TIR)
-    lsp                       Start the Tungsten Language Server (JSON-RPC 2.0 over stdio)
-    new <project_name>        Create a new Tungsten project
-    version                   Display version information
-    help                      Display this help message
+    check [file.tg]                 Typecheck project or file, verify refinement bounds & effects
+    run [--native] [file.tg]        Compile and execute project or file (VM or native Cranelift JIT)
+    build [file.tg]                 Compile a Tungsten package to native machine code
+    new <project_name> [--lib]      Create a new Tungsten binary or library package
+    add <dep> [--path P] [--ver V]  Add a dependency to Forge.toml and update Forge.lock
+    lock                            Resolve dependencies and update Forge.lock
+    fmt [--check] <file.tg>         Format Tungsten source code according to canonical style
+    tir [--opt] <file.tg>           Compile and print Tungsten Intermediate Representation (TIR)
+    lsp                             Start the Tungsten Language Server (JSON-RPC 2.0 over stdio)
+    version                         Display version information
+    help                            Display this help message
 "#
     );
 }
 
-fn load_program(filepath: &str) -> Result<tungsten_syntax::ast::Program, String> {
-    let source = match fs::read_to_string(filepath) {
-        Ok(s) => s,
-        Err(e) => return Err(format!("Error reading file '{}': {}", filepath, e)),
-    };
+fn load_program_auto(target: Option<&str>) -> Result<(tungsten_syntax::ast::Program, String), String> {
+    let current_dir = env::current_dir().map_err(|e| format!("Could not get current dir: {}", e))?;
 
-    let mut ast = match tungsten_syntax::parse(&source) {
-        Ok(prog) => prog,
-        Err(err) => return Err(format!("[Syntax Error] in {}:\n  {}", filepath, err)),
-    };
-
-    let path = Path::new(filepath);
-    let is_stdlib = path.starts_with("std") || path.starts_with("./std") || path.starts_with(".\\std");
-    if !is_stdlib && Path::new("std").is_dir() {
-        let user_names: std::collections::HashSet<String> = ast.items.iter().filter_map(|it| match it {
-            tungsten_syntax::ast::Item::TypeAlias(a) => Some(a.name.clone()),
-            tungsten_syntax::ast::Item::Struct(s) => Some(s.name.clone()),
-            tungsten_syntax::ast::Item::Fn(f) => Some(f.name.clone()),
-            tungsten_syntax::ast::Item::Effect(e) => Some(e.name.clone()),
-        }).collect();
-
-        let std_files = [
-            "std/prelude.tg",
-            "std/refinements.tg",
-            "std/effects.tg",
-            "std/collections.tg",
-            "std/sync.tg",
-            "std/net.tg",
-            "std/slice.tg",
-        ];
-        let mut std_items = Vec::new();
-        for sf in &std_files {
-            if let Ok(content) = fs::read_to_string(sf) {
-                if let Ok(std_ast) = tungsten_syntax::parse(&content) {
-                    for item in std_ast.items {
-                        let name = match &item {
-                            tungsten_syntax::ast::Item::TypeAlias(a) => &a.name,
-                            tungsten_syntax::ast::Item::Struct(s) => &s.name,
-                            tungsten_syntax::ast::Item::Fn(f) => &f.name,
-                            tungsten_syntax::ast::Item::Effect(e) => &e.name,
-                        };
-                        if !user_names.contains(name) {
-                            std_items.push(item);
-                        }
+    if let Some(path_str) = target {
+        let p = Path::new(path_str);
+        if p.is_file() {
+            // Check if it belongs to a project with a Forge.toml
+            if let Some(manifest_path) = find_manifest(p) {
+                let resolver = DependencyResolver::new();
+                let graph = resolver.resolve(&manifest_path).ok();
+                let ast = compile_package_ast(p, graph.as_ref())?;
+                return Ok((ast, path_str.to_string()));
+            } else {
+                let ast = compile_package_ast(p, None)?;
+                return Ok((ast, path_str.to_string()));
+            }
+        } else if p.is_dir() {
+            let pkg = ProjectPackage::discover(p)?;
+            let resolver = DependencyResolver::new();
+            let graph = resolver.resolve(&pkg.manifest_path)?;
+            let lock_path = pkg.manifest_path.parent().unwrap().join("Forge.lock");
+            if lock_path.is_file() {
+                if let Ok(lock) = Lockfile::from_file(&lock_path) {
+                    if let Err(e) = graph.verify_lockfile(&lock) {
+                        eprintln!("[Forge Warning] {}", e);
                     }
                 }
             }
+            let ast = compile_package_ast(&pkg.entry_file, Some(&graph))?;
+            return Ok((ast, pkg.entry_file.display().to_string()));
         }
-        std_items.append(&mut ast.items);
-        ast.items = std_items;
     }
 
-    Ok(ast)
+    // Discover package in current directory
+    let pkg = ProjectPackage::discover(&current_dir)?;
+    let resolver = DependencyResolver::new();
+    let graph = resolver.resolve(&pkg.manifest_path)?;
+    let lock_path = pkg.manifest_path.parent().unwrap().join("Forge.lock");
+    if lock_path.is_file() {
+        if let Ok(lock) = Lockfile::from_file(&lock_path) {
+            if let Err(e) = graph.verify_lockfile(&lock) {
+                eprintln!("[Forge Warning] {}", e);
+            }
+        }
+    }
+    let ast = compile_package_ast(&pkg.entry_file, Some(&graph))?;
+    Ok((ast, pkg.entry_file.display().to_string()))
 }
 
-fn run_check(filepath: &str) {
-    println!("Checking {} ...", filepath);
-    let ast = match load_program(filepath) {
-        Ok(prog) => prog,
+fn run_check(args: &[String]) {
+    let target = args.first().map(|s| s.as_str());
+    println!("Checking package/file...");
+    let (ast, path_desc) = match load_program_auto(target) {
+        Ok(res) => res,
         Err(err) => {
             eprintln!("{}", err);
             process::exit(1);
         }
     };
 
-    // 2. Type Checking & Refinement Solver
     match tungsten_typeck::check(&ast) {
         Ok(_) => {
-            println!("Finished checking: 0 errors. Refinements and algebraic effects verified.");
+            println!("Finished checking '{}': 0 errors. Refinements and algebraic effects verified.", path_desc);
         }
         Err(errs) => {
-            eprintln!("\n[Type & Effect Error] {} error(s) found in {}:", errs.len(), filepath);
+            eprintln!("\n[Type & Effect Error] {} error(s) found in {}:", errs.len(), path_desc);
             for (idx, err) in errs.iter().enumerate() {
                 eprintln!("  {}. [Line {}, Col {}]: {}", idx + 1, err.span.line, err.span.column, err.message);
             }
@@ -180,35 +182,26 @@ fn run_check(filepath: &str) {
 
 fn run_file(args: &[String]) {
     let mut native = false;
-    let mut file = None;
+    let mut target = None;
 
     for arg in args {
         if arg == "--native" || arg == "-n" {
             native = true;
-        } else if file.is_none() {
-            file = Some(arg.clone());
+        } else if target.is_none() {
+            target = Some(arg.as_str());
         }
     }
 
-    let filepath = match file {
-        Some(f) => f,
-        None => {
-            eprintln!("Error: 'forge run' requires a path to a .tg file");
-            process::exit(1);
-        }
-    };
-
-    let ast = match load_program(&filepath) {
-        Ok(prog) => prog,
+    let (ast, path_desc) = match load_program_auto(target) {
+        Ok(res) => res,
         Err(err) => {
             eprintln!("{}", err);
             process::exit(1);
         }
     };
 
-    // 2. Type Checking & Effect Verification
     if let Err(errs) = tungsten_typeck::check(&ast) {
-        eprintln!("\n[Type & Effect Error] {} error(s) found in {}:", errs.len(), filepath);
+        eprintln!("\n[Type & Effect Error] {} error(s) found in {}:", errs.len(), path_desc);
         for (idx, err) in errs.iter().enumerate() {
             eprintln!("  {}. [Line {}, Col {}]: {}", idx + 1, err.span.line, err.span.column, err.message);
         }
@@ -216,7 +209,6 @@ fn run_file(args: &[String]) {
     }
 
     if native {
-        // Native Cranelift JIT Execution
         let mut tir_module = match tungsten_tir::compile(&ast) {
             Ok(m) => m,
             Err(e) => {
@@ -234,7 +226,6 @@ fn run_file(args: &[String]) {
             }
         }
     } else {
-        // VM Execution
         match tungsten_vm::execute(&ast) {
             Ok(_) => {}
             Err(runtime_err) => {
@@ -243,6 +234,270 @@ fn run_file(args: &[String]) {
             }
         }
     }
+}
+
+fn run_build(args: &[String]) {
+    let target = args.first().map(|s| s.as_str());
+    let (ast, path_desc) = match load_program_auto(target) {
+        Ok(res) => res,
+        Err(err) => {
+            eprintln!("{}", err);
+            process::exit(1);
+        }
+    };
+
+    if let Err(errs) = tungsten_typeck::check(&ast) {
+        eprintln!("\n[Type & Effect Error] {} error(s) found in {}:", errs.len(), path_desc);
+        for (idx, err) in errs.iter().enumerate() {
+            eprintln!("  {}. [Line {}, Col {}]: {}", idx + 1, err.span.line, err.span.column, err.message);
+        }
+        process::exit(1);
+    }
+
+    let mut module = match tungsten_tir::compile(&ast) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("\n[TIR Lowering Error]: {}", e);
+            process::exit(1);
+        }
+    };
+    let stats = tungsten_tir::optimize(&mut module);
+
+    println!("Compiling {} with Cranelift backend...", path_desc);
+    println!("  - Optimized: {} constant folds, {} bounds checks eliminated", stats.const_folds, stats.bounds_checks_eliminated);
+
+    match tungsten_codegen::compile_and_run(&module) {
+        Ok(_) => {
+            println!("Finished build: verification run successful.");
+        }
+        Err(e) => {
+            eprintln!("Build verification failed: {}", e);
+            process::exit(1);
+        }
+    }
+}
+
+fn create_new_project(args: &[String]) {
+    let mut name = None;
+    let mut is_lib = false;
+
+    for arg in args {
+        if arg == "--lib" {
+            is_lib = true;
+        } else if name.is_none() {
+            name = Some(arg.clone());
+        }
+    }
+
+    let project_name = match name {
+        Some(n) => n,
+        None => {
+            eprintln!("Error: project name is required");
+            process::exit(1);
+        }
+    };
+
+    let project_path = Path::new(&project_name);
+    if project_path.exists() {
+        eprintln!("Error: Directory '{}' already exists", project_name);
+        process::exit(1);
+    }
+
+    if let Err(e) = fs::create_dir_all(project_path.join("src")) {
+        eprintln!("Failed to create project directory: {}", e);
+        process::exit(1);
+    }
+
+    let forge_toml = format!(
+        r#"[package]
+name = "{}"
+version = "0.1.0"
+edition = "2026"
+
+[dependencies]
+"#,
+        project_name
+    );
+
+    let gitignore = r#"target/
+Forge.lock
+"#;
+
+    let _ = fs::write(project_path.join("Forge.toml"), forge_toml);
+    let _ = fs::write(project_path.join(".gitignore"), gitignore);
+
+    if is_lib {
+        let lib_tg = format!(
+            r#"// Tungsten Library: {}
+
+pub fn add(a: i64, b: i64) -> i64 {{
+    a + b
+}}
+"#,
+            project_name
+        );
+        let _ = fs::write(project_path.join("src").join("lib.tg"), lib_tg);
+        println!("Created library package `{}` (src/lib.tg)", project_name);
+    } else {
+        let main_tg = r#"// Tungsten Binary Entry Point
+type Percentage = u8(0..=100);
+
+fn main() {
+    let health: Percentage = 100 as Percentage;
+    println!("Welcome to Tungsten! Initial health: {}%", health);
+}
+"#;
+        let _ = fs::write(project_path.join("src").join("main.tg"), main_tg);
+        println!("Created binary package `{}` (src/main.tg)", project_name);
+    }
+}
+
+fn run_add(args: &[String]) {
+    let dep_name = &args[0];
+    let mut path_opt = None;
+    let mut version_opt = None;
+
+    let mut i = 1;
+    while i < args.len() {
+        if args[i] == "--path" && i + 1 < args.len() {
+            path_opt = Some(args[i + 1].clone());
+            i += 2;
+        } else if args[i] == "--version" && i + 1 < args.len() {
+            version_opt = Some(args[i + 1].clone());
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+
+    let current_dir = env::current_dir().unwrap();
+    let manifest_path = match find_manifest(&current_dir) {
+        Some(p) => p,
+        None => {
+            eprintln!("Error: Could not find Forge.toml in current directory or any parent directory.");
+            process::exit(1);
+        }
+    };
+
+    let mut manifest = match Manifest::from_file(&manifest_path) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("Error reading Forge.toml: {}", e);
+            process::exit(1);
+        }
+    };
+
+    let spec = if path_opt.is_some() || version_opt.is_some() {
+        DependencySpec::Detailed(DetailedDependency {
+            version: version_opt,
+            path: path_opt,
+            git: None,
+            branch: None,
+        })
+    } else {
+        DependencySpec::Version("0.1.0".to_string())
+    };
+
+    manifest.add_dependency(dep_name.clone(), spec);
+    if let Err(e) = manifest.write_file(&manifest_path) {
+        eprintln!("Error writing Forge.toml: {}", e);
+        process::exit(1);
+    }
+    println!("Added dependency `{}` to Forge.toml", dep_name);
+
+    // Automatically resolve and update Forge.lock
+    let resolver = DependencyResolver::new();
+    match resolver.resolve(&manifest_path) {
+        Ok(graph) => {
+            let lockfile = graph.generate_lockfile();
+            let lockfile_path = manifest_path.parent().unwrap().join("Forge.lock");
+            if let Err(e) = lockfile.write_file(&lockfile_path) {
+                eprintln!("Warning: Failed to write Forge.lock: {}", e);
+            } else {
+                println!("Updated Forge.lock");
+            }
+        }
+        Err(e) => {
+            eprintln!("Resolution warning: {}", e);
+        }
+    }
+}
+
+fn run_lock() {
+    let current_dir = env::current_dir().unwrap();
+    let manifest_path = match find_manifest(&current_dir) {
+        Some(p) => p,
+        None => {
+            eprintln!("Error: Could not find Forge.toml in current directory or any parent directory.");
+            process::exit(1);
+        }
+    };
+
+    let resolver = DependencyResolver::new();
+    match resolver.resolve(&manifest_path) {
+        Ok(graph) => {
+            let lockfile = graph.generate_lockfile();
+            let lockfile_path = manifest_path.parent().unwrap().join("Forge.lock");
+            if let Err(e) = lockfile.write_file(&lockfile_path) {
+                eprintln!("Error writing Forge.lock: {}", e);
+                process::exit(1);
+            }
+            println!("Successfully generated Forge.lock ({} package(s) locked with SHA-256 checksums).", lockfile.packages.len());
+        }
+        Err(e) => {
+            eprintln!("Resolution error: {}", e);
+            process::exit(1);
+        }
+    }
+}
+
+fn run_tir(args: &[String]) {
+    let mut optimize = false;
+    let mut target = None;
+
+    for arg in args {
+        if arg == "--opt" || arg == "-O" {
+            optimize = true;
+        } else if target.is_none() {
+            target = Some(arg.as_str());
+        }
+    }
+
+    let (ast, path_desc) = match load_program_auto(target) {
+        Ok(res) => res,
+        Err(err) => {
+            eprintln!("{}", err);
+            process::exit(1);
+        }
+    };
+
+    if let Err(errs) = tungsten_typeck::check(&ast) {
+        eprintln!("\n[Type & Effect Error] {} error(s) found in {}:", errs.len(), path_desc);
+        for (idx, err) in errs.iter().enumerate() {
+            eprintln!("  {}. [Line {}, Col {}]: {}", idx + 1, err.span.line, err.span.column, err.message);
+        }
+        process::exit(1);
+    }
+
+    let mut module = match tungsten_tir::compile(&ast) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("\n[TIR Lowering Error]: {}", e);
+            process::exit(1);
+        }
+    };
+
+    if optimize {
+        let stats = tungsten_tir::optimize(&mut module);
+        println!(";; Optimization Passes Applied for {}:", path_desc);
+        println!(";;   - Constant folds: {}", stats.const_folds);
+        println!(";;   - Redundant bounds checks eliminated: {}", stats.bounds_checks_eliminated);
+        println!(";;   - Dead instructions/blocks pruned: {}", stats.dead_code_pruned);
+        println!(";;   - Iterations to fixpoint: {}", stats.iterations);
+        println!();
+    }
+
+    print!("{}", tungsten_tir::print(&module));
 }
 
 fn run_fmt(args: &[String]) {
@@ -309,156 +564,5 @@ fn run_lsp() {
     if let Err(e) = server.run_stdio() {
         eprintln!("LSP server error: {}", e);
         process::exit(1);
-    }
-}
-
-fn create_new_project(name: &str) {
-    let project_path = Path::new(name);
-    if project_path.exists() {
-        eprintln!("Error: Directory '{}' already exists", name);
-        process::exit(1);
-    }
-
-    if let Err(e) = fs::create_dir_all(project_path.join("src")) {
-        eprintln!("Failed to create project directory: {}", e);
-        process::exit(1);
-    }
-
-    let forge_toml = format!(
-        r#"[package]
-name = "{}"
-version = "0.1.0"
-"#,
-        name
-    );
-    let main_tg = r#"// Tungsten Main Entry Point
-type Percentage = u8(0..=100);
-
-fn main() {
-    let health: Percentage = 100 as Percentage;
-    println!("Welcome to Tungsten! Initial health: {}%", health);
-}
-"#;
-
-    let _ = fs::write(project_path.join("Forge.toml"), forge_toml);
-    let _ = fs::write(project_path.join("src").join("main.tg"), main_tg);
-
-    println!("Created new Tungsten project `{}`", name);
-}
-
-fn run_tir(args: &[String]) {
-    let mut optimize = false;
-    let mut file = None;
-
-    for arg in args {
-        if arg == "--opt" || arg == "-O" {
-            optimize = true;
-        } else if file.is_none() {
-            file = Some(arg.clone());
-        }
-    }
-
-    let filepath = match file {
-        Some(f) => f,
-        None => {
-            eprintln!("Error: 'forge tir' requires a path to a .tg file");
-            process::exit(1);
-        }
-    };
-
-    let ast = match load_program(&filepath) {
-        Ok(prog) => prog,
-        Err(err) => {
-            eprintln!("{}", err);
-            process::exit(1);
-        }
-    };
-
-    // 2. Type Checking
-    if let Err(errs) = tungsten_typeck::check(&ast) {
-        eprintln!("\n[Type & Effect Error] {} error(s) found in {}:", errs.len(), filepath);
-        for (idx, err) in errs.iter().enumerate() {
-            eprintln!("  {}. [Line {}, Col {}]: {}", idx + 1, err.span.line, err.span.column, err.message);
-        }
-        process::exit(1);
-    }
-
-    // 3. TIR Lowering
-    let mut module = match tungsten_tir::compile(&ast) {
-        Ok(m) => m,
-        Err(e) => {
-            eprintln!("\n[TIR Lowering Error]: {}", e);
-            process::exit(1);
-        }
-    };
-
-    if optimize {
-        let stats = tungsten_tir::optimize(&mut module);
-        println!(";; Optimization Passes Applied:");
-        println!(";;   - Constant folds: {}", stats.const_folds);
-        println!(";;   - Redundant bounds checks eliminated: {}", stats.bounds_checks_eliminated);
-        println!(";;   - Dead instructions/blocks pruned: {}", stats.dead_code_pruned);
-        println!(";;   - Iterations to fixpoint: {}", stats.iterations);
-        println!();
-    }
-
-    // 4. Print TIR
-    print!("{}", tungsten_tir::print(&module));
-}
-
-fn run_build(args: &[String]) {
-    let mut file = None;
-    for arg in args {
-        if file.is_none() {
-            file = Some(arg.clone());
-        }
-    }
-
-    let filepath = match file {
-        Some(f) => f,
-        None => {
-            eprintln!("Error: 'forge build' requires a path to a .tg file");
-            process::exit(1);
-        }
-    };
-
-    let ast = match load_program(&filepath) {
-        Ok(prog) => prog,
-        Err(err) => {
-            eprintln!("{}", err);
-            process::exit(1);
-        }
-    };
-
-    // 2. Type Checking
-    if let Err(errs) = tungsten_typeck::check(&ast) {
-        eprintln!("\n[Type & Effect Error] {} error(s) found in {}:", errs.len(), filepath);
-        for (idx, err) in errs.iter().enumerate() {
-            eprintln!("  {}. [Line {}, Col {}]: {}", idx + 1, err.span.line, err.span.column, err.message);
-        }
-        process::exit(1);
-    }
-
-    // 3. TIR Lowering & Optimization
-    let mut module = match tungsten_tir::compile(&ast) {
-        Ok(m) => m,
-        Err(e) => {
-            eprintln!("\n[TIR Lowering Error]: {}", e);
-            process::exit(1);
-        }
-    };
-    let stats = tungsten_tir::optimize(&mut module);
-
-    println!("Compiling {} with Cranelift JIT/AOT backend...", filepath);
-    println!("  - Optimized: {} constant folds, {} bounds checks eliminated", stats.const_folds, stats.bounds_checks_eliminated);
-
-    match tungsten_codegen::compile_and_run(&module) {
-        Ok(_) => {
-            println!("Finished build: verification run successful.");
-        }
-        Err(e) => {
-            eprintln!("Build verification failed: {}", e);
-            process::exit(1);
-        }
     }
 }

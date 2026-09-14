@@ -1,0 +1,24 @@
+// math_pkg: Root Library Entry Point (src/lib.tg)
+
+pub struct Vector2D {
+    x: i64,
+    y: i64,
+}
+
+// Internal private helper (not visible outside math_pkg)
+fn clamp_component(val: i64) -> i64 {
+    val
+}
+
+// Public vector constructor
+pub fn make_vector(x: i64, y: i64) -> Vector2D {
+    Vector2D {
+        x: clamp_component(x),
+        y: clamp_component(y),
+    }
+}
+
+// Public vector dot product
+pub fn vector_dot(a: Vector2D, b: Vector2D) -> i64 {
+    (a.x * b.x) + (a.y * b.y)
+}

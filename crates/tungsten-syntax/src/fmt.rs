@@ -42,18 +42,29 @@ impl Formatter {
 
     fn format_item(&mut self, item: &Item) {
         match item {
+            Item::Import(imp) => {
+                self.indent();
+                let path_str = imp.path.join("::");
+                if let Some(alias) = &imp.alias {
+                    self.write(&format!("import {} as {};\n", path_str, alias));
+                } else {
+                    self.write(&format!("import {};\n", path_str));
+                }
+            }
             Item::TypeAlias(alias) => {
                 self.indent();
-                self.write(&format!("type {} = {};\n", alias.name, self.format_type(&alias.target)));
+                let pub_str = if alias.is_pub { "pub " } else { "" };
+                self.write(&format!("{}type {} = {};\n", pub_str, alias.name, self.format_type(&alias.target)));
             }
             Item::Struct(st) => {
                 self.indent();
+                let pub_str = if st.is_pub { "pub " } else { "" };
                 let generics = if st.type_params.is_empty() {
                     String::new()
                 } else {
                     format!("<{}>", st.type_params.join(", "))
                 };
-                self.write(&format!("struct {}{} {{\n", st.name, generics));
+                self.write(&format!("{}struct {}{} {{\n", pub_str, st.name, generics));
                 self.indent_level += 1;
                 for field in &st.fields {
                     self.indent();
@@ -65,12 +76,13 @@ impl Formatter {
             }
             Item::Fn(f) => {
                 self.indent();
+                let pub_str = if f.is_pub { "pub " } else { "" };
                 let generics = if f.type_params.is_empty() {
                     String::new()
                 } else {
                     format!("<{}>", f.type_params.join(", "))
                 };
-                self.write(&format!("fn {}{}(", f.name, generics));
+                self.write(&format!("{}fn {}{}(", pub_str, f.name, generics));
                 for (i, p) in f.params.iter().enumerate() {
                     if i > 0 {
                         self.write(", ");
@@ -93,7 +105,8 @@ impl Formatter {
             }
             Item::Effect(eff) => {
                 self.indent();
-                self.write(&format!("effect {} {{\n", eff.name));
+                let pub_str = if eff.is_pub { "pub " } else { "" };
+                self.write(&format!("{}effect {} {{\n", pub_str, eff.name));
                 self.indent_level += 1;
                 for op in &eff.operations {
                     self.indent();

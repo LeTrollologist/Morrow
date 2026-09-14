@@ -1,0 +1,22 @@
+// math_pkg: Matrix Submodule (src/matrix.tg)
+// Strict 1:1 mapping: import math_pkg::matrix;
+
+pub struct Matrix2x2 {
+    m00: i64,
+    m01: i64,
+    m10: i64,
+    m11: i64,
+}
+
+pub fn identity() -> Matrix2x2 {
+    Matrix2x2 {
+        m00: 1,
+        m01: 0,
+        m10: 0,
+        m11: 1,
+    }
+}
+
+pub fn determinant(m: Matrix2x2) -> i64 {
+    (m.m00 * m.m11) - (m.m01 * m.m10)
+}

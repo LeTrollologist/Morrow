@@ -859,6 +859,26 @@ impl<'a> FnChecker<'a> {
                             }
                         }
                     } else {
+                        let full_path = path.join("::");
+                        let func_sig = self.parent.functions.get(&full_path)
+                            .or_else(|| self.parent.functions.get(op))
+                            .or_else(|| {
+                                self.parent.functions.iter().find_map(|(k, v)| {
+                                    if k.ends_with(&format!("_{}", op)) {
+                                        Some(v)
+                                    } else {
+                                        None
+                                    }
+                                })
+                            });
+
+                        if let Some(sig) = func_sig {
+                            for eff in &sig.yields_effects {
+                                self.check_effect_permission(eff, expr.span);
+                            }
+                            return (sig.return_type.clone(), None);
+                        }
+
                         // External driver or library call (e.g. PostgresPool::execute)
                         return (Type::Unit, None);
                     }

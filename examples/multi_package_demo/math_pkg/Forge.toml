@@ -1,0 +1,9 @@
+[package]
+name = "math_pkg"
+version = "1.0.0"
+edition = "2026"
+authors = ["Tungsten Devs"]
+license = "MIT"
+description = "Mathematical operations and linear algebra with refinements"
+
+[dependencies]

@@ -7,6 +7,7 @@ pub struct Program {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Item {
+    Import(ImportDecl),
     TypeAlias(TypeAlias),
     Struct(StructDecl),
     Fn(FnDecl),
@@ -14,8 +15,16 @@ pub enum Item {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct ImportDecl {
+    pub path: Vec<String>,
+    pub alias: Option<String>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct TypeAlias {
     pub name: String,
+    pub is_pub: bool,
     pub target: TypeExpr,
     pub span: Span,
 }
@@ -23,6 +32,7 @@ pub struct TypeAlias {
 #[derive(Debug, Clone, PartialEq)]
 pub struct StructDecl {
     pub name: String,
+    pub is_pub: bool,
     pub type_params: Vec<String>,
     pub fields: Vec<FieldDef>,
     pub span: Span,
@@ -38,6 +48,7 @@ pub struct FieldDef {
 #[derive(Debug, Clone, PartialEq)]
 pub struct EffectDecl {
     pub name: String,
+    pub is_pub: bool,
     pub operations: Vec<EffectOpDef>,
     pub span: Span,
 }
@@ -53,6 +64,7 @@ pub struct EffectOpDef {
 #[derive(Debug, Clone, PartialEq)]
 pub struct FnDecl {
     pub name: String,
+    pub is_pub: bool,
     pub type_params: Vec<String>,
     pub effect_params: Vec<String>,
     pub params: Vec<Param>,

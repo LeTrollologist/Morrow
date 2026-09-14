@@ -472,9 +472,25 @@ impl Evaluator {
                             return EvalSignal::Normal(Value::Int(len));
                         }
                         if op == "close" {
-                            return EvalSignal::Normal(Value::Unit);
                         }
                     }
+                }
+
+                let full_path = path.join("::");
+                let func_candidate = self.functions.get(&full_path)
+                    .or_else(|| self.functions.get(path.last().unwrap()))
+                    .or_else(|| {
+                        self.functions.iter().find_map(|(k, v)| {
+                            if k.ends_with(&format!("_{}", path.last().unwrap())) {
+                                Some(v)
+                            } else {
+                                None
+                            }
+                        })
+                    });
+
+                if let Some(fdecl) = func_candidate.cloned() {
+                    return self.eval_fn(&fdecl, eval_args);
                 }
 
                 EvalSignal::Error(format!("Path call not found: {:?}", path))

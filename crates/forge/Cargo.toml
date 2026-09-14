@@ -12,3 +12,10 @@ tungsten-vm = { path = "../tungsten-vm" }
 tungsten-lsp = { path = "../tungsten-lsp" }
 tungsten-tir = { path = "../tungsten-tir" }
 tungsten-codegen = { path = "../tungsten-codegen" }
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+sha2 = "0.10"
+semver = "1.0"
+
+[dev-dependencies]
+tempfile = "3.8"

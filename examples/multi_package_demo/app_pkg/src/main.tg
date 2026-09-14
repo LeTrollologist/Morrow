@@ -1,0 +1,16 @@
+// app_pkg: Application Entry Point (src/main.tg)
+// Demonstrates dependency imports, 1:1 submodule imports, and public APIs
+
+import math_pkg;
+import math_pkg::matrix;
+
+fn main() {
+    let v1 = math_pkg::make_vector(3, 4);
+    let v2 = math_pkg::make_vector(5, 6);
+    let dot = math_pkg::vector_dot(v1, v2);
+    println!("Vector dot product: {}", dot);
+
+    let id = matrix::identity();
+    let det = matrix::determinant(id);
+    println!("Matrix determinant: {}", det);
+}

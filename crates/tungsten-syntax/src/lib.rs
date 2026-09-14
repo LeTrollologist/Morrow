@@ -106,5 +106,35 @@ mod tests {
         let formatted2 = format_source(&formatted1).expect("format region idempotent ok");
         assert_eq!(formatted1, formatted2);
     }
+
+    #[test]
+    fn test_parse_and_format_imports() {
+        let code = r#"
+        import math;
+        import std::collections;
+        import utils::logger as log;
+
+        fn main() {
+            println!("Imports parsed successfully");
+        }
+        "#;
+        let program = parse(code).expect("parse imports ok");
+        assert_eq!(program.items.len(), 4);
+        if let ast::Item::Import(ref imp) = program.items[0] {
+            assert_eq!(imp.path, vec!["math".to_string()]);
+            assert_eq!(imp.alias, None);
+        } else {
+            panic!("Expected Import item");
+        }
+        if let ast::Item::Import(ref imp) = program.items[2] {
+            assert_eq!(imp.path, vec!["utils".to_string(), "logger".to_string()]);
+            assert_eq!(imp.alias, Some("log".to_string()));
+        } else {
+            panic!("Expected Import item with alias");
+        }
+        let formatted1 = format_source(code).expect("format imports ok");
+        let formatted2 = format_source(&formatted1).expect("format imports idempotent ok");
+        assert_eq!(formatted1, formatted2);
+    }
 }
 

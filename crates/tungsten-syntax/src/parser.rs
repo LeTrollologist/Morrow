@@ -80,11 +80,18 @@ impl Parser {
     }
 
     fn parse_item(&mut self) -> Result<Item, String> {
+        let is_pub = self.match_token(&TokenKind::Pub);
         match self.peek().kind {
-            TokenKind::Type => self.parse_type_alias().map(Item::TypeAlias),
-            TokenKind::Struct => self.parse_struct_decl().map(Item::Struct),
-            TokenKind::Fn => self.parse_fn_decl().map(Item::Fn),
-            TokenKind::Effect => self.parse_effect_decl().map(Item::Effect),
+            TokenKind::Import => {
+                if is_pub {
+                    return Err("`pub import` is not currently supported".into());
+                }
+                self.parse_import_decl().map(Item::Import)
+            }
+            TokenKind::Type => self.parse_type_alias(is_pub).map(Item::TypeAlias),
+            TokenKind::Struct => self.parse_struct_decl(is_pub).map(Item::Struct),
+            TokenKind::Fn => self.parse_fn_decl(is_pub).map(Item::Fn),
+            TokenKind::Effect => self.parse_effect_decl(is_pub).map(Item::Effect),
             _ => Err(format!(
                 "Unexpected token {:?} when expecting top-level item at line {}, col {}",
                 self.peek().kind,
@@ -94,7 +101,33 @@ impl Parser {
         }
     }
 
-    fn parse_type_alias(&mut self) -> Result<TypeAlias, String> {
+    fn parse_import_decl(&mut self) -> Result<ImportDecl, String> {
+        let start_tok = self.expect(TokenKind::Import)?;
+        let mut path = Vec::new();
+        let (first_seg, _) = self.expect_ident()?;
+        path.push(first_seg);
+
+        while self.match_token(&TokenKind::ColonColon) {
+            let (next_seg, _) = self.expect_ident()?;
+            path.push(next_seg);
+        }
+
+        let mut alias = None;
+        if self.match_token(&TokenKind::As) {
+            let (alias_name, _) = self.expect_ident()?;
+            alias = Some(alias_name);
+        }
+
+        let end_tok = self.expect(TokenKind::Semicolon)?;
+        let span = Span::new(start_tok.span.start, end_tok.span.end, start_tok.span.line, start_tok.span.column);
+        Ok(ImportDecl {
+            path,
+            alias,
+            span,
+        })
+    }
+
+    fn parse_type_alias(&mut self, is_pub: bool) -> Result<TypeAlias, String> {
         let start_tok = self.expect(TokenKind::Type)?;
         let (name, _) = self.expect_ident()?;
         self.expect(TokenKind::Eq)?;
@@ -102,12 +135,13 @@ impl Parser {
         let end_tok = self.expect(TokenKind::Semicolon)?;
         Ok(TypeAlias {
             name,
+            is_pub,
             target,
             span: Span::new(start_tok.span.start, end_tok.span.end, start_tok.span.line, start_tok.span.column),
         })
     }
 
-    fn parse_struct_decl(&mut self) -> Result<StructDecl, String> {
+    fn parse_struct_decl(&mut self, is_pub: bool) -> Result<StructDecl, String> {
         let start_tok = self.expect(TokenKind::Struct)?;
         let (name, _) = self.expect_ident()?;
 
@@ -140,13 +174,14 @@ impl Parser {
         let end_tok = self.expect(TokenKind::RBrace)?;
         Ok(StructDecl {
             name,
+            is_pub,
             type_params,
             fields,
             span: Span::new(start_tok.span.start, end_tok.span.end, start_tok.span.line, start_tok.span.column),
         })
     }
 
-    fn parse_effect_decl(&mut self) -> Result<EffectDecl, String> {
+    fn parse_effect_decl(&mut self, is_pub: bool) -> Result<EffectDecl, String> {
         let start_tok = self.expect(TokenKind::Effect)?;
         let (name, _) = self.expect_ident()?;
         self.expect(TokenKind::LBrace)?;
@@ -179,12 +214,13 @@ impl Parser {
         let end_tok = self.expect(TokenKind::RBrace)?;
         Ok(EffectDecl {
             name,
+            is_pub,
             operations,
             span: Span::new(start_tok.span.start, end_tok.span.end, start_tok.span.line, start_tok.span.column),
         })
     }
 
-    fn parse_fn_decl(&mut self) -> Result<FnDecl, String> {
+    fn parse_fn_decl(&mut self, is_pub: bool) -> Result<FnDecl, String> {
         let start_tok = self.expect(TokenKind::Fn)?;
         let (name, _) = self.expect_ident()?;
 
@@ -260,6 +296,7 @@ impl Parser {
 
         Ok(FnDecl {
             name,
+            is_pub,
             type_params,
             effect_params,
             params,
