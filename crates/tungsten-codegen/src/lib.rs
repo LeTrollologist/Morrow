@@ -1,15 +1,28 @@
 pub mod abi;
 pub mod compiler;
 pub mod jit;
+pub mod llvm_driver;
+pub mod llvm_text;
 pub mod runtime;
 
+use std::path::Path;
 use tungsten_tir::ir::TirModule;
 
+pub use llvm_driver::{compile_llvm_aot, run_llvm_aot, LlvmToolchain};
+pub use llvm_text::emit_llvm_ir;
 pub use runtime::set_silent_mode;
 
 pub fn compile_and_run(module: &TirModule) -> Result<i64, String> {
     let mut engine = jit::JitEngine::new()?;
     engine.compile_and_run(module)
+}
+
+pub fn compile_and_run_llvm(module: &TirModule) -> Result<(i32, String), String> {
+    llvm_driver::run_llvm_aot(module)
+}
+
+pub fn compile_to_native_binary(module: &TirModule, out_path: &Path, opt_level: &str) -> Result<(), String> {
+    llvm_driver::compile_llvm_aot(module, out_path, opt_level)
 }
 
 pub fn compile_and_run_with_traces(module: &TirModule) -> Result<(i64, Vec<String>), String> {
@@ -206,4 +219,117 @@ mod tests {
             tungsten_region_exit(arena);
         }
     }
+
+    #[test]
+    fn test_llvm_text_emission() {
+        let code = r#"
+        fn add(a: i64, b: i64) -> i64 {
+            a + b
+        }
+        fn main() {
+            let res = add(10, 20);
+            println!("Result: {}", res);
+        }
+        "#;
+        let ast = parse(code).unwrap();
+        let module = compile(&ast).unwrap();
+        let ir = emit_llvm_ir(&module);
+        assert!(ir.contains("define i64 @add("));
+        assert!(ir.contains("define i32 @main("));
+        assert!(ir.contains("target triple = \"x86_64-pc-windows-gnu\""));
+    }
+
+    #[test]
+    fn test_llvm_aot_simple_arithmetic() {
+        let code = r#"
+        fn main() {
+            let x = 15;
+            let y = 25;
+            println!("Sum is {}", x + y);
+        }
+        "#;
+        let ast = parse(code).unwrap();
+        let module = compile(&ast).unwrap();
+        let (code, stdout) = compile_and_run_llvm(&module).expect("LLVM AOT execution failed");
+        assert_eq!(code, 0);
+        assert!(stdout.contains("Sum is 40"), "Output was: {}", stdout);
+    }
+
+    #[test]
+    fn test_llvm_aot_function_calls() {
+        let code = r#"
+        fn square(n: i64) -> i64 {
+            n * n
+        }
+
+        fn main() {
+            let res = square(9);
+            println!("Square is {}", res);
+        }
+        "#;
+        let ast = parse(code).unwrap();
+        let module = compile(&ast).unwrap();
+        let (code, stdout) = compile_and_run_llvm(&module).expect("LLVM AOT execution failed");
+        assert_eq!(code, 0);
+        assert!(stdout.contains("Square is 81"), "Output was: {}", stdout);
+    }
+
+    #[test]
+    fn test_llvm_aot_region_bump_allocation() {
+        let code = r#"
+        struct Point {
+            x: i64,
+            y: i64,
+        }
+
+        fn main() {
+            let total = region frame {
+                let p = Point { x: 10, y: 20 };
+                p.x + p.y
+            };
+            println!("Total from region is {}", total);
+        }
+        "#;
+        let ast = parse(code).unwrap();
+        let module = compile(&ast).unwrap();
+        let (code, stdout) = compile_and_run_llvm(&module).expect("LLVM AOT execution failed");
+        assert_eq!(code, 0);
+        assert!(stdout.contains("Total from region is 30"), "Output was: {}", stdout);
+    }
+
+    #[test]
+    fn test_llvm_aot_refinement_in_bounds() {
+        let code = r#"
+        type Percentage = u8(0..=100);
+
+        fn main() {
+            let p: Percentage = 80 as Percentage;
+            println!("Percentage is {}", p);
+        }
+        "#;
+        let ast = parse(code).unwrap();
+        let module = compile(&ast).unwrap();
+        let (code, stdout) = compile_and_run_llvm(&module).expect("LLVM AOT execution failed");
+        assert_eq!(code, 0);
+        assert!(stdout.contains("Percentage is 80"), "Output was: {}", stdout);
+    }
+
+    #[test]
+    fn test_llvm_aot_refinement_panic() {
+        let code = r#"
+        type Percentage = u8(0..=100);
+
+        fn main() {
+            let p: Percentage = 150 as Percentage;
+            println!("Should not print");
+        }
+        "#;
+        let ast = parse(code).unwrap();
+        let module = compile(&ast).unwrap();
+        let (code, stdout) = compile_and_run_llvm(&module).expect("LLVM AOT execution failed");
+        assert_eq!(code, 101);
+        assert!(stdout.contains("[Tungsten Refinement Panic]"), "Output was: {}", stdout);
+    }
 }
+
+

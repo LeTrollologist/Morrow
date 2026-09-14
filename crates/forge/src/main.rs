@@ -91,17 +91,17 @@ USAGE:
     forge <SUBCOMMAND> [OPTIONS]
 
 SUBCOMMANDS:
-    check [file.tg]                 Typecheck project or file, verify refinement bounds & effects
-    run [--native] [file.tg]        Compile and execute project or file (VM or native Cranelift JIT)
-    build [file.tg]                 Compile a Tungsten package to native machine code
-    new <project_name> [--lib]      Create a new Tungsten binary or library package
-    add <dep> [--path P] [--ver V]  Add a dependency to Forge.toml and update Forge.lock
-    lock                            Resolve dependencies and update Forge.lock
-    fmt [--check] <file.tg>         Format Tungsten source code according to canonical style
-    tir [--opt] <file.tg>           Compile and print Tungsten Intermediate Representation (TIR)
-    lsp                             Start the Tungsten Language Server (JSON-RPC 2.0 over stdio)
-    version                         Display version information
-    help                            Display this help message
+    check [file.tg]                       Typecheck project or file, verify refinement bounds & effects
+    run [--native|--release] [file.tg]   Compile and execute project or file (VM, Cranelift JIT, or LLVM AOT)
+    build [--release] [file.tg]          Compile a Tungsten package to native machine code (Cranelift or LLVM O3)
+    new <project_name> [--lib]            Create a new Tungsten binary or library package
+    add <dep> [--path P] [--ver V]        Add a dependency to Forge.toml and update Forge.lock
+    lock                                  Resolve dependencies and update Forge.lock
+    fmt [--check] <file.tg>               Format Tungsten source code according to canonical style
+    tir [--opt] <file.tg>                 Compile and print Tungsten Intermediate Representation (TIR)
+    lsp                                   Start the Tungsten Language Server (JSON-RPC 2.0 over stdio)
+    version                               Display version information
+    help                                  Display this help message
 "#
     );
 }
@@ -182,10 +182,13 @@ fn run_check(args: &[String]) {
 
 fn run_file(args: &[String]) {
     let mut native = false;
+    let mut release = false;
     let mut target = None;
 
     for arg in args {
-        if arg == "--native" || arg == "-n" {
+        if arg == "--release" || arg == "-r" {
+            release = true;
+        } else if arg == "--native" || arg == "-n" {
             native = true;
         } else if target.is_none() {
             target = Some(arg.as_str());
@@ -208,7 +211,29 @@ fn run_file(args: &[String]) {
         process::exit(1);
     }
 
-    if native {
+    if release {
+        let mut tir_module = match tungsten_tir::compile(&ast) {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("\n[TIR Lowering Error]: {}", e);
+                process::exit(1);
+            }
+        };
+        tungsten_tir::optimize(&mut tir_module);
+
+        match tungsten_codegen::compile_and_run_llvm(&tir_module) {
+            Ok((code, stdout)) => {
+                print!("{}", stdout);
+                if code != 0 {
+                    process::exit(code);
+                }
+            }
+            Err(err) => {
+                eprintln!("\n[LLVM Execution Error]: {}", err);
+                process::exit(1);
+            }
+        }
+    } else if native {
         let mut tir_module = match tungsten_tir::compile(&ast) {
             Ok(m) => m,
             Err(e) => {
@@ -237,7 +262,17 @@ fn run_file(args: &[String]) {
 }
 
 fn run_build(args: &[String]) {
-    let target = args.first().map(|s| s.as_str());
+    let mut release = false;
+    let mut target = None;
+
+    for arg in args {
+        if arg == "--release" || arg == "-r" {
+            release = true;
+        } else if target.is_none() {
+            target = Some(arg.as_str());
+        }
+    }
+
     let (ast, path_desc) = match load_program_auto(target) {
         Ok(res) => res,
         Err(err) => {
@@ -263,16 +298,39 @@ fn run_build(args: &[String]) {
     };
     let stats = tungsten_tir::optimize(&mut module);
 
-    println!("Compiling {} with Cranelift backend...", path_desc);
-    println!("  - Optimized: {} constant folds, {} bounds checks eliminated", stats.const_folds, stats.bounds_checks_eliminated);
+    if release {
+        let out_dir = Path::new("target").join("release");
+        let _ = fs::create_dir_all(&out_dir);
+        let bin_name = Path::new(&path_desc)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("app");
+        let out_exe = out_dir.join(format!("{}.exe", bin_name));
 
-    match tungsten_codegen::compile_and_run(&module) {
-        Ok(_) => {
-            println!("Finished build: verification run successful.");
+        println!("Compiling {} with LLVM backend (--release, -O3, SIMD vectorization, LTO)...", path_desc);
+        println!("  - TIR Optimized: {} constant folds, {} bounds checks eliminated", stats.const_folds, stats.bounds_checks_eliminated);
+
+        match tungsten_codegen::compile_to_native_binary(&module, &out_exe, "O3") {
+            Ok(_) => {
+                println!("Finished release [optimized] target(s) -> {}", out_exe.display());
+            }
+            Err(e) => {
+                eprintln!("Release build failed: {}", e);
+                process::exit(1);
+            }
         }
-        Err(e) => {
-            eprintln!("Build verification failed: {}", e);
-            process::exit(1);
+    } else {
+        println!("Compiling {} with Cranelift backend...", path_desc);
+        println!("  - Optimized: {} constant folds, {} bounds checks eliminated", stats.const_folds, stats.bounds_checks_eliminated);
+
+        match tungsten_codegen::compile_and_run(&module) {
+            Ok(_) => {
+                println!("Finished build: verification run successful.");
+            }
+            Err(e) => {
+                eprintln!("Build verification failed: {}", e);
+                process::exit(1);
+            }
         }
     }
 }
