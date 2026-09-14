@@ -107,6 +107,10 @@ fn collect_used_vars_in_inst(inst: &Instruction, used: &mut HashSet<Var>) {
             used.insert(base.clone());
             collect_used_vars_in_operand(val, used);
         }
+        Instruction::RegionEnter { .. } => {}
+        Instruction::RegionExit { arena, .. } => {
+            collect_used_vars_in_operand(arena, used);
+        }
     }
 }
 
@@ -124,7 +128,10 @@ fn collect_used_vars_in_rvalue(rv: &RValue, used: &mut HashSet<Var>) {
                 collect_used_vars_in_operand(a, used);
             }
         }
-        RValue::StructInit { fields, .. } => {
+        RValue::StructInit { fields, arena, .. } => {
+            if let Some(a) = arena {
+                collect_used_vars_in_operand(a, used);
+            }
             for (_, op) in fields {
                 collect_used_vars_in_operand(op, used);
             }

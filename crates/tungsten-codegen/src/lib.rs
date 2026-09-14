@@ -64,4 +64,26 @@ mod tests {
         let res = compile_and_run(&module);
         assert!(res.is_ok());
     }
+
+    #[test]
+    fn test_jit_region_bump_allocation() {
+        let code = r#"
+        struct Point {
+            x: i64,
+            y: i64,
+        }
+
+        fn main() {
+            let total = region frame {
+                let p = Point { x: 10, y: 20 };
+                p.x + p.y
+            };
+            println!("Total from region is {}", total);
+        }
+        "#;
+        let ast = parse(code).unwrap();
+        let module = compile(&ast).unwrap();
+        let res = compile_and_run(&module);
+        assert!(res.is_ok());
+    }
 }

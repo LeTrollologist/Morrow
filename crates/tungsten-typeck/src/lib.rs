@@ -130,4 +130,75 @@ mod tests {
         let errs = res.unwrap_err();
         assert!(errs.iter().any(|e| e.message.contains("Relational refinement check failed")));
     }
+
+    #[test]
+    fn test_valid_region_allocation() {
+        let code = r#"
+        struct Point {
+            x: i64,
+            y: i64,
+        }
+
+        fn compute() -> i64 {
+            let res = region r {
+                let p = Point { x: 10, y: 20 };
+                let ref_p = &p;
+                ref_p.x + ref_p.y
+            };
+            res
+        }
+        "#;
+
+        let ast = parse(code).expect("syntax parse ok");
+        let res = check(&ast);
+        assert!(res.is_ok(), "Valid region allocation should succeed: {:?}", res.err());
+    }
+
+    #[test]
+    fn test_region_escape_return_rejection() {
+        let code = r#"
+        struct Point {
+            x: i64,
+            y: i64,
+        }
+
+        fn escape_attempt() -> &Point {
+            let p = Point { x: 10, y: 20 };
+            &p
+        }
+        "#;
+
+        let ast = parse(code).expect("syntax parse ok");
+        let res = check(&ast);
+        assert!(res.is_err(), "Escaping reference from function should be rejected");
+        let errs = res.unwrap_err();
+        assert!(errs.iter().any(|e| e.message.contains("Region escape violation")));
+    }
+
+    #[test]
+    fn test_region_escape_block_rejection() {
+        let code = r#"
+        struct Point {
+            x: i64,
+            y: i64,
+        }
+
+        fn escape_from_region() {
+            let global_p = Point { x: 0, y: 0 };
+            let mut outer_ref = &global_p;
+            region r {
+                let p = Point { x: 10, y: 20 };
+                // Assigning inner reference to outer variable violates region lifetime (r_src > r_dst)
+                outer_ref = &p;
+            };
+        }
+        "#;
+
+        let ast = parse(code).expect("syntax parse ok");
+        let res = check(&ast);
+        assert!(res.is_err(), "Escaping reference from region block should be rejected");
+        let errs = res.unwrap_err();
+        assert!(errs.iter().any(|e| e.message.contains("Region escape violation")));
+    }
 }
+

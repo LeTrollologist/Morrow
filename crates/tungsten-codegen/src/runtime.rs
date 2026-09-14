@@ -107,6 +107,85 @@ pub extern "C" fn tungsten_alloc(size: usize, align: usize) -> *mut u8 {
     unsafe { std::alloc::alloc(layout) }
 }
 
+pub struct PhysicalArena {
+    chunks: Vec<(*mut u8, usize)>,
+    current_ptr: *mut u8,
+    current_offset: usize,
+    current_capacity: usize,
+}
+
+impl PhysicalArena {
+    pub fn new() -> Self {
+        const INITIAL_CAPACITY: usize = 4096;
+        let layout = std::alloc::Layout::from_size_align(INITIAL_CAPACITY, 16).unwrap();
+        let ptr = unsafe { std::alloc::alloc(layout) };
+        Self {
+            chunks: vec![(ptr, INITIAL_CAPACITY)],
+            current_ptr: ptr,
+            current_offset: 0,
+            current_capacity: INITIAL_CAPACITY,
+        }
+    }
+
+    pub fn alloc(&mut self, size: usize, align: usize) -> *mut u8 {
+        let align_mask = align - 1;
+        let offset = (self.current_offset + align_mask) & !align_mask;
+        if offset + size <= self.current_capacity {
+            let result = unsafe { self.current_ptr.add(offset) };
+            self.current_offset = offset + size;
+            result
+        } else {
+            let new_cap = (self.current_capacity * 2).max(size + align).max(4096);
+            let layout = std::alloc::Layout::from_size_align(new_cap, 16).unwrap();
+            let new_ptr = unsafe { std::alloc::alloc(layout) };
+            self.chunks.push((new_ptr, new_cap));
+            self.current_ptr = new_ptr;
+            self.current_capacity = new_cap;
+            let offset = align_mask & !align_mask;
+            let result = unsafe { self.current_ptr.add(offset) };
+            self.current_offset = offset + size;
+            result
+        }
+    }
+
+    pub fn destroy(mut self) {
+        for (ptr, cap) in self.chunks.drain(..) {
+            if !ptr.is_null() && cap > 0 {
+                let layout = std::alloc::Layout::from_size_align(cap, 16).unwrap();
+                unsafe {
+                    std::alloc::dealloc(ptr, layout);
+                }
+            }
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn tungsten_region_enter() -> *mut PhysicalArena {
+    let arena = Box::new(PhysicalArena::new());
+    Box::into_raw(arena)
+}
+
+#[no_mangle]
+pub extern "C" fn tungsten_region_alloc(arena: *mut PhysicalArena, size: usize, align: usize) -> *mut u8 {
+    if arena.is_null() {
+        return tungsten_alloc(size, align);
+    }
+    unsafe {
+        (*arena).alloc(size, align)
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn tungsten_region_exit(arena: *mut PhysicalArena) {
+    if !arena.is_null() {
+        unsafe {
+            let boxed = Box::from_raw(arena);
+            boxed.destroy();
+        }
+    }
+}
+
 // Global runtime scheduler and channels for native JIT execution
 static SCHEDULER: std::sync::OnceLock<std::sync::Arc<tungsten_fiber::Scheduler>> = std::sync::OnceLock::new();
 static CHANNELS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<u64, std::sync::Arc<tungsten_fiber::Channel<i64>>>>> = std::sync::OnceLock::new();

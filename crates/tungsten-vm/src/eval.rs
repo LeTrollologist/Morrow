@@ -564,6 +564,9 @@ impl Evaluator {
             ExprKind::Block(b) => {
                 self.eval_block(b)
             }
+            ExprKind::Region { body, .. } => {
+                self.eval_block(body)
+            }
             ExprKind::If { cond, then_branch, else_branch } => {
                 let c = match self.eval_expr(cond) {
                     EvalSignal::Normal(v) => v.as_bool().unwrap_or(false),

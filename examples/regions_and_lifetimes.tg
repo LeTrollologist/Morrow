@@ -1,0 +1,50 @@
+struct Vector3 {
+    x: i64,
+    y: i64,
+    z: i64,
+}
+
+struct Particle {
+    pos: Vector3,
+    velocity: Vector3,
+    mass: i64,
+}
+
+fn compute_energy(v: &Vector3, mass: i64) -> i64 {
+    let speed_sq = v.x * v.x + v.y * v.y + v.z * v.z;
+    (mass * speed_sq) / 2
+}
+
+fn main() {
+    println!("=== Tungsten Region-Based Memory Management Demo ===");
+    println!("No explicit lifetime annotations <'a> - all inferred at compile-time!");
+
+    // Outer frame region: zero-annotation bump allocator
+    let total_energy = region frame {
+        let p1 = Particle {
+            pos: Vector3 { x: 0, y: 0, z: 0 },
+            velocity: Vector3 { x: 3, y: 4, z: 0 },
+            mass: 2,
+        };
+
+        // Reference cleanly inferred within region scope
+        let e1 = compute_energy(&p1.velocity, p1.mass);
+        println!("Particle 1 kinetic energy: {}", e1);
+
+        // Nested sub-region with independent lifecycle
+        let e2 = region sub_frame {
+            let p2 = Particle {
+                pos: Vector3 { x: 10, y: 20, z: 30 },
+                velocity: Vector3 { x: 6, y: 8, z: 0 },
+                mass: 2,
+            };
+            compute_energy(&p2.velocity, p2.mass)
+        };
+        println!("Particle 2 kinetic energy from sub-region: {}", e2);
+
+        e1 + e2
+    };
+
+    println!("Total energy computed across regions: {}", total_energy);
+    println!("Physical arenas deallocated with O(1) bulk cleanup!");
+}

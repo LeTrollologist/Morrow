@@ -3,7 +3,7 @@ use tungsten_syntax::ast::*;
 use tungsten_syntax::token::Span;
 
 use crate::interval::Interval;
-use crate::types::Type;
+use crate::types::{RegionId, Type};
 
 #[derive(Debug, Clone)]
 pub struct TypeError {
@@ -41,6 +41,7 @@ pub struct FnSig {
 #[derive(Clone)]
 struct Scope {
     variables: HashMap<String, (Type, bool)>, // (type, is_mut)
+    region: RegionId,
 }
 
 pub struct FnChecker<'a> {
@@ -50,7 +51,10 @@ pub struct FnChecker<'a> {
     handled_effects: Vec<HashSet<String>>,
     pub relational_ctx: crate::relational::RelationalContext,
     errors: Vec<TypeError>,
+    region_stack: Vec<RegionId>,
+    next_region_id: usize,
 }
+
 
 impl TypeChecker {
     pub fn new() -> Self {
@@ -212,8 +216,10 @@ impl TypeChecker {
                 Ok(Type::Ref {
                     is_mut: *is_mut,
                     inner: Box::new(inner_ty),
+                    region: None,
                 })
             }
+
             TypeExpr::Unit(_) => Ok(Type::Unit),
         }
     }
@@ -338,12 +344,29 @@ impl<'a> FnChecker<'a> {
             handled_effects: Vec::new(),
             relational_ctx: crate::relational::RelationalContext::new(),
             errors: Vec::new(),
+            region_stack: vec![RegionId(1)],
+            next_region_id: 2,
         }
     }
 
+    fn current_region(&self) -> RegionId {
+        *self.region_stack.last().unwrap_or(&RegionId(0))
+    }
+
+    fn lookup_var_region(&self, name: &str) -> Option<RegionId> {
+        for scope in self.scopes.iter().rev() {
+            if scope.variables.contains_key(name) {
+                return Some(scope.region);
+            }
+        }
+        None
+    }
+
     fn push_scope(&mut self) {
+        let reg = self.current_region();
         self.scopes.push(Scope {
             variables: HashMap::new(),
+            region: reg,
         });
     }
 
@@ -351,7 +374,12 @@ impl<'a> FnChecker<'a> {
         self.scopes.pop();
     }
 
-    fn define_var(&mut self, name: String, ty: Type, is_mut: bool) {
+    fn define_var(&mut self, name: String, mut ty: Type, is_mut: bool) {
+        if let Type::Ref { ref mut region, .. } = ty {
+            if region.is_none() {
+                *region = Some(self.current_region());
+            }
+        }
         if let Some(scope) = self.scopes.last_mut() {
             scope.variables.insert(name, (ty, is_mut));
         }
@@ -365,6 +393,7 @@ impl<'a> FnChecker<'a> {
         }
         None
     }
+
 
     fn check_effect_permission(&mut self, effect: &str, span: Span) {
         // If the effect is handled by an enclosing `handle` block, it is permitted
@@ -385,21 +414,37 @@ impl<'a> FnChecker<'a> {
         }
     }
 
-    fn check_block(&mut self, block: &Block, expected_ret: &Type) {
+    fn check_block(&mut self, block: &Block, expected_ret: &Type) -> (Type, Option<Interval>) {
         self.push_scope();
         for stmt in &block.stmts {
             self.check_stmt(stmt);
         }
-        if let Some(ref trailing) = block.trailing_expr {
-            let (ty, _) = self.check_expr(trailing);
+        let trailing_res = if let Some(ref trailing) = block.trailing_expr {
+            let (ty, intv) = self.check_expr(trailing);
             if !ty.is_compatible_with(expected_ret) && expected_ret != &Type::Unit {
                 self.errors.push(TypeError::new(
                     format!("Mismatched return type: expected '{}', found '{}'", expected_ret, ty),
                     trailing.span,
                 ));
             }
-        }
+            // Region escape check: if returning from function scope (or expected return is specified)
+            if let Type::Ref { region: Some(r), .. } = &ty {
+                if expected_ret != &Type::Unit && r.0 > 0 {
+                    self.errors.push(TypeError::new(
+                        format!(
+                            "Region escape violation: reference with local region '{}' cannot escape function return",
+                            r
+                        ),
+                        trailing.span,
+                    ));
+                }
+            }
+            (ty, intv)
+        } else {
+            (Type::Unit, None)
+        };
         self.pop_scope();
+        trailing_res
     }
 
     fn check_stmt(&mut self, stmt: &Stmt) {
@@ -434,6 +479,23 @@ impl<'a> FnChecker<'a> {
                     ));
                 }
 
+                // Region escape check for assignment: inner region reference assigned to outer variable
+                if let Type::Ref { region: Some(val_reg), .. } = &val_ty {
+                    if let ExprKind::Ident(ref target_name) = target.kind {
+                        if let Some(target_reg) = self.lookup_var_region(target_name) {
+                            if val_reg.0 > target_reg.0 {
+                                self.errors.push(TypeError::new(
+                                    format!(
+                                        "Region escape violation: cannot assign reference from inner region '{}' to outer variable '{}' in region '{}'",
+                                        val_reg, target_name, target_reg
+                                    ),
+                                    *span,
+                                ));
+                            }
+                        }
+                    }
+                }
+
                 // Refinement check for assignment
                 if let Type::Refined { ref interval, ref name, .. } = target_ty {
                     if let Some(val_int) = val_interval {
@@ -460,15 +522,25 @@ impl<'a> FnChecker<'a> {
             Stmt::Expr { expr, .. } => {
                 self.check_expr(expr);
             }
-            Stmt::Return { value, span: _ } => {
+            Stmt::Return { value, span } => {
                 if let Some(v) = value {
-                    self.check_expr(v);
-                } else {
-                    // unit return
+                    let (ret_ty, _) = self.check_expr(v);
+                    if let Type::Ref { region: Some(r), .. } = &ret_ty {
+                        if r.0 > 0 {
+                            self.errors.push(TypeError::new(
+                                format!(
+                                    "Region escape violation: reference with local region '{}' cannot escape function return",
+                                    r
+                                ),
+                                *span,
+                            ));
+                        }
+                    }
                 }
             }
         }
     }
+
 
     fn check_assign_target(&mut self, expr: &Expr) -> (Type, bool) {
         match &expr.kind {
@@ -484,7 +556,7 @@ impl<'a> FnChecker<'a> {
             ExprKind::FieldAccess { target, field } => {
                 let (target_ty, is_mut) = self.check_assign_target(target);
                 let inner_ty = match &target_ty {
-                    Type::Ref { is_mut: m, inner } => {
+                    Type::Ref { is_mut: m, inner, .. } => {
                         if !*m {
                             self.errors.push(TypeError::new("Cannot mutate field through immutable reference", expr.span));
                         }
@@ -586,8 +658,21 @@ impl<'a> FnChecker<'a> {
             }
             ExprKind::Ref { is_mut, expr: inner } => {
                 let (inner_ty, _) = self.check_expr(inner);
-                (Type::Ref { is_mut: *is_mut, inner: Box::new(inner_ty) }, None)
+                let inferred_reg = if let ExprKind::Ident(ref var_name) = inner.kind {
+                    self.lookup_var_region(var_name).unwrap_or(self.current_region())
+                } else {
+                    self.current_region()
+                };
+                (
+                    Type::Ref {
+                        is_mut: *is_mut,
+                        inner: Box::new(inner_ty),
+                        region: Some(inferred_reg),
+                    },
+                    None,
+                )
             }
+
             ExprKind::FieldAccess { target, field } => {
                 let (target_ty, _) = self.check_expr(target);
                 let base_ty = match &target_ty {
@@ -946,6 +1031,31 @@ impl<'a> FnChecker<'a> {
                 }
                 (Type::Unit, None)
             }
+            ExprKind::Region { name: _, body } => {
+                let reg_id = RegionId(self.next_region_id);
+                self.next_region_id += 1;
+                self.region_stack.push(reg_id);
+
+                let (body_ty, body_intv) = self.check_block(body, &Type::Unit);
+
+                self.region_stack.pop();
+
+                // Linear escape analysis: ensure no reference allocated in this region escapes
+                if let Type::Ref { region: Some(r), .. } = &body_ty {
+                    if r.0 >= reg_id.0 {
+                        self.errors.push(TypeError::new(
+                            format!(
+                                "Region escape violation: reference with region '{}' cannot escape enclosing region block",
+                                r
+                            ),
+                            body.span,
+                        ));
+                    }
+                }
+
+                (body_ty, body_intv)
+            }
         }
     }
 }
+

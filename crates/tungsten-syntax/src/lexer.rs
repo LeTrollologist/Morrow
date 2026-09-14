@@ -240,8 +240,10 @@ impl<'a> Lexer<'a> {
                         "true" => TokenKind::True,
                         "false" => TokenKind::False,
                         "as" => TokenKind::As,
+                        "region" => TokenKind::Region,
                         _ => TokenKind::Ident(ident),
                     }
+
                 }
                 unknown => {
                     return Err(format!("Unexpected character '{}' at line {}, column {}", unknown, start_line, start_col));

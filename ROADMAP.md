@@ -14,8 +14,8 @@
 | **v0.4** | **Tungsten IR & Optimization** | SSA / CFG Intermediate Representation (TIR), Continuation Lowering | **Completed** |
 | **v0.5** | **Native Codegen** | Cranelift (Fast JIT/Debug) & Host Runtime ABI Code Generation | **Completed** |
 | **v0.6** | **Colorless Concurrency** | M:N Work-Stealing Fiber Scheduler via Algebraic Effects | **Completed** |
-| **v0.7** | **Physical Region Allocator** | Machine-level Arena Scopes & $\mathcal{O}(1)$ Region Teardown | **Next Priority** |
-| **v1.0** | **Production & Ecosystem** | `Forge.lock` Package Manager, Stdlib Expansion, Self-Hosting | Planned |
+| **v0.7** | **Physical Region Allocator** | Machine-level Arena Scopes & $\mathcal{O}(1)$ Region Teardown | **Completed** |
+| **v1.0** | **Production & Ecosystem** | `Forge.lock` Package Manager, Stdlib Expansion, Self-Hosting | **Next Priority** |
 
 
 ---
@@ -107,6 +107,25 @@
   - C-ABI runtime bindings for fiber spawning, yielding, sleep, and channel message passing.
   - Cranelift IR lowering for `Async` and `Channel` algebraic effect operations into direct native host calls.
   - Tested and verified end-to-end via `examples/fibers_and_concurrency.tg` on both VM and native JIT (`--native`).
+
+### v0.7: Physical Region Allocator & Compile-Time Region Inference
+- [x] **Region Syntax & Grammar (`tungsten-syntax`)**:
+  - `region [name] { ... }` lexical block expression syntax, parser, and AST node `ExprKind::Region`.
+  - Full formatter (`forge fmt`) support and round-trip verification.
+- [x] **Compile-Time Region Inference & Escape Analysis (`tungsten-typeck`)**:
+  - Region IDs attached to references (`Type::Ref { is_mut, inner, region: Option<RegionId> }`).
+  - Automatic inferencing of region scopes without explicit `<'a>` lifetime annotations.
+  - Strict Linear Escape Analysis rejecting references escaping local regions via returns or outer variable assignments.
+- [x] **TIR Region Lifecycle Instructions (`tungsten-tir`)**:
+  - `Instruction::RegionEnter` and `Instruction::RegionExit` instruction variants.
+  - Arena-directed `RValue::StructInit { name, fields, arena: Option<Operand> }`.
+  - Region-aware Dead Code Elimination (`dce`) and basic block lowering.
+- [x] **Native Machine Region Allocator (`tungsten-codegen`)**:
+  - Zero-overhead native bump allocator `PhysicalArena` with $\mathcal{O}(1)$ bulk teardown.
+  - Runtime C-ABI symbols: `tungsten_region_enter`, `tungsten_region_alloc`, `tungsten_region_exit`.
+  - Cranelift JIT translation targeting physical bump arenas inside region blocks.
+- [x] **Full Dual-Backend Execution (`tungsten-vm` & `tungsten-codegen`)**:
+  - Validated end-to-end with `examples/regions_and_lifetimes.tg` across tree-walking VM and native Cranelift JIT.
 
 ---
 
@@ -201,10 +220,10 @@
 
 ---
 
-## Suggested Next Immediate Sprint: Phase 4 (v0.7)
+## Suggested Next Immediate Sprint: Phase 5 (v1.0)
 
-To maintain momentum, the recommended immediate next sprint is **Phase 4: Native Region-Based Memory Management (v0.7)**:
-1. **Compile-Time Region Inference**: Tofte-Talpin region inference with lexical arena frame partitioning.
-2. **$\mathcal{O}(1)$ Bulk Deallocation**: Arena scopes freed in single pointer resets without garbage collection overhead.
-3. **Linear Escape Analysis**: Compiler guarantees preventing pointers from outliving enclosing arena lifecycles.
+To complete the journey toward a production-grade systems language, the recommended immediate next sprint is **Phase 5: Ecosystem & Production Hardening (v1.0)**:
+1. **Dependency Management in `forge`**: Deterministic `Forge.lock` lockfile resolution and package registry integration.
+2. **Standard Library Expansion**: Collections (`Vector`, `HashMap`), networking (`std::net`), and concurrency primitives (`std::sync`).
+3. **Formal Specification & Self-Hosting**: EBNF language grammar and bootstrapping the compiler frontend in Tungsten.
 

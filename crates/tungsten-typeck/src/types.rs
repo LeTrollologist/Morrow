@@ -1,6 +1,15 @@
 use crate::interval::Interval;
 use std::fmt;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct RegionId(pub usize);
+
+impl fmt::Display for RegionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "'r{}", self.0)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {
     U8,
@@ -25,7 +34,9 @@ pub enum Type {
     Ref {
         is_mut: bool,
         inner: Box<Type>,
+        region: Option<RegionId>,
     },
+
     Struct(String),
     Instantiated {
         name: String,
@@ -78,8 +89,12 @@ impl Type {
             (Type::Struct(n1), Type::Instantiated { name: n2, .. }) | (Type::Instantiated { name: n1, .. }, Type::Struct(n2)) => {
                 n1 == n2
             }
-            (Type::Ref { is_mut: m1, inner: i1 }, Type::Ref { is_mut: m2, inner: i2 }) => {
-                (*m1 == *m2 || (!m2 && *m1)) && i1.is_compatible_with(i2)
+            (Type::Ref { is_mut: m1, inner: i1, region: r1 }, Type::Ref { is_mut: m2, inner: i2, region: r2 }) => {
+                let region_compat = match (r1, r2) {
+                    (Some(reg1), Some(reg2)) => reg1.0 <= reg2.0, // reg1 is at outer or equal scope, outliving reg2
+                    _ => true,
+                };
+                (*m1 == *m2 || (!m2 && *m1)) && i1.is_compatible_with(i2) && region_compat
             }
             // Coercions between integer primitives
             (Type::I64, Type::U64) | (Type::U64, Type::I64) => true,
@@ -116,13 +131,15 @@ impl fmt::Display for Type {
             Type::Relational { base, predicate_desc } => {
                 write!(f, "{}({})", base, predicate_desc)
             }
-            Type::Ref { is_mut, inner } => {
-                if *is_mut {
-                    write!(f, "&mut {}", inner)
+            Type::Ref { is_mut, inner, region } => {
+                let m_str = if *is_mut { "mut " } else { "" };
+                if let Some(r) = region {
+                    write!(f, "&{} {}{}", r, m_str, inner)
                 } else {
-                    write!(f, "&{}", inner)
+                    write!(f, "&{}{}", m_str, inner)
                 }
             }
+
             Type::Struct(name) => write!(f, "{}", name),
             Type::Instantiated { name, args } => {
                 let arg_strs: Vec<String> = args.iter().map(|a| a.to_string()).collect();

@@ -38,6 +38,9 @@ impl JitEngine {
         builder.symbol("tungsten_channel_new", runtime::tungsten_channel_new as *const u8);
         builder.symbol("tungsten_channel_send", runtime::tungsten_channel_send as *const u8);
         builder.symbol("tungsten_channel_recv", runtime::tungsten_channel_recv as *const u8);
+        builder.symbol("tungsten_region_enter", runtime::tungsten_region_enter as *const u8);
+        builder.symbol("tungsten_region_alloc", runtime::tungsten_region_alloc as *const u8);
+        builder.symbol("tungsten_region_exit", runtime::tungsten_region_exit as *const u8);
 
         let mut module = JITModule::new(builder);
         let ptr_type = module.target_config().pointer_type();
@@ -151,6 +154,30 @@ impl JitEngine {
             .declare_function("tungsten_channel_recv", Linkage::Import, &sig)
             .map_err(|e| e.to_string())?;
 
+        // region_enter: () -> ptr
+        let mut sig = module.make_signature();
+        sig.returns.push(AbiParam::new(ptr_type));
+        let region_enter = module
+            .declare_function("tungsten_region_enter", Linkage::Import, &sig)
+            .map_err(|e| e.to_string())?;
+
+        // region_alloc: (arena: ptr, size: ptr, align: ptr) -> ptr
+        let mut sig = module.make_signature();
+        sig.params.push(AbiParam::new(ptr_type));
+        sig.params.push(AbiParam::new(ptr_type));
+        sig.params.push(AbiParam::new(ptr_type));
+        sig.returns.push(AbiParam::new(ptr_type));
+        let region_alloc = module
+            .declare_function("tungsten_region_alloc", Linkage::Import, &sig)
+            .map_err(|e| e.to_string())?;
+
+        // region_exit: (arena: ptr) -> ()
+        let mut sig = module.make_signature();
+        sig.params.push(AbiParam::new(ptr_type));
+        let region_exit = module
+            .declare_function("tungsten_region_exit", Linkage::Import, &sig)
+            .map_err(|e| e.to_string())?;
+
         Ok(RuntimeFuncs {
             print_i64,
             println_i64,
@@ -165,6 +192,9 @@ impl JitEngine {
             channel_new,
             channel_send,
             channel_recv,
+            region_enter,
+            region_alloc,
+            region_exit,
         })
 
     }

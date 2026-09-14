@@ -18,6 +18,8 @@ struct TirLowerer {
     next_temp_id: usize,
     var_types: HashMap<String, Type>,
     var_intervals: HashMap<String, Interval>,
+    arena_stack: Vec<Operand>,
+    next_region_id: usize,
 }
 
 impl TirLowerer {
@@ -29,6 +31,8 @@ impl TirLowerer {
             next_temp_id: 0,
             var_types: HashMap::new(),
             var_intervals: HashMap::new(),
+            arena_stack: Vec::new(),
+            next_region_id: 1,
         }
     }
 
@@ -426,11 +430,13 @@ impl TirLowerer {
                     .collect();
                 let ty = Type::Struct(name.clone());
                 let (dest, res_op) = self.alloc_temp(ty.clone());
+                let arena = self.arena_stack.last().cloned();
                 self.emit(Instruction::Assign {
                     dest,
                     rvalue: RValue::StructInit {
                         name: name.clone(),
                         fields: f_ops,
+                        arena,
                     },
                     ty,
                     span: expr.span,
@@ -466,6 +472,7 @@ impl TirLowerer {
                 let ty = Type::Ref {
                     is_mut: *is_mut,
                     inner: Box::new(inner_op.get_type()),
+                    region: None,
                 };
                 let (dest, res_op) = self.alloc_temp(ty.clone());
                 self.emit(Instruction::Assign {
@@ -575,6 +582,24 @@ impl TirLowerer {
             }
             ExprKind::Block(inner_block) => {
                 self.lower_block(inner_block).unwrap_or(Operand::Constant(TirConstant::Unit))
+            }
+            ExprKind::Region { body, .. } => {
+                let region_id = self.next_region_id;
+                self.next_region_id += 1;
+                let (arena_dest, arena_op) = self.alloc_temp(Type::Unit);
+                self.emit(Instruction::RegionEnter {
+                    dest: arena_dest,
+                    region_id,
+                    span: expr.span,
+                });
+                self.arena_stack.push(arena_op.clone());
+                let res = self.lower_block(body).unwrap_or(Operand::Constant(TirConstant::Unit));
+                self.arena_stack.pop();
+                self.emit(Instruction::RegionExit {
+                    arena: arena_op,
+                    span: expr.span,
+                });
+                res
             }
             ExprKind::Try(inner) | ExprKind::EffectCall(inner) | ExprKind::Await(inner) => {
                 self.lower_expr(inner)

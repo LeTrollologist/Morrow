@@ -21,6 +21,9 @@ pub struct RuntimeFuncs {
     pub channel_new: FuncId,
     pub channel_send: FuncId,
     pub channel_recv: FuncId,
+    pub region_enter: FuncId,
+    pub region_alloc: FuncId,
+    pub region_exit: FuncId,
 }
 
 
@@ -223,6 +226,17 @@ impl FunctionCompiler {
                         let offset = Self::calculate_field_offset(field, tir_module);
                         builder.ins().store(MemFlagsData::new(), val_to_store, base_ptr, offset as i32);
                     }
+                    Instruction::RegionEnter { dest, .. } => {
+                        let enter_ref = module.declare_func_in_func(runtime.region_enter, &mut builder.func);
+                        let call_inst = builder.ins().call(enter_ref, &[]);
+                        let arena_ptr = builder.inst_results(call_inst)[0];
+                        val_map.insert(dest.clone(), arena_ptr);
+                    }
+                    Instruction::RegionExit { arena, .. } => {
+                        let arena_ptr = Self::lower_operand(arena, &mut builder, module, &val_map, func_ids, ptr_type)?;
+                        let exit_ref = module.declare_func_in_func(runtime.region_exit, &mut builder.func);
+                        builder.ins().call(exit_ref, &[arena_ptr]);
+                    }
                 }
             }
 
@@ -329,13 +343,20 @@ impl FunctionCompiler {
                     Ok(Some(target_v))
                 }
             }
-            RValue::StructInit { fields, .. } => {
+            RValue::StructInit { fields, arena, .. } => {
                 let size = (fields.len() * 8).max(8);
                 let size_v = builder.ins().iconst(ptr_type, size as i64);
                 let align_v = builder.ins().iconst(ptr_type, 8);
-                let alloc_ref = module.declare_func_in_func(runtime.alloc, &mut builder.func);
-                let call_inst = builder.ins().call(alloc_ref, &[size_v, align_v]);
-                let struct_ptr = builder.inst_results(call_inst)[0];
+                let struct_ptr = if let Some(arena_op) = arena {
+                    let arena_ptr = Self::lower_operand(arena_op, builder, module, val_map, func_ids, ptr_type)?;
+                    let alloc_ref = module.declare_func_in_func(runtime.region_alloc, &mut builder.func);
+                    let call_inst = builder.ins().call(alloc_ref, &[arena_ptr, size_v, align_v]);
+                    builder.inst_results(call_inst)[0]
+                } else {
+                    let alloc_ref = module.declare_func_in_func(runtime.alloc, &mut builder.func);
+                    let call_inst = builder.ins().call(alloc_ref, &[size_v, align_v]);
+                    builder.inst_results(call_inst)[0]
+                };
 
                 for (idx, (_, f_op)) in fields.iter().enumerate() {
                     let f_val = Self::lower_operand(f_op, builder, module, val_map, func_ids, ptr_type)?;

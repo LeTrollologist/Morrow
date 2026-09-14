@@ -643,7 +643,7 @@ impl Parser {
     }
 
     fn parse_cast(&mut self) -> Result<Expr, String> {
-        let mut expr = self.parse_postfix()?;
+        let mut expr = self.parse_unary()?;
 
         while self.match_token(&TokenKind::As) {
             let target_ty = self.parse_type_expr()?;
@@ -658,6 +658,24 @@ impl Parser {
         }
 
         Ok(expr)
+    }
+
+    fn parse_unary(&mut self) -> Result<Expr, String> {
+        if self.check(&TokenKind::Ampersand) {
+            let tok = self.advance();
+            let is_mut = self.match_token(&TokenKind::Mut);
+            let inner = self.parse_unary()?;
+            let span = Span::new(tok.span.start, inner.span.end, tok.span.line, tok.span.column);
+            return Ok(Expr::new(
+                ExprKind::Ref {
+                    is_mut,
+                    expr: Box::new(inner),
+                },
+                span,
+            ));
+        }
+
+        self.parse_postfix()
     }
 
     fn parse_postfix(&mut self) -> Result<Expr, String> {
@@ -750,19 +768,6 @@ impl Parser {
             TokenKind::False => {
                 self.advance();
                 Ok(Expr::new(ExprKind::Bool(false), tok.span))
-            }
-            TokenKind::Ampersand => {
-                self.advance();
-                let is_mut = self.match_token(&TokenKind::Mut);
-                let inner = self.parse_primary()?;
-                let span = Span::new(tok.span.start, inner.span.end, tok.span.line, tok.span.column);
-                Ok(Expr::new(
-                    ExprKind::Ref {
-                        is_mut,
-                        expr: Box::new(inner),
-                    },
-                    span,
-                ))
             }
             TokenKind::Ident(ref name) => {
                 let name = name.clone();
@@ -872,6 +877,28 @@ impl Parser {
                     span,
                 ))
             }
+            TokenKind::Region => {
+                let start_tok = self.advance();
+                let mut name = None;
+                if let TokenKind::Ident(ref n) = self.peek().kind {
+                    if self.peek_next().kind == TokenKind::LBrace {
+                        name = Some(n.clone());
+                        self.advance();
+                    }
+                }
+                let body = self.parse_block()?;
+                let span = Span::new(
+                    start_tok.span.start,
+                    body.span.end,
+                    start_tok.span.line,
+                    start_tok.span.column,
+                );
+                Ok(Expr::new(
+                    ExprKind::Region { name, body },
+                    span,
+                ))
+            }
+
             _ => Err(format!(
                 "Unexpected token {:?} in expression at line {}, col {}",
                 tok.kind, tok.span.line, tok.span.column

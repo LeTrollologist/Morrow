@@ -84,4 +84,27 @@ mod tests {
         let formatted2 = format_source(&formatted1).expect("second format ok");
         assert_eq!(formatted1, formatted2, "Formatter must be idempotent");
     }
+
+    #[test]
+    fn test_parse_and_format_region() {
+        let code = r#"
+        struct Point {
+            x: i64,
+            y: i64,
+        }
+
+        fn main() {
+            region r {
+                let p = Point { x: 10, y: 20 };
+                println!("Point inside region: {}, {}", p.x, p.y);
+            }
+        }
+        "#;
+        let program = parse(code).expect("parse region code ok");
+        assert_eq!(program.items.len(), 2);
+        let formatted1 = format_source(code).expect("format region ok");
+        let formatted2 = format_source(&formatted1).expect("format region idempotent ok");
+        assert_eq!(formatted1, formatted2);
+    }
 }
+

@@ -89,6 +89,7 @@ pub enum RValue {
     StructInit {
         name: String,
         fields: Vec<(String, Operand)>,
+        arena: Option<Operand>,
     },
     Ref {
         is_mut: bool,
@@ -133,6 +134,15 @@ pub enum Instruction {
         base: Var,
         field: String,
         val: Operand,
+        span: Span,
+    },
+    RegionEnter {
+        dest: Var,
+        region_id: usize,
+        span: Span,
+    },
+    RegionExit {
+        arena: Operand,
         span: Span,
     },
 }

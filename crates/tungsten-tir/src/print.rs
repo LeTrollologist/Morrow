@@ -88,6 +88,12 @@ pub fn print_function(func: &TirFunction) -> String {
                 Instruction::SetField { base, field, val, .. } => {
                     writeln!(out, "    set_field {}.{} = {}", base, field, val).unwrap();
                 }
+                Instruction::RegionEnter { dest, region_id, .. } => {
+                    writeln!(out, "    {} = region_enter(r{})", dest, region_id).unwrap();
+                }
+                Instruction::RegionExit { arena, .. } => {
+                    writeln!(out, "    region_exit({})", arena).unwrap();
+                }
             }
         }
 
@@ -141,9 +147,13 @@ fn print_rvalue(rv: &RValue) -> String {
             let args_str = args.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(", ");
             format!("{}.{}({})", target, method, args_str)
         }
-        RValue::StructInit { name, fields } => {
+        RValue::StructInit { name, fields, arena } => {
             let f_strs = fields.iter().map(|(k, v)| format!("{}: {}", k, v)).collect::<Vec<_>>().join(", ");
-            format!("{} {{ {} }}", name, f_strs)
+            if let Some(a) = arena {
+                format!("{} in {} {{ {} }}", name, a, f_strs)
+            } else {
+                format!("{} {{ {} }}", name, f_strs)
+            }
         }
         RValue::Ref { is_mut, operand } => {
             if *is_mut {

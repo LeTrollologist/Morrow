@@ -34,6 +34,8 @@ pub enum TokenKind {
     True,
     False,
     As,
+    Region,
+
 
     // Identifiers & Literals
     Ident(String),

@@ -49,7 +49,7 @@ pub fn unify(expected: &Type, actual: &Type, subst: &mut Subst) -> Result<(), St
             }
             Ok(())
         }
-        (Type::Ref { is_mut: m1, inner: i1 }, Type::Ref { is_mut: m2, inner: i2 }) => {
+        (Type::Ref { is_mut: m1, inner: i1, .. }, Type::Ref { is_mut: m2, inner: i2, .. }) => {
             if *m1 && !*m2 {
                 return Err("Cannot unify mutable reference with immutable reference".into());
             }
@@ -59,29 +59,32 @@ pub fn unify(expected: &Type, actual: &Type, subst: &mut Subst) -> Result<(), St
             if p1.len() != p2.len() {
                 return Err("Function parameter count mismatch".into());
             }
-            for (param1, param2) in p1.iter().zip(p2.iter()) {
-                unify(param1, param2, subst)?;
+            for (arg1, arg2) in p1.iter().zip(p2.iter()) {
+                unify(arg1, arg2, subst)?;
             }
-            unify(r1, r2, subst)?;
-
-            // Bind effect parameters if present
             for eff in e1 {
-                if !eff.is_empty() && eff.chars().next().unwrap().is_ascii_uppercase() {
+                if eff.len() == 1 || eff.starts_with('?') {
                     subst.effect_bindings.insert(eff.clone(), e2.clone());
+                } else if !e2.contains(eff) {
+                    return Err(format!("Effect '{}' missing in function type unification", eff));
                 }
             }
+            unify(r1, r2, subst)
+        }
+        (other, Type::GenericParam(name)) => {
+            subst.bind(name.clone(), other.clone());
             Ok(())
         }
-        (e, a) if e.is_compatible_with(a) => Ok(()),
-        _ => Err(format!("Type mismatch during unification: expected '{}', found '{}'", expected, actual)),
+        (t1, t2) if t1 == t2 => Ok(()),
+        (t1, t2) => Err(format!("Type mismatch: cannot unify '{}' with '{}'", t1, t2)),
     }
 }
 
 pub fn substitute(ty: &Type, subst: &Subst) -> Type {
     match ty {
         Type::GenericParam(name) => {
-            if let Some(bound) = subst.get(name) {
-                bound.clone()
+            if let Some(replacement) = subst.get(name) {
+                replacement.clone()
             } else {
                 ty.clone()
             }
@@ -93,10 +96,11 @@ pub fn substitute(ty: &Type, subst: &Subst) -> Type {
                 args: new_args,
             }
         }
-        Type::Ref { is_mut, inner } => {
+        Type::Ref { is_mut, inner, region } => {
             Type::Ref {
                 is_mut: *is_mut,
                 inner: Box::new(substitute(inner, subst)),
+                region: *region,
             }
         }
         Type::Fn { params, return_type, yields_effects } => {

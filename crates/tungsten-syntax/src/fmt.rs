@@ -346,7 +346,22 @@ impl Formatter {
                 }
                 s
             }
+            ExprKind::Region { name, body } => {
+                let mut s = "region ".to_string();
+                if let Some(n) = name {
+                    s.push_str(n);
+                    s.push(' ');
+                }
+                let mut sub_fmt = Formatter {
+                    indent_level: self.indent_level,
+                    output: String::new(),
+                };
+                sub_fmt.format_block(body);
+                s.push_str(&sub_fmt.output);
+                s
+            }
         }
+
     }
 }
 
