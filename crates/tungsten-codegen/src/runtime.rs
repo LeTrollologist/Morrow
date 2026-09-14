@@ -108,7 +108,7 @@ pub extern "C" fn tungsten_alloc(size: usize, align: usize) -> *mut u8 {
 }
 
 pub struct PhysicalArena {
-    chunks: Vec<(*mut u8, usize)>,
+    chunks: Vec<(*mut u8, usize, usize)>, // (ptr, capacity, align)
     current_ptr: *mut u8,
     current_offset: usize,
     current_capacity: usize,
@@ -120,7 +120,7 @@ impl PhysicalArena {
         let layout = std::alloc::Layout::from_size_align(INITIAL_CAPACITY, 16).unwrap();
         let ptr = unsafe { std::alloc::alloc(layout) };
         Self {
-            chunks: vec![(ptr, INITIAL_CAPACITY)],
+            chunks: vec![(ptr, INITIAL_CAPACITY, 16)],
             current_ptr: ptr,
             current_offset: 0,
             current_capacity: INITIAL_CAPACITY,
@@ -128,6 +128,7 @@ impl PhysicalArena {
     }
 
     pub fn alloc(&mut self, size: usize, align: usize) -> *mut u8 {
+        let align = align.max(1);
         let align_mask = align - 1;
         let offset = (self.current_offset + align_mask) & !align_mask;
         if offset + size <= self.current_capacity {
@@ -135,13 +136,14 @@ impl PhysicalArena {
             self.current_offset = offset + size;
             result
         } else {
-            let new_cap = (self.current_capacity * 2).max(size + align).max(4096);
-            let layout = std::alloc::Layout::from_size_align(new_cap, 16).unwrap();
+            let chunk_align = align.max(16);
+            let new_cap = (self.current_capacity * 2).max(size + chunk_align).max(4096);
+            let layout = std::alloc::Layout::from_size_align(new_cap, chunk_align).unwrap();
             let new_ptr = unsafe { std::alloc::alloc(layout) };
-            self.chunks.push((new_ptr, new_cap));
+            self.chunks.push((new_ptr, new_cap, chunk_align));
             self.current_ptr = new_ptr;
             self.current_capacity = new_cap;
-            let offset = align_mask & !align_mask;
+            let offset = 0;
             let result = unsafe { self.current_ptr.add(offset) };
             self.current_offset = offset + size;
             result
@@ -149,9 +151,9 @@ impl PhysicalArena {
     }
 
     pub fn destroy(mut self) {
-        for (ptr, cap) in self.chunks.drain(..) {
+        for (ptr, cap, chunk_align) in self.chunks.drain(..) {
             if !ptr.is_null() && cap > 0 {
-                let layout = std::alloc::Layout::from_size_align(cap, 16).unwrap();
+                let layout = std::alloc::Layout::from_size_align(cap, chunk_align).unwrap();
                 unsafe {
                     std::alloc::dealloc(ptr, layout);
                 }

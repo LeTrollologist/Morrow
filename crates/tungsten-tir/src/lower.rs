@@ -270,8 +270,15 @@ impl TirLowerer {
             Stmt::Expr { expr, .. } => {
                 self.lower_expr(expr);
             }
-            Stmt::Return { value, .. } => {
+            Stmt::Return { value, span } => {
                 let ret_op = value.as_ref().map(|v| self.lower_expr(v));
+                let arenas: Vec<Operand> = self.arena_stack.iter().cloned().rev().collect();
+                for arena in arenas {
+                    self.emit(Instruction::RegionExit {
+                        arena,
+                        span: *span,
+                    });
+                }
                 self.terminate(Terminator::Return(ret_op));
             }
         }
