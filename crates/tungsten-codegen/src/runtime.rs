@@ -176,7 +176,7 @@ impl PhysicalArena {
         new_ptr
     }
 
-    pub fn destroy(mut self) {
+    pub fn destroy(&mut self) {
         for (ptr, cap, chunk_align) in self.chunks.drain(..) {
             if !ptr.is_null() && cap > 0 {
                 let layout = std::alloc::Layout::from_size_align(cap, chunk_align).unwrap();
@@ -185,6 +185,12 @@ impl PhysicalArena {
                 }
             }
         }
+    }
+}
+
+impl Drop for PhysicalArena {
+    fn drop(&mut self) {
+        self.destroy();
     }
 }
 
@@ -208,8 +214,8 @@ pub extern "C" fn tungsten_region_alloc(arena: *mut PhysicalArena, size: usize, 
 pub extern "C" fn tungsten_region_exit(arena: *mut PhysicalArena) {
     if !arena.is_null() {
         unsafe {
-            let boxed = Box::from_raw(arena);
-            boxed.destroy();
+            // Box::from_raw takes ownership and its Drop implementation automatically invokes destroy()
+            let _boxed = Box::from_raw(arena);
         }
     }
 }
@@ -306,6 +312,83 @@ pub extern "C" fn tungsten_trace_effect(
                 get_effect_traces().lock().unwrap().push(entry);
             }
         }
+    }
+}
+
+#[cfg(test)]
+pub mod tests {
+    use super::*;
+
+    #[test]
+    fn test_miri_arena_alignments() {
+        let mut arena = PhysicalArena::new();
+        let alignments = [1, 2, 4, 8, 16, 32, 64, 128];
+        for &align in &alignments {
+            let ptr = arena.alloc(17, align);
+            assert!(!ptr.is_null());
+            assert_eq!(ptr as usize % align, 0, "Address {:p} not aligned to {}", ptr, align);
+            unsafe {
+                // Write into allocated memory to verify spatial validity
+                std::ptr::write_bytes(ptr, 0xAA, 17);
+            }
+        }
+    }
+
+    #[test]
+    fn test_miri_arena_chunk_growth() {
+        let mut arena = PhysicalArena::new();
+        // Allocate across multiple chunk boundaries
+        for i in 0..100 {
+            let ptr = arena.alloc(512, 8);
+            assert!(!ptr.is_null());
+            unsafe {
+                let s = slice::from_raw_parts_mut(ptr as *mut u64, 512 / 8);
+                s[0] = i as u64;
+                s[s.len() - 1] = (i * 10) as u64;
+                assert_eq!(s[0], i as u64);
+                assert_eq!(s[s.len() - 1], (i * 10) as u64);
+            }
+        }
+        assert!(arena.chunks.len() > 1, "Arena should have grown across multiple chunks");
+    }
+
+    #[test]
+    fn test_miri_interleaved_arenas_drop() {
+        let mut a1 = PhysicalArena::new();
+        let mut a2 = PhysicalArena::new();
+
+        let p1 = a1.alloc(64, 8);
+        let p2 = a2.alloc(64, 8);
+
+        unsafe {
+            std::ptr::write_bytes(p1, 0x11, 64);
+            std::ptr::write_bytes(p2, 0x22, 64);
+        }
+
+        drop(a1); // a1 freed while a2 still active
+
+        let p3 = a2.alloc(128, 16);
+        unsafe {
+            std::ptr::write_bytes(p3, 0x33, 128);
+        }
+
+        drop(a2); // a2 freed cleanly
+    }
+
+    #[test]
+    fn test_miri_region_enter_exit_drop() {
+        let arena_ptr = tungsten_region_enter();
+        assert!(!arena_ptr.is_null());
+
+        let alloc_ptr = tungsten_region_alloc(arena_ptr, 256, 16);
+        assert!(!alloc_ptr.is_null());
+        assert_eq!(alloc_ptr as usize % 16, 0);
+
+        unsafe {
+            std::ptr::write_bytes(alloc_ptr, 0xFF, 256);
+        }
+
+        tungsten_region_exit(arena_ptr);
     }
 }
 

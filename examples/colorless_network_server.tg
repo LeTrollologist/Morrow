@@ -1,0 +1,29 @@
+// Tungsten Colorless Networking & Concurrency Demo
+// Demonstrating socket I/O multiplexed over M:N fibers via Net algebraic effect
+
+fn handle_connection(conn_fd: i64) yields [Net, IO] {
+    let req = Net::read(conn_fd, 1024);
+    IO::print("Server received request payload");
+    let resp = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nHello from Tungsten!";
+    Net::write(conn_fd, resp);
+    Net::close(conn_fd);
+    IO::print("Connection closed cleanly");
+}
+
+fn main() yields [Net, Async, IO] {
+    println!("=== Tungsten Colorless Networking Server ===");
+    println!("Zero async/await divide - network I/O naturally yields to fiber scheduler");
+
+    let server_port: Port = 8080 as Port;
+    let listener = tcp_listen(server_port);
+    println!("Listening on port: {}", listener.port);
+
+    let client_stream = tcp_accept(&listener);
+    println!("Accepted client connection on socket: {}", client_stream.socket_id);
+
+    // Concurrently handle client connection on a lightweight fiber
+    println!("Spawning connection handler fiber...");
+    let worker = Async::spawn(handle_connection, client_stream.socket_id, 0);
+
+    println!("Server loop cycle completed.");
+}

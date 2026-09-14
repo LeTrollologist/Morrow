@@ -98,22 +98,67 @@ SUBCOMMANDS:
     );
 }
 
-fn run_check(filepath: &str) {
-    println!("Checking {} ...", filepath);
+fn load_program(filepath: &str) -> Result<tungsten_syntax::ast::Program, String> {
     let source = match fs::read_to_string(filepath) {
         Ok(s) => s,
-        Err(e) => {
-            eprintln!("Error reading file '{}': {}", filepath, e);
-            process::exit(1);
-        }
+        Err(e) => return Err(format!("Error reading file '{}': {}", filepath, e)),
     };
 
-    // 1. Parsing
-    let ast = match tungsten_syntax::parse(&source) {
+    let mut ast = match tungsten_syntax::parse(&source) {
+        Ok(prog) => prog,
+        Err(err) => return Err(format!("[Syntax Error] in {}:\n  {}", filepath, err)),
+    };
+
+    let path = Path::new(filepath);
+    let is_stdlib = path.starts_with("std") || path.starts_with("./std") || path.starts_with(".\\std");
+    if !is_stdlib && Path::new("std").is_dir() {
+        let user_names: std::collections::HashSet<String> = ast.items.iter().filter_map(|it| match it {
+            tungsten_syntax::ast::Item::TypeAlias(a) => Some(a.name.clone()),
+            tungsten_syntax::ast::Item::Struct(s) => Some(s.name.clone()),
+            tungsten_syntax::ast::Item::Fn(f) => Some(f.name.clone()),
+            tungsten_syntax::ast::Item::Effect(e) => Some(e.name.clone()),
+        }).collect();
+
+        let std_files = [
+            "std/prelude.tg",
+            "std/refinements.tg",
+            "std/effects.tg",
+            "std/collections.tg",
+            "std/sync.tg",
+            "std/net.tg",
+            "std/slice.tg",
+        ];
+        let mut std_items = Vec::new();
+        for sf in &std_files {
+            if let Ok(content) = fs::read_to_string(sf) {
+                if let Ok(std_ast) = tungsten_syntax::parse(&content) {
+                    for item in std_ast.items {
+                        let name = match &item {
+                            tungsten_syntax::ast::Item::TypeAlias(a) => &a.name,
+                            tungsten_syntax::ast::Item::Struct(s) => &s.name,
+                            tungsten_syntax::ast::Item::Fn(f) => &f.name,
+                            tungsten_syntax::ast::Item::Effect(e) => &e.name,
+                        };
+                        if !user_names.contains(name) {
+                            std_items.push(item);
+                        }
+                    }
+                }
+            }
+        }
+        std_items.append(&mut ast.items);
+        ast.items = std_items;
+    }
+
+    Ok(ast)
+}
+
+fn run_check(filepath: &str) {
+    println!("Checking {} ...", filepath);
+    let ast = match load_program(filepath) {
         Ok(prog) => prog,
         Err(err) => {
-            eprintln!("\n[Syntax Error] in {}:", filepath);
-            eprintln!("  {}", err);
+            eprintln!("{}", err);
             process::exit(1);
         }
     };
@@ -153,20 +198,10 @@ fn run_file(args: &[String]) {
         }
     };
 
-    let source = match fs::read_to_string(&filepath) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("Error reading file '{}': {}", filepath, e);
-            process::exit(1);
-        }
-    };
-
-    // 1. Parsing
-    let ast = match tungsten_syntax::parse(&source) {
+    let ast = match load_program(&filepath) {
         Ok(prog) => prog,
         Err(err) => {
-            eprintln!("\n[Syntax Error] in {}:", filepath);
-            eprintln!("  {}", err);
+            eprintln!("{}", err);
             process::exit(1);
         }
     };
@@ -331,20 +366,10 @@ fn run_tir(args: &[String]) {
         }
     };
 
-    let source = match fs::read_to_string(&filepath) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("Error reading file '{}': {}", filepath, e);
-            process::exit(1);
-        }
-    };
-
-    // 1. Parsing
-    let ast = match tungsten_syntax::parse(&source) {
+    let ast = match load_program(&filepath) {
         Ok(prog) => prog,
         Err(err) => {
-            eprintln!("\n[Syntax Error] in {}:", filepath);
-            eprintln!("  {}", err);
+            eprintln!("{}", err);
             process::exit(1);
         }
     };
@@ -397,20 +422,10 @@ fn run_build(args: &[String]) {
         }
     };
 
-    let source = match fs::read_to_string(&filepath) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("Error reading file '{}': {}", filepath, e);
-            process::exit(1);
-        }
-    };
-
-    // 1. Parsing
-    let ast = match tungsten_syntax::parse(&source) {
+    let ast = match load_program(&filepath) {
         Ok(prog) => prog,
         Err(err) => {
-            eprintln!("\n[Syntax Error] in {}:", filepath);
-            eprintln!("  {}", err);
+            eprintln!("{}", err);
             process::exit(1);
         }
     };

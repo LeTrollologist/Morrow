@@ -1,0 +1,33 @@
+// Tungsten Standard Library - Structured Concurrency & Synchronization
+// Built on M:N Work-Stealing Fibers and Algebraic Effects
+
+struct ChannelHandle<T> {
+    id: i64,
+}
+
+fn channel_open<T>() -> ChannelHandle<T> yields [Channel] {
+    let cid = Channel::new();
+    ChannelHandle {
+        id: cid,
+    }
+}
+
+fn channel_send_msg<T>(ch: &ChannelHandle<T>, msg: i64) -> () yields [Channel] {
+    Channel::send(ch.id, msg);
+}
+
+fn channel_recv_msg<T>(ch: &ChannelHandle<T>) -> i64 yields [Channel] {
+    Channel::recv(ch.id)
+}
+
+struct Mutex<T> {
+    lock_id: i64,
+    data: T,
+}
+
+fn mutex_new<T>(val: T) -> Mutex<T> {
+    Mutex {
+        lock_id: 1,
+        data: val,
+    }
+}

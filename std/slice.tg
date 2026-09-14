@@ -1,0 +1,18 @@
+// Tungsten Standard Library - Relational Slices
+// Bounded slice views with statically proven zero-panic intervals
+
+fn subslice_len(start: usize, end: usize(>= start)) -> usize {
+    end - start
+}
+
+struct Slice {
+    start: i64,
+    len: i64,
+}
+
+fn slice_from_range(start: usize, end: usize(>= start)) -> Slice {
+    Slice {
+        start: start as i64,
+        len: (end - start) as i64,
+    }
+}

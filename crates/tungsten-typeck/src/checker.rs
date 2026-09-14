@@ -24,6 +24,7 @@ pub struct TypeChecker {
     pub types: HashMap<String, Type>,
     pub structs: HashMap<String, HashMap<String, Type>>,
     pub generic_structs: HashMap<String, StructDecl>,
+    pub effect_decls: HashMap<String, EffectDecl>,
     pub functions: HashMap<String, FnSig>,
     pub generic_functions: HashMap<String, FnDecl>,
     pub known_effects: HashSet<String>,
@@ -62,6 +63,7 @@ impl TypeChecker {
             types: HashMap::new(),
             structs: HashMap::new(),
             generic_structs: HashMap::new(),
+            effect_decls: HashMap::new(),
             functions: HashMap::new(),
             generic_functions: HashMap::new(),
             known_effects: HashSet::new(),
@@ -83,6 +85,7 @@ impl TypeChecker {
         tc.known_effects.insert("IOError".into());
         tc.known_effects.insert("FileSystem".into());
         tc.known_effects.insert("Network".into());
+        tc.known_effects.insert("Net".into());
         tc.known_effects.insert("IO".into());
         tc.known_effects.insert("Random".into());
         tc.known_effects.insert("State".into());
@@ -225,6 +228,14 @@ impl TypeChecker {
     }
 
     pub fn check_program(&mut self, program: &Program) -> Result<(), Vec<TypeError>> {
+        // Pass 0: Register Effects
+        for item in &program.items {
+            if let Item::Effect(eff) = item {
+                self.known_effects.insert(eff.name.clone());
+                self.effect_decls.insert(eff.name.clone(), eff.clone());
+            }
+        }
+
         // Pass 1: Register Type Aliases
         for item in &program.items {
             if let Item::TypeAlias(alias) = item {
@@ -770,12 +781,32 @@ impl<'a> FnChecker<'a> {
                                 return (Type::Unit, None);
                             }
                         }
+                        if let Some(eff_decl) = self.parent.effect_decls.get(namespace) {
+                            if let Some(op_def) = eff_decl.operations.iter().find(|o| o.name == *op) {
+                                let ret_ty = self.parent.resolve_type_expr(&op_def.return_type).unwrap_or(Type::Unit);
+                                return (ret_ty, None);
+                            }
+                        }
                         if namespace == "Channel" {
+                            if op == "new" {
+                                return (Type::I64, None);
+                            }
                             if op == "send" {
                                 return (Type::Unit, None);
                             }
                             if op == "recv" {
                                 return (Type::I64, None);
+                            }
+                        }
+                        if namespace == "Net" {
+                            if op == "listen" || op == "accept" || op == "connect" || op == "write" {
+                                return (Type::I64, None);
+                            }
+                            if op == "read" {
+                                return (Type::String, None);
+                            }
+                            if op == "close" {
+                                return (Type::Unit, None);
                             }
                         }
                     } else {

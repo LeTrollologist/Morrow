@@ -241,6 +241,7 @@ impl<'a> Lexer<'a> {
                         "false" => TokenKind::False,
                         "as" => TokenKind::As,
                         "region" => TokenKind::Region,
+                        "effect" => TokenKind::Effect,
                         _ => TokenKind::Ident(ident),
                     }
 

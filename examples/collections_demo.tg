@@ -1,0 +1,30 @@
+// Tungsten Collections & Relational Slices Demo
+// Standard Library Collections operating seamlessly across Region memory
+
+fn main() {
+    println!("=== Tungsten Standard Library Collections Demo ===");
+
+    // 1. Vector Operations within Region Memory
+    region vector_scope {
+        let v = vec_new();
+        println!("Initialized Vector with length: {}", vec_len(&v));
+        println!("Is vector empty: {}", vec_is_empty(&v));
+    };
+
+    // 2. HashMap Operations within Sub-Region
+    let map_size = region map_scope {
+        let map = hashmap_new();
+        println!("Initialized HashMap with capacity: {}", map.capacity);
+        hashmap_size(&map)
+    };
+    println!("Retrieved HashMap size after region cleanup: {}", map_size);
+
+    // 3. Relational Slice Verification
+    let sub_len = subslice_len(15, 65);
+    println!("Relational slice computed length [15..65]: {}", sub_len);
+
+    let sl = slice_from_range(20 as usize, 50 as usize);
+    println!("Created validated Slice struct: start={}, len={}", sl.start, sl.len);
+
+    println!("Collections demo completed successfully!");
+}

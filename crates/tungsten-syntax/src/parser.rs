@@ -83,6 +83,7 @@ impl Parser {
             TokenKind::Type => self.parse_type_alias().map(Item::TypeAlias),
             TokenKind::Struct => self.parse_struct_decl().map(Item::Struct),
             TokenKind::Fn => self.parse_fn_decl().map(Item::Fn),
+            TokenKind::Effect => self.parse_effect_decl().map(Item::Effect),
             _ => Err(format!(
                 "Unexpected token {:?} when expecting top-level item at line {}, col {}",
                 self.peek().kind,
@@ -140,6 +141,44 @@ impl Parser {
             name,
             type_params,
             fields,
+            span: Span::new(start_tok.span.start, end_tok.span.end, start_tok.span.line, start_tok.span.column),
+        })
+    }
+
+    fn parse_effect_decl(&mut self) -> Result<EffectDecl, String> {
+        let start_tok = self.expect(TokenKind::Effect)?;
+        let (name, _) = self.expect_ident()?;
+        self.expect(TokenKind::LBrace)?;
+        let mut operations = Vec::new();
+        while !self.check(&TokenKind::RBrace) && !self.check(&TokenKind::Eof) {
+            self.expect(TokenKind::Fn)?;
+            let (op_name, op_span) = self.expect_ident()?;
+            self.expect(TokenKind::LParen)?;
+            let mut params = Vec::new();
+            while !self.check(&TokenKind::RParen) && !self.check(&TokenKind::Eof) {
+                let (p_name, _) = self.expect_ident()?;
+                self.expect(TokenKind::Colon)?;
+                let p_ty = self.parse_type_expr()?;
+                params.push((p_name, p_ty));
+                if !self.match_token(&TokenKind::Comma) {
+                    break;
+                }
+            }
+            self.expect(TokenKind::RParen)?;
+            self.expect(TokenKind::Arrow)?;
+            let return_type = self.parse_type_expr()?;
+            self.expect(TokenKind::Semicolon)?;
+            operations.push(EffectOpDef {
+                name: op_name,
+                params,
+                return_type,
+                span: op_span,
+            });
+        }
+        let end_tok = self.expect(TokenKind::RBrace)?;
+        Ok(EffectDecl {
+            name,
+            operations,
             span: Span::new(start_tok.span.start, end_tok.span.end, start_tok.span.line, start_tok.span.column),
         })
     }

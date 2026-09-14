@@ -1,0 +1,55 @@
+// Tungsten Standard Library - Collections
+// Generic data structures for region and heap memory
+
+struct Vector<T> {
+    len: i64,
+    cap: i64,
+}
+
+fn vec_new<T>() -> Vector<T> {
+    Vector {
+        len: 0,
+        cap: 8,
+    }
+}
+
+fn vec_with_capacity<T>(initial_cap: i64) -> Vector<T> {
+    Vector {
+        len: 0,
+        cap: initial_cap,
+    }
+}
+
+fn vec_len<T>(v: &Vector<T>) -> i64 {
+    v.len
+}
+
+fn vec_is_empty<T>(v: &Vector<T>) -> bool {
+    v.len == 0
+}
+
+struct HashMap<K, V> {
+    size: i64,
+    capacity: i64,
+}
+
+fn hashmap_new<K, V>() -> HashMap<K, V> {
+    HashMap {
+        size: 0,
+        capacity: 16,
+    }
+}
+
+fn hashmap_size<K, V>(map: &HashMap<K, V>) -> i64 {
+    map.size
+}
+
+struct StringBuilder {
+    length: i64,
+}
+
+fn string_builder_new() -> StringBuilder {
+    StringBuilder {
+        length: 0,
+    }
+}
