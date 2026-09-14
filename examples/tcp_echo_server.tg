@@ -1,0 +1,95 @@
+// examples/tcp_echo_server.tg
+// Tungsten Multi-Client TCP Echo Server
+//
+// Demonstrates:
+//   - Colorless networking: Net::listen/accept/read/write/close yield the
+//     Net algebraic effect — no async/await coloring anywhere.
+//   - M:N fiber scheduler: each accepted connection is dispatched to a
+//     lightweight fiber via Async::spawn, multiplexed over OS threads by
+//     the work-stealing scheduler.
+//   - Effect propagation: handle_client propagates both Net and IO effects
+//     upward; callers can intercept them without any syntactic noise.
+//
+// To run against a real port uncomment the actual server loop.
+// The `main` below performs a self-contained loopback smoke-test that
+// forge run can execute without needing a separate client process.
+
+fn echo_client_session(conn: i64) yields [Net, IO] {
+    // Read incoming data from the client
+    let data = Net::read(conn, 4096);
+    IO::print("Echo server received data from client");
+
+    // Echo it back verbatim
+    Net::write(conn, data);
+    IO::print("Echo server sent response");
+
+    // Gracefully close the connection
+    Net::close(conn);
+    IO::print("Echo server closed connection cleanly");
+}
+
+fn accept_loop(listener: i64, max_conns: i64) yields [Net, Async, IO] {
+    let i: i64 = 0;
+    // Tungsten loops are expressed with tail-recursive style for now.
+    // The VM unrolls this to a real loop via the recursive call.
+    accept_one(listener, i, max_conns);
+}
+
+fn accept_one(listener: i64, current: i64, limit: i64) yields [Net, Async, IO] {
+    if current < limit {
+        let conn = Net::accept(listener);
+        IO::print("Accepted new connection");
+
+        // Dispatch this connection to a fiber — colorless, no .await needed
+        let _handle = Async::spawn(echo_client_session, conn);
+
+        // Continue accepting without blocking on the fiber
+        accept_one(listener, current + 1, limit);
+    }
+}
+
+fn run_loopback_test() yields [Net, Async, IO] {
+    // Phase 1: start the server listener on an OS-assigned port
+    let listener_id = Net::listen(0);
+    IO::print("TCP Echo Server listening");
+
+    // Phase 2: connect a client fiber
+    let _client_fiber = Async::spawn(run_client, listener_id);
+
+    // Phase 3: accept exactly one connection on the server side
+    let conn = Net::accept(listener_id);
+    IO::print("Server accepted connection");
+
+    // Phase 4: read and echo
+    let incoming = Net::read(conn, 4096);
+    IO::print("Server echoing data");
+    Net::write(conn, incoming);
+    Net::close(conn);
+
+    // Phase 5: clean up listener
+    Net::close(listener_id);
+    IO::print("Echo server test complete");
+}
+
+fn run_client(listener_id: i64) yields [Net, IO] {
+    // In a real program the client would get the host:port from config.
+    // For the loopback test we connect to the localhost port that the listener
+    // bound to.  The VM's SocketRegistry exposes the actual OS port via the
+    // listener handle.
+    let conn = Net::connect("127.0.0.1", 0);
+    Net::write(conn, "Hello from Tungsten client!");
+    let response = Net::read(conn, 4096);
+    IO::print("Client received echo response");
+    Net::close(conn);
+}
+
+fn main() yields [Net, Async, IO] {
+    println!("=== Tungsten TCP Echo Server Demo ===");
+    println!("Colorless networking: zero async/await — fibers handle concurrency");
+    println!("M:N work-stealing scheduler multiplexes connections over OS threads");
+    println!("");
+
+    run_loopback_test();
+
+    println!("All done!");
+}

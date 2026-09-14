@@ -2,19 +2,38 @@ use std::io::{self, Write};
 use std::slice;
 use std::str;
 
+static SILENT_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_silent_mode(silent: bool) {
+    SILENT_MODE.store(silent, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn is_silent_mode() -> bool {
+    SILENT_MODE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 #[no_mangle]
 pub extern "C" fn tungsten_print_i64(val: i64) {
+    if is_silent_mode() {
+        return;
+    }
     print!("{}", val);
     let _ = io::stdout().flush();
 }
 
 #[no_mangle]
 pub extern "C" fn tungsten_println_i64(val: i64) {
+    if is_silent_mode() {
+        return;
+    }
     println!("{}", val);
 }
 
 #[no_mangle]
 pub extern "C" fn tungsten_print_str(ptr: *const u8, mut len: usize) {
+    if is_silent_mode() {
+        return;
+    }
     if !ptr.is_null() {
         unsafe {
             let mut null_pos = None;
@@ -40,6 +59,9 @@ pub extern "C" fn tungsten_print_str(ptr: *const u8, mut len: usize) {
 
 #[no_mangle]
 pub extern "C" fn tungsten_println_str(ptr: *const u8, mut len: usize) {
+    if is_silent_mode() {
+        return;
+    }
     if !ptr.is_null() {
         unsafe {
             let mut null_pos = None;
@@ -282,18 +304,16 @@ pub extern "C" fn tungsten_channel_recv(cid: u64) -> i64 {
     }
 }
 
-static EFFECT_TRACES: std::sync::OnceLock<std::sync::Mutex<Vec<String>>> = std::sync::OnceLock::new();
-
-fn get_effect_traces() -> &'static std::sync::Mutex<Vec<String>> {
-    EFFECT_TRACES.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+thread_local! {
+    static THREAD_EFFECT_TRACES: std::cell::RefCell<Vec<String>> = std::cell::RefCell::new(Vec::new());
 }
 
 pub fn clear_effect_traces() {
-    get_effect_traces().lock().unwrap().clear();
+    THREAD_EFFECT_TRACES.with(|t| t.borrow_mut().clear());
 }
 
 pub fn get_recorded_effect_traces() -> Vec<String> {
-    get_effect_traces().lock().unwrap().clone()
+    THREAD_EFFECT_TRACES.with(|t| t.borrow().clone())
 }
 
 #[no_mangle]
@@ -309,7 +329,7 @@ pub extern "C" fn tungsten_trace_effect(
             let op_bytes = slice::from_raw_parts(op_ptr, op_len);
             if let (Ok(eff_str), Ok(op_str)) = (str::from_utf8(eff_bytes), str::from_utf8(op_bytes)) {
                 let entry = format!("{}:{}", eff_str, op_str);
-                get_effect_traces().lock().unwrap().push(entry);
+                THREAD_EFFECT_TRACES.with(|t| t.borrow_mut().push(entry));
             }
         }
     }

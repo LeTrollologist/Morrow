@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 use tungsten_fiber::{Channel, FiberHandle, Scheduler};
 use tungsten_syntax::ast::*;
 use crate::effects::ActiveHandler;
+use crate::net::SocketRegistry;
 use crate::value::Value;
 
 pub struct Evaluator {
@@ -14,6 +15,7 @@ pub struct Evaluator {
     pub scheduler: Arc<Scheduler>,
     fiber_handles: HashMap<u64, FiberHandle<Value>>,
     channels: Arc<Mutex<HashMap<u64, Arc<Channel<Value>>>>>,
+    pub sockets: SocketRegistry,
 }
 
 #[derive(Debug)]
@@ -34,6 +36,7 @@ impl Evaluator {
             scheduler: Scheduler::new(0),
             fiber_handles: HashMap::new(),
             channels: Arc::new(Mutex::new(HashMap::new())),
+            sockets: SocketRegistry::new(),
         }
     }
 
@@ -364,6 +367,7 @@ impl Evaluator {
                                 fiber_eval.functions = self.functions.clone();
                                 fiber_eval.channels = Arc::clone(&self.channels);
                                 fiber_eval.scheduler = Arc::clone(&self.scheduler);
+                                fiber_eval.sockets = self.sockets.clone();
                                 let pass_args: Vec<Value> = eval_args[1..].to_vec();
 
                                 let handle = self.scheduler.spawn(move || {
@@ -450,28 +454,50 @@ impl Evaluator {
                         }
                     }
 
-                    // Net effect runtime operations
+                    // Net effect runtime operations — backed by real TCP sockets
                     if namespace == "Net" {
                         if op == "listen" {
-                            let port = eval_args.first().and_then(|v| v.as_int()).unwrap_or(8080);
-                            return EvalSignal::Normal(Value::Int(1000 + port));
+                            let port = eval_args.first().and_then(|v| v.as_int()).unwrap_or(8080) as u16;
+                            return match self.sockets.listen(port) {
+                                Ok(id) => EvalSignal::Normal(Value::Int(id as i64)),
+                                Err(e) => EvalSignal::Error(e),
+                            };
                         }
                         if op == "accept" {
-                            let sock = eval_args.first().and_then(|v| v.as_int()).unwrap_or(1);
-                            return EvalSignal::Normal(Value::Int(sock * 10 + 1));
+                            let listener_id = eval_args.first().and_then(|v| v.as_int()).unwrap_or(0) as u64;
+                            return match self.sockets.accept(listener_id) {
+                                Ok(id) => EvalSignal::Normal(Value::Int(id as i64)),
+                                Err(e) => EvalSignal::Error(e),
+                            };
                         }
                         if op == "connect" {
-                            let port = eval_args.get(1).and_then(|v| v.as_int()).unwrap_or(8080);
-                            return EvalSignal::Normal(Value::Int(2000 + port));
+                            let host = eval_args.first().and_then(|v| v.as_str()).unwrap_or_else(|| "127.0.0.1".to_string());
+                            let port = eval_args.get(1).and_then(|v| v.as_int()).unwrap_or(8080) as u16;
+                            return match self.sockets.connect(&host, port) {
+                                Ok(id) => EvalSignal::Normal(Value::Int(id as i64)),
+                                Err(e) => EvalSignal::Error(e),
+                            };
                         }
                         if op == "read" {
-                            return EvalSignal::Normal(Value::Str("HTTP/1.1 200 OK\r\nContent-Length: 14\r\n\r\nHello Tungsten".into()));
+                            let conn_id = eval_args.first().and_then(|v| v.as_int()).unwrap_or(0) as u64;
+                            let max_bytes = eval_args.get(1).and_then(|v| v.as_int()).unwrap_or(4096).max(0) as usize;
+                            return match self.sockets.read(conn_id, max_bytes) {
+                                Ok(data) => EvalSignal::Normal(Value::Str(data)),
+                                Err(e) => EvalSignal::Error(e),
+                            };
                         }
                         if op == "write" {
-                            let len = eval_args.get(1).and_then(|v| v.as_str()).map(|s| s.len() as i64).unwrap_or(0);
-                            return EvalSignal::Normal(Value::Int(len));
+                            let conn_id = eval_args.first().and_then(|v| v.as_int()).unwrap_or(0) as u64;
+                            let data = eval_args.get(1).and_then(|v| v.as_str()).unwrap_or_else(|| "".to_string());
+                            return match self.sockets.write(conn_id, &data) {
+                                Ok(n) => EvalSignal::Normal(Value::Int(n as i64)),
+                                Err(e) => EvalSignal::Error(e),
+                            };
                         }
                         if op == "close" {
+                            let conn_id = eval_args.first().and_then(|v| v.as_int()).unwrap_or(0) as u64;
+                            self.sockets.close(conn_id);
+                            return EvalSignal::Normal(Value::Unit);
                         }
                     }
                 }

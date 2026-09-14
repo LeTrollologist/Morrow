@@ -1,5 +1,6 @@
 pub mod effects;
 pub mod eval;
+pub mod net;
 pub mod value;
 
 use eval::Evaluator;

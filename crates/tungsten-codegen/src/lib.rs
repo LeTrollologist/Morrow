@@ -5,6 +5,8 @@ pub mod runtime;
 
 use tungsten_tir::ir::TirModule;
 
+pub use runtime::set_silent_mode;
+
 pub fn compile_and_run(module: &TirModule) -> Result<i64, String> {
     let mut engine = jit::JitEngine::new()?;
     engine.compile_and_run(module)

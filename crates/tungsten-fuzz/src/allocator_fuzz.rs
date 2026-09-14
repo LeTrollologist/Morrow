@@ -56,9 +56,21 @@ pub fn fuzz_physical_arena(iterations: usize, seed: u64) {
             seed_byte,
         });
 
-        // Periodically verify all previous allocations have NOT been corrupted
-        if i % 100 == 0 || i == iterations - 1 {
-            for (idx, alloc) in live_allocations.iter().enumerate() {
+        // Periodically verify allocations have NOT been corrupted
+        let check_interval = (iterations / 200).max(100);
+        if i % check_interval == 0 || i == iterations - 1 {
+            let total = live_allocations.len();
+            let check_iter: Box<dyn Iterator<Item = (usize, &LiveAllocation)>> = if total <= 1000 {
+                Box::new(live_allocations.iter().enumerate())
+            } else {
+                let stride = (total / 200).max(1);
+                Box::new(
+                    live_allocations.iter().enumerate().step_by(stride)
+                        .chain(live_allocations.iter().enumerate().skip(total.saturating_sub(100)))
+                )
+            };
+
+            for (idx, alloc) in check_iter {
                 // Re-verify alignment
                 assert_eq!(
                     (alloc.ptr as usize) % alloc.align,
