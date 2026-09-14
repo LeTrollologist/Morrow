@@ -223,5 +223,90 @@ mod tests {
         let errs = res.unwrap_err();
         assert!(errs.iter().any(|e| e.message.contains("Region escape violation")));
     }
+
+    #[test]
+    fn test_resume_linearity_violation_rejection() {
+        let code = r#"
+        effect Db {
+            fn query(sql: String) -> String;
+        }
+
+        fn run_query() -> String yields [Db] {
+            Db::query("SELECT 1")
+        }
+
+        fn main() {
+            handle {
+                run_query();
+            } with {
+                Db::query(sql) => {
+                    let r1 = resume("first");
+                    let r2 = resume("second");
+                    "done"
+                }
+            }
+        }
+        "#;
+
+        let ast = parse(code).expect("syntax parse ok");
+        let res = check(&ast);
+        assert!(res.is_err(), "Multiple resume calls in an arm must be rejected");
+        let errs = res.unwrap_err();
+        assert!(errs.iter().any(|e| e.message.contains("Linearity violation")));
+    }
+
+    #[test]
+    fn test_resume_outside_handler_rejection() {
+        let code = r#"
+        fn main() {
+            resume(42);
+        }
+        "#;
+
+        let ast = parse(code).expect("syntax parse ok");
+        let res = check(&ast);
+        assert!(res.is_err(), "Resume outside handler must be rejected");
+        let errs = res.unwrap_err();
+        assert!(errs.iter().any(|e| e.message.contains("Cannot call 'resume' outside of an effect handler arm")));
+    }
+
+    #[test]
+    fn test_effect_row_polymorphism_and_unified_handlers() {
+        let code = r#"
+        effect Db {
+            fn query(sql: String) -> String;
+        }
+
+        effect Logger {
+            fn log(msg: String) -> ();
+        }
+
+        fn apply<T, U, E>(val: T, f: fn(T) yields [..E] -> U) -> U yields [..E] {
+            f(val)
+        }
+
+        fn fetch_user(id: i64) -> String yields [Db, Logger] {
+            Logger::log("fetching");
+            Db::query("SELECT user")
+        }
+
+        fn main() {
+            handle {
+                let user = apply(42, fetch_user);
+            } with {
+                Db::query(sql) => {
+                    resume("Alice")
+                },
+                Logger::log(msg) => {
+                    resume(())
+                }
+            }
+        }
+        "#;
+
+        let ast = parse(code).expect("syntax parse ok");
+        let res = check(&ast);
+        assert!(res.is_ok(), "Effect row polymorphism and unified handlers should succeed: {:?}", res.err());
+    }
 }
 

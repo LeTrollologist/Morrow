@@ -609,6 +609,9 @@ impl Evaluator {
                     EvalSignal::Normal(Value::Unit)
                 }
             }
+            ExprKind::Resume(inner) => {
+                self.eval_expr(inner)
+            }
         }
     }
 

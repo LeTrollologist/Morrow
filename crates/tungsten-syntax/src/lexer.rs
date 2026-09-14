@@ -242,6 +242,7 @@ impl<'a> Lexer<'a> {
                         "as" => TokenKind::As,
                         "region" => TokenKind::Region,
                         "effect" => TokenKind::Effect,
+                        "resume" => TokenKind::Resume,
                         _ => TokenKind::Ident(ident),
                     }
 

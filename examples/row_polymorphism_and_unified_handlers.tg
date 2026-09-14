@@ -1,0 +1,41 @@
+// Algebraic Effects Architectural Revisement (v1.0 AST & Semantics)
+// Demonstrating:
+// 1. Effect row polymorphism with spread syntax (yields [..E])
+// 2. Unified handler capability matching (with { Db::query(...) => ..., Logger::log(...) => ... })
+// 3. Single-shot linear continuation resumption (resume(value))
+
+effect Db {
+    fn query(sql: String, args: String) -> String;
+}
+
+effect Logger {
+    fn log(msg: String) -> ();
+}
+
+// Higher-order polymorphic pipeline function with open effect row `..E`
+fn pipeline<T, U, E>(val: T, op: fn(T) yields [..E] -> U) -> U yields [..E] {
+    op(val)
+}
+
+fn fetch_user_data(user_id: i64) -> String yields [Db, Logger] {
+    Logger::log("Fetching user profile from database...");
+    let query_res = Db::query("SELECT name FROM users WHERE id = ?", "42");
+    query_res
+}
+
+fn main() {
+    // Delimited unified handler block matching multiple capabilities in a single scope
+    handle {
+        let profile = pipeline(42, fetch_user_data);
+        println!("Loaded Profile: {}", profile);
+    } with {
+        Db::query(sql, args) => {
+            let res = "Alice (Level 99)";
+            resume(res)
+        },
+        Logger::log(msg) => {
+            println!("[LOG] {}", msg);
+            resume(())
+        }
+    }
+}

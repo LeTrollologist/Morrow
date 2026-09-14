@@ -96,6 +96,17 @@ impl Type {
                 };
                 (*m1 == *m2 || (!m2 && *m1)) && i1.is_compatible_with(i2) && region_compat
             }
+            (Type::Fn { params: p1, return_type: r1, yields_effects: e1 }, Type::Fn { params: p2, return_type: r2, yields_effects: e2 }) => {
+                if p1.len() != p2.len() {
+                    return false;
+                }
+                let params_compat = p1.iter().zip(p2.iter()).all(|(a, b)| b.is_compatible_with(a));
+                let ret_compat = r1.is_compatible_with(r2);
+                let s1: std::collections::BTreeSet<_> = e1.iter().map(|e| e.trim_start_matches("..")).collect();
+                let s2: std::collections::BTreeSet<_> = e2.iter().map(|e| e.trim_start_matches("..")).collect();
+                let effects_compat = s2.is_subset(&s1) || s1 == s2;
+                params_compat && ret_compat && effects_compat
+            }
             // Coercions between integer primitives
             (Type::I64, Type::U64) | (Type::U64, Type::I64) => true,
             (Type::I64, Type::U8) | (Type::U8, Type::I64) => true,

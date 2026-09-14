@@ -62,13 +62,54 @@ pub fn unify(expected: &Type, actual: &Type, subst: &mut Subst) -> Result<(), St
             for (arg1, arg2) in p1.iter().zip(p2.iter()) {
                 unify(arg1, arg2, subst)?;
             }
+
+            let is_row_var = |s: &str| s.starts_with("..") || (s.len() == 1 && s.chars().next().map_or(false, |c| c.is_ascii_uppercase())) || s.starts_with('?');
+            let clean = |s: &str| s.trim_start_matches("..").to_string();
+
+            let mut row_var1 = None;
+            let mut concrete1 = std::collections::BTreeSet::new();
             for eff in e1 {
-                if eff.len() == 1 || eff.starts_with('?') {
-                    subst.effect_bindings.insert(eff.clone(), e2.clone());
-                } else if !e2.contains(eff) {
-                    return Err(format!("Effect '{}' missing in function type unification", eff));
+                if is_row_var(eff) {
+                    row_var1 = Some(clean(eff));
+                } else {
+                    concrete1.insert(eff.clone());
                 }
             }
+
+            let mut row_var2 = None;
+            let mut concrete2 = std::collections::BTreeSet::new();
+            for eff in e2 {
+                if is_row_var(eff) {
+                    row_var2 = Some(clean(eff));
+                } else {
+                    concrete2.insert(eff.clone());
+                }
+            }
+
+            if let Some(rv1) = row_var1 {
+                let diff: Vec<String> = concrete2.difference(&concrete1).cloned().collect();
+                if let Some(existing) = subst.effect_bindings.get(&rv1) {
+                    let s_exist: std::collections::BTreeSet<_> = existing.iter().cloned().collect();
+                    let s_diff: std::collections::BTreeSet<_> = diff.into_iter().collect();
+                    let union_set: Vec<String> = s_exist.union(&s_diff).cloned().collect();
+                    subst.effect_bindings.insert(rv1.clone(), union_set.clone());
+                    subst.effect_bindings.insert(format!("..{}", rv1), union_set);
+                } else {
+                    subst.effect_bindings.insert(rv1.clone(), diff.clone());
+                    subst.effect_bindings.insert(format!("..{}", rv1), diff);
+                }
+            } else if let Some(rv2) = row_var2 {
+                let diff: Vec<String> = concrete1.difference(&concrete2).cloned().collect();
+                subst.effect_bindings.insert(rv2.clone(), diff.clone());
+                subst.effect_bindings.insert(format!("..{}", rv2), diff);
+            } else {
+                for eff in &concrete1 {
+                    if !concrete2.contains(eff) {
+                        return Err(format!("Effect '{}' missing in function type unification", eff));
+                    }
+                }
+            }
+
             unify(r1, r2, subst)
         }
         (other, Type::GenericParam(name)) => {
@@ -106,18 +147,21 @@ pub fn substitute(ty: &Type, subst: &Subst) -> Type {
         Type::Fn { params, return_type, yields_effects } => {
             let new_params = params.iter().map(|p| substitute(p, subst)).collect();
             let new_ret = substitute(return_type, subst);
-            let mut new_effects = Vec::new();
+            let mut new_effects = std::collections::BTreeSet::new();
             for eff in yields_effects {
-                if let Some(bound_effs) = subst.effect_bindings.get(eff) {
-                    new_effects.extend(bound_effs.clone());
+                let clean_name = eff.trim_start_matches("..");
+                if let Some(bound_effs) = subst.effect_bindings.get(clean_name).or_else(|| subst.effect_bindings.get(eff)) {
+                    for b in bound_effs {
+                        new_effects.insert(b.clone());
+                    }
                 } else {
-                    new_effects.push(eff.clone());
+                    new_effects.insert(eff.clone());
                 }
             }
             Type::Fn {
                 params: new_params,
                 return_type: Box::new(new_ret),
-                yields_effects: new_effects,
+                yields_effects: new_effects.into_iter().collect(),
             }
         }
         other => other.clone(),

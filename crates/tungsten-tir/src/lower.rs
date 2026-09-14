@@ -22,6 +22,7 @@ struct TirLowerer {
     next_region_id: usize,
     scopes: Vec<HashMap<String, (Var, Type)>>,
     next_var_version: usize,
+    continuation_stack: Vec<BlockId>,
 }
 
 impl TirLowerer {
@@ -37,6 +38,7 @@ impl TirLowerer {
             next_region_id: 1,
             scopes: Vec::new(),
             next_var_version: 0,
+            continuation_stack: Vec::new(),
         }
     }
 
@@ -639,7 +641,9 @@ impl TirLowerer {
                     if let Some(param_name) = &th.param {
                         self.var_types.insert(param_name.clone(), Type::String);
                     }
+                    self.continuation_stack.push(exit_bb);
                     let arm_res = self.lower_expr(&arm.body);
+                    self.continuation_stack.pop();
                     if !self.is_current_terminated() {
                         self.terminate(Terminator::Resume {
                             arg: Some(arm_res),
@@ -650,6 +654,15 @@ impl TirLowerer {
 
                 self.set_current_block(exit_bb);
                 Operand::Constant(TirConstant::Unit)
+            }
+            ExprKind::Resume(inner) => {
+                let res = self.lower_expr(inner);
+                let cont_bb = self.continuation_stack.last().copied().unwrap_or(BlockId(0));
+                self.terminate(Terminator::Resume {
+                    arg: Some(res.clone()),
+                    continuation_block: cont_bb,
+                });
+                res
             }
             ExprKind::Block(inner_block) => {
                 self.lower_block(inner_block).unwrap_or(Operand::Constant(TirConstant::Unit))

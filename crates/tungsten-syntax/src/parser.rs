@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use crate::ast::*;
 use crate::token::{Span, Token, TokenKind};
 
@@ -231,16 +232,26 @@ impl Parser {
         if self.match_token(&TokenKind::Yields) {
             if self.match_token(&TokenKind::LBracket) {
                 while !self.check(&TokenKind::RBracket) && !self.check(&TokenKind::Eof) {
+                    let is_spread = self.match_token(&TokenKind::DotDot);
                     let (eff, _) = self.expect_ident()?;
-                    yields_effects.push(eff);
+                    if is_spread {
+                        yields_effects.push(format!("..{}", eff));
+                    } else {
+                        yields_effects.push(eff);
+                    }
                     if !self.match_token(&TokenKind::Comma) {
                         break;
                     }
                 }
                 self.expect(TokenKind::RBracket)?;
             } else {
+                let is_spread = self.match_token(&TokenKind::DotDot);
                 let (eff, _) = self.expect_ident()?;
-                yields_effects.push(eff);
+                if is_spread {
+                    yields_effects.push(format!("..{}", eff));
+                } else {
+                    yields_effects.push(eff);
+                }
             }
         }
 
@@ -277,16 +288,26 @@ impl Parser {
                 if self.match_token(&TokenKind::Yields) {
                     if self.match_token(&TokenKind::LBracket) {
                         while !self.check(&TokenKind::RBracket) && !self.check(&TokenKind::Eof) {
+                            let is_spread = self.match_token(&TokenKind::DotDot);
                             let (eff, _) = self.expect_ident()?;
-                            yields_effects.push(eff);
+                            if is_spread {
+                                yields_effects.push(format!("..{}", eff));
+                            } else {
+                                yields_effects.push(eff);
+                            }
                             if !self.match_token(&TokenKind::Comma) {
                                 break;
                             }
                         }
                         self.expect(TokenKind::RBracket)?;
                     } else {
+                        let is_spread = self.match_token(&TokenKind::DotDot);
                         let (eff, _) = self.expect_ident()?;
-                        yields_effects.push(eff);
+                        if is_spread {
+                            yields_effects.push(format!("..{}", eff));
+                        } else {
+                            yields_effects.push(eff);
+                        }
                     }
                 }
                 let mut ret_ty = TypeExpr::Unit(start_tok.span);
@@ -496,46 +517,98 @@ impl Parser {
         let mut handlers = Vec::new();
 
         while self.match_token(&TokenKind::With) {
-            let (eff_name, eff_span) = self.expect_ident()?;
-            self.expect(TokenKind::LBrace)?;
-            let mut arms = Vec::new();
+            if self.match_token(&TokenKind::LBrace) {
+                // Unified capability matching block: with { Db::query(...) => ..., IOError::raise(...) => ... }
+                let start_brace_span = self.peek().span;
+                let mut map: HashMap<String, Vec<HandlerArm>> = HashMap::new();
+                let mut order: Vec<String> = Vec::new();
 
-            while !self.check(&TokenKind::RBrace) && !self.check(&TokenKind::Eof) {
-                let (ident, ident_span) = self.expect_ident()?;
-                let mut params = Vec::new();
-                let op_name;
-                if self.match_token(&TokenKind::LParen) {
-                    op_name = ident;
-                    while !self.check(&TokenKind::RParen) && !self.check(&TokenKind::Eof) {
-                        let (p, _) = self.expect_ident()?;
-                        params.push(p);
-                        if !self.match_token(&TokenKind::Comma) {
-                            break;
+                while !self.check(&TokenKind::RBrace) && !self.check(&TokenKind::Eof) {
+                    let (eff_or_op, ident_span) = self.expect_ident()?;
+                    let (eff_name, op_name) = if self.match_token(&TokenKind::ColonColon) {
+                        let (op, _) = self.expect_ident()?;
+                        (eff_or_op, op)
+                    } else {
+                        ("IO".to_string(), eff_or_op)
+                    };
+
+                    let mut params = Vec::new();
+                    if self.match_token(&TokenKind::LParen) {
+                        while !self.check(&TokenKind::RParen) && !self.check(&TokenKind::Eof) {
+                            let (p, _) = self.expect_ident()?;
+                            params.push(p);
+                            if !self.match_token(&TokenKind::Comma) {
+                                break;
+                            }
                         }
+                        self.expect(TokenKind::RParen)?;
                     }
-                    self.expect(TokenKind::RParen)?;
-                } else {
-                    op_name = "_catch".to_string();
-                    params.push(ident);
-                }
-                self.expect(TokenKind::FatArrow)?;
-                let body_expr = self.parse_expr()?;
-                self.match_token(&TokenKind::Comma);
-                self.match_token(&TokenKind::Semicolon);
+                    self.expect(TokenKind::FatArrow)?;
+                    let body_expr = self.parse_expr()?;
+                    self.match_token(&TokenKind::Comma);
+                    self.match_token(&TokenKind::Semicolon);
 
-                arms.push(HandlerArm {
-                    op_name,
-                    params,
-                    body: body_expr,
-                    span: ident_span,
+                    if !map.contains_key(&eff_name) {
+                        order.push(eff_name.clone());
+                    }
+                    map.entry(eff_name).or_default().push(HandlerArm {
+                        op_name,
+                        params,
+                        body: body_expr,
+                        span: ident_span,
+                    });
+                }
+                let end_brace = self.expect(TokenKind::RBrace)?;
+                for eff_name in order {
+                    let arms = map.remove(&eff_name).unwrap();
+                    handlers.push(HandlerClause {
+                        effect_name: eff_name,
+                        arms,
+                        span: Span::new(start_brace_span.start, end_brace.span.end, start_brace_span.line, start_brace_span.column),
+                    });
+                }
+            } else {
+                let (eff_name, eff_span) = self.expect_ident()?;
+                self.expect(TokenKind::LBrace)?;
+                let mut arms = Vec::new();
+
+                while !self.check(&TokenKind::RBrace) && !self.check(&TokenKind::Eof) {
+                    let (ident, ident_span) = self.expect_ident()?;
+                    let mut params = Vec::new();
+                    let op_name;
+                    if self.match_token(&TokenKind::LParen) {
+                        op_name = ident;
+                        while !self.check(&TokenKind::RParen) && !self.check(&TokenKind::Eof) {
+                            let (p, _) = self.expect_ident()?;
+                            params.push(p);
+                            if !self.match_token(&TokenKind::Comma) {
+                                break;
+                            }
+                        }
+                        self.expect(TokenKind::RParen)?;
+                    } else {
+                        op_name = "_catch".to_string();
+                        params.push(ident);
+                    }
+                    self.expect(TokenKind::FatArrow)?;
+                    let body_expr = self.parse_expr()?;
+                    self.match_token(&TokenKind::Comma);
+                    self.match_token(&TokenKind::Semicolon);
+
+                    arms.push(HandlerArm {
+                        op_name,
+                        params,
+                        body: body_expr,
+                        span: ident_span,
+                    });
+                }
+                let end_brace = self.expect(TokenKind::RBrace)?;
+                handlers.push(HandlerClause {
+                    effect_name: eff_name,
+                    arms,
+                    span: Span::new(eff_span.start, end_brace.span.end, eff_span.line, eff_span.column),
                 });
             }
-            let end_brace = self.expect(TokenKind::RBrace)?;
-            handlers.push(HandlerClause {
-                effect_name: eff_name,
-                arms,
-                span: Span::new(eff_span.start, end_brace.span.end, eff_span.line, eff_span.column),
-            });
         }
 
         let end_span = handlers.last().map(|h| h.span.end).unwrap_or(body.span.end);
@@ -808,6 +881,23 @@ impl Parser {
                 self.advance();
                 Ok(Expr::new(ExprKind::Bool(false), tok.span))
             }
+            TokenKind::Resume => {
+                let start_span = self.advance().span;
+                if self.match_token(&TokenKind::LParen) {
+                    if self.match_token(&TokenKind::RParen) {
+                        let dummy = Expr::new(ExprKind::Int(0), start_span);
+                        Ok(Expr::new(ExprKind::Resume(Box::new(dummy)), start_span))
+                    } else {
+                        let val = self.parse_expr()?;
+                        let end_tok = self.expect(TokenKind::RParen)?;
+                        let span = Span::new(start_span.start, end_tok.span.end, start_span.line, start_span.column);
+                        Ok(Expr::new(ExprKind::Resume(Box::new(val)), span))
+                    }
+                } else {
+                    let dummy = Expr::new(ExprKind::Int(0), start_span);
+                    Ok(Expr::new(ExprKind::Resume(Box::new(dummy)), start_span))
+                }
+            }
             TokenKind::Ident(ref name) => {
                 let name = name.clone();
                 let ident_span = tok.span;
@@ -869,10 +959,14 @@ impl Parser {
                 Ok(Expr::new(ExprKind::Ident(name), ident_span))
             }
             TokenKind::LParen => {
-                self.advance();
-                let inner = self.parse_expr()?;
-                self.expect(TokenKind::RParen)?;
-                Ok(inner)
+                let start_span = self.advance().span;
+                if self.match_token(&TokenKind::RParen) {
+                    Ok(Expr::new(ExprKind::Int(0), start_span))
+                } else {
+                    let inner = self.parse_expr()?;
+                    self.expect(TokenKind::RParen)?;
+                    Ok(inner)
+                }
             }
             TokenKind::LBrace => {
                 let block = self.parse_block()?;

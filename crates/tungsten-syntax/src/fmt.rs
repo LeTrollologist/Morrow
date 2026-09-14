@@ -360,6 +360,9 @@ impl Formatter {
                 s.push_str(&sub_fmt.output);
                 s
             }
+            ExprKind::Resume(inner) => {
+                format!("resume({})", self.format_expr(inner))
+            }
         }
 
     }

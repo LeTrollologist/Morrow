@@ -45,11 +45,20 @@ struct Scope {
     region: RegionId,
 }
 
+#[derive(Clone)]
+pub struct HandlerArmCtx {
+    pub effect_name: String,
+    pub op_name: String,
+    pub expected_resume_ty: Type,
+    pub resume_count: usize,
+}
+
 pub struct FnChecker<'a> {
     parent: &'a TypeChecker,
     scopes: Vec<Scope>,
     allowed_yields: HashSet<String>,
-    handled_effects: Vec<HashSet<String>>,
+    handled_effects: Vec<(HashSet<String>, RegionId)>,
+    current_handler_arm: Option<HandlerArmCtx>,
     pub relational_ctx: crate::relational::RelationalContext,
     errors: Vec<TypeError>,
     region_stack: Vec<RegionId>,
@@ -353,6 +362,7 @@ impl<'a> FnChecker<'a> {
             scopes: Vec::new(),
             allowed_yields,
             handled_effects: Vec::new(),
+            current_handler_arm: None,
             relational_ctx: crate::relational::RelationalContext::new(),
             errors: Vec::new(),
             region_stack: vec![RegionId(1)],
@@ -398,8 +408,8 @@ impl<'a> FnChecker<'a> {
 
     fn lookup_var(&self, name: &str) -> Option<(Type, bool)> {
         for scope in self.scopes.iter().rev() {
-            if let Some(entry) = scope.variables.get(name) {
-                return Some(entry.clone());
+            if let Some(val) = scope.variables.get(name) {
+                return Some(val.clone());
             }
         }
         None
@@ -408,16 +418,17 @@ impl<'a> FnChecker<'a> {
 
     fn check_effect_permission(&mut self, effect: &str, span: Span) {
         // If the effect is handled by an enclosing `handle` block, it is permitted
-        for handled in self.handled_effects.iter().rev() {
+        for (handled, _) in self.handled_effects.iter().rev() {
             if handled.contains(effect) {
                 return;
             }
         }
         // Otherwise it must be in the function's `yields` clause
-        if !self.allowed_yields.contains(effect) {
+        let clean = effect.trim_start_matches("..");
+        if !self.allowed_yields.contains(effect) && !self.allowed_yields.contains(clean) && !self.allowed_yields.contains(&format!("..{}", effect)) {
             self.errors.push(TypeError::new(
                 format!(
-                    "Unhandled algebraic effect '{}'. Function must declare 'yields [{}]' or handle it with 'handle {{ ... }} with {} {{ ... }}'",
+                    "Unhandled algebraic effect '{}'. Function must declare 'yields [{}]' or handle it with 'handle {{ ... }} with {{ {}::... => ... }}'",
                     effect, effect, effect
                 ),
                 span,
@@ -755,6 +766,50 @@ impl<'a> FnChecker<'a> {
                     let op = &path[1];
                     if self.parent.known_effects.contains(namespace) {
                         self.check_effect_permission(namespace, expr.span);
+
+                        let handler_region = self.handled_effects.iter().rev()
+                            .find(|(h, _)| h.contains(namespace))
+                            .map(|(_, reg)| *reg);
+
+                        if let Some(h_reg) = handler_region {
+                            for a in args {
+                                let (arg_ty, _) = self.check_expr(a);
+                                if let Type::Ref { region: Some(r), .. } = &arg_ty {
+                                    if r.0 > h_reg.0 {
+                                        self.errors.push(TypeError::new(
+                                            format!(
+                                                "Region escape violation: reference with region '{}' cannot escape into outer effect handler at region '{}'",
+                                                r, h_reg
+                                            ),
+                                            a.span,
+                                        ));
+                                    }
+                                }
+                            }
+                        } else {
+                            for a in args {
+                                let (arg_ty, _) = self.check_expr(a);
+                                if let Type::Ref { region: Some(r), .. } = &arg_ty {
+                                    if r.0 > 1 {
+                                        self.errors.push(TypeError::new(
+                                            format!(
+                                                "Region escape violation: reference with local region '{}' cannot escape across function effect yield",
+                                                r
+                                            ),
+                                            a.span,
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+
+                        if let Some(eff_decl) = self.parent.effect_decls.get(namespace) {
+                            if let Some(op_def) = eff_decl.operations.iter().find(|o| o.name == *op) {
+                                let ret_ty = self.parent.resolve_type_expr(&op_def.return_type).unwrap_or(Type::Unit);
+                                return (ret_ty, None);
+                            }
+                        }
+
                         if namespace == "Db" && op == "query" {
                             return (Type::Struct("Record".into()), None);
                         }
@@ -779,12 +834,6 @@ impl<'a> FnChecker<'a> {
                             }
                             if op == "sleep" {
                                 return (Type::Unit, None);
-                            }
-                        }
-                        if let Some(eff_decl) = self.parent.effect_decls.get(namespace) {
-                            if let Some(op_def) = eff_decl.operations.iter().find(|o| o.name == *op) {
-                                let ret_ty = self.parent.resolve_type_expr(&op_def.return_type).unwrap_or(Type::Unit);
-                                return (ret_ty, None);
                             }
                         }
                         if namespace == "Channel" {
@@ -1032,23 +1081,107 @@ impl<'a> FnChecker<'a> {
                     handled_set.insert(h.effect_name.clone());
                 }
 
-                self.handled_effects.push(handled_set);
-                self.check_block(body, &Type::Unit);
+                let cur_reg = self.current_region();
+                self.handled_effects.push((handled_set, cur_reg));
+                let (body_ty, body_intv) = self.check_block(body, &Type::Unit);
                 self.handled_effects.pop();
 
                 // Check handler arms
                 for h in handlers {
                     for arm in &h.arms {
+                        let mut expected_resume_ty = Type::Unit;
+                        let mut param_tys: Vec<(String, Type)> = Vec::new();
+
+                        if let Some(eff_decl) = self.parent.effect_decls.get(&h.effect_name) {
+                            if let Some(op_def) = eff_decl.operations.iter().find(|o| o.name == arm.op_name) {
+                                expected_resume_ty = self.parent.resolve_type_expr(&op_def.return_type).unwrap_or(Type::Unit);
+                                for (p_idx, (p_name, p_ty_expr)) in op_def.params.iter().enumerate() {
+                                    let bound_name = arm.params.get(p_idx).unwrap_or(p_name);
+                                    let resolved_ty = self.parent.resolve_type_expr(p_ty_expr).unwrap_or(Type::String);
+                                    param_tys.push((bound_name.clone(), resolved_ty));
+                                }
+                            }
+                        }
+
+                        if param_tys.is_empty() {
+                            for p in &arm.params {
+                                param_tys.push((p.clone(), Type::String));
+                            }
+                            if h.effect_name == "Db" && arm.op_name == "query" {
+                                expected_resume_ty = Type::Struct("Record".into());
+                            } else if h.effect_name == "Random" {
+                                expected_resume_ty = Type::I64;
+                            } else if h.effect_name == "Time" {
+                                expected_resume_ty = Type::U64;
+                            } else if h.effect_name == "Net" && arm.op_name == "read" {
+                                expected_resume_ty = Type::String;
+                            }
+                        }
+
+                        // Linearity check on arm body:
+                        // Continuations are single-shot: verify resume is called at most once on any path
+                        let mut resume_errors = Vec::new();
+                        check_resume_linearity(&arm.body, false, &mut resume_errors);
+                        self.errors.extend(resume_errors);
+
+                        self.current_handler_arm = Some(HandlerArmCtx {
+                            effect_name: h.effect_name.clone(),
+                            op_name: arm.op_name.clone(),
+                            expected_resume_ty,
+                            resume_count: 0,
+                        });
+
                         self.push_scope();
-                        for p in &arm.params {
-                            self.define_var(p.clone(), Type::String, false);
+                        for (pname, pty) in param_tys {
+                            self.define_var(pname, pty, false);
                         }
                         self.check_expr(&arm.body);
                         self.pop_scope();
+
+                        self.current_handler_arm = None;
                     }
                 }
 
-                (Type::Unit, None)
+                (body_ty, body_intv)
+            }
+            ExprKind::Resume(inner) => {
+                let (expected_ty, resume_count) = if let Some(ref mut ctx) = self.current_handler_arm {
+                    ctx.resume_count += 1;
+                    (ctx.expected_resume_ty.clone(), ctx.resume_count)
+                } else {
+                    self.errors.push(TypeError::new(
+                        "Cannot call 'resume' outside of an effect handler arm",
+                        expr.span,
+                    ));
+                    (Type::Unit, 0)
+                };
+
+                if resume_count > 1 {
+                    self.errors.push(TypeError::new(
+                        "Linearity violation: 'resume' cannot be called multiple times in a single handler arm (continuations are single-shot)",
+                        expr.span,
+                    ));
+                }
+
+                let (val_ty, val_intv) = self.check_expr(inner);
+                if !val_ty.is_compatible_with(&expected_ty) && expected_ty != Type::Unit {
+                    self.errors.push(TypeError::new(
+                        format!("Type mismatch in resume: expected '{}', got '{}'", expected_ty, val_ty),
+                        inner.span,
+                    ));
+                }
+
+                // Region safety: reference cannot escape through resume
+                if let Type::Ref { region: Some(r), .. } = &val_ty {
+                    if r.0 > 1 {
+                        self.errors.push(TypeError::new(
+                            format!("Region escape violation: reference with region '{}' cannot escape through resume", r),
+                            inner.span,
+                        ));
+                    }
+                }
+
+                (expected_ty, val_intv)
             }
             ExprKind::Block(b) => {
                 self.check_block(b, &Type::Unit);
@@ -1087,6 +1220,81 @@ impl<'a> FnChecker<'a> {
                 (body_ty, body_intv)
             }
         }
+    }
+}
+
+fn check_resume_linearity(expr: &Expr, in_loop: bool, errors: &mut Vec<TypeError>) -> usize {
+    match &expr.kind {
+        ExprKind::Resume(inner) => {
+            check_resume_linearity(inner, in_loop, errors);
+            if in_loop {
+                errors.push(TypeError::new(
+                    "Linearity violation: continuations are single-shot and cannot be resumed inside loops",
+                    expr.span,
+                ));
+            }
+            1
+        }
+        ExprKind::Block(b) => {
+            let mut seq_resumes = 0;
+            for stmt in &b.stmts {
+                match stmt {
+                    Stmt::Let { init, .. } => {
+                        seq_resumes += check_resume_linearity(init, in_loop, errors);
+                    }
+                    Stmt::Assign { value, .. } => {
+                        seq_resumes += check_resume_linearity(value, in_loop, errors);
+                    }
+                    Stmt::Expr { expr, .. } => {
+                        seq_resumes += check_resume_linearity(expr, in_loop, errors);
+                    }
+                    Stmt::Return { value: Some(v), .. } => {
+                        seq_resumes += check_resume_linearity(v, in_loop, errors);
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(t) = &b.trailing_expr {
+                seq_resumes += check_resume_linearity(t, in_loop, errors);
+            }
+            if seq_resumes > 1 {
+                errors.push(TypeError::new(
+                    "Linearity violation: multiple 'resume' calls along the same execution path (continuations are single-shot)",
+                    b.span,
+                ));
+            }
+            seq_resumes
+        }
+        ExprKind::If { cond, then_branch, else_branch } => {
+            let cond_res = check_resume_linearity(cond, in_loop, errors);
+            let then_block_expr = Expr::new(ExprKind::Block(then_branch.clone()), then_branch.span);
+            let then_res = check_resume_linearity(&then_block_expr, in_loop, errors);
+            let else_res = if let Some(eb) = else_branch {
+                let else_block_expr = Expr::new(ExprKind::Block(eb.clone()), eb.span);
+                check_resume_linearity(&else_block_expr, in_loop, errors)
+            } else {
+                0
+            };
+            cond_res + std::cmp::max(then_res, else_res)
+        }
+        ExprKind::Binary { left, right, .. } => {
+            check_resume_linearity(left, in_loop, errors) + check_resume_linearity(right, in_loop, errors)
+        }
+        ExprKind::Call { callee, args } => {
+            let mut total = check_resume_linearity(callee, in_loop, errors);
+            for a in args {
+                total += check_resume_linearity(a, in_loop, errors);
+            }
+            total
+        }
+        ExprKind::MethodCall { target, args, .. } => {
+            let mut total = check_resume_linearity(target, in_loop, errors);
+            for a in args {
+                total += check_resume_linearity(a, in_loop, errors);
+            }
+            total
+        }
+        _ => 0,
     }
 }
 
