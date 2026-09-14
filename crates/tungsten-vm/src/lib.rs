@@ -20,6 +20,15 @@ pub fn execute_and_capture(program: &Program) -> Result<(Value, Vec<String>), St
     Ok((val, logs))
 }
 
+pub fn execute_and_capture_full(program: &Program) -> Result<(Value, Vec<String>, Vec<String>), String> {
+    let mut vm = Evaluator::new();
+    vm.load_program(program);
+    let val = vm.run_main()?;
+    let logs = vm.stdout_lines;
+    let traces = vm.effect_traces;
+    Ok((val, logs, traces))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

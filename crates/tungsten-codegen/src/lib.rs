@@ -10,6 +10,14 @@ pub fn compile_and_run(module: &TirModule) -> Result<i64, String> {
     engine.compile_and_run(module)
 }
 
+pub fn compile_and_run_with_traces(module: &TirModule) -> Result<(i64, Vec<String>), String> {
+    runtime::clear_effect_traces();
+    let mut engine = jit::JitEngine::new()?;
+    let ret = engine.compile_and_run(module)?;
+    let traces = runtime::get_recorded_effect_traces();
+    Ok((ret, traces))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

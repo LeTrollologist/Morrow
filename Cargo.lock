@@ -489,6 +489,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tungsten-fuzz"
+version = "0.1.0"
+dependencies = [
+ "tungsten-codegen",
+ "tungsten-syntax",
+ "tungsten-tir",
+ "tungsten-typeck",
+ "tungsten-vm",
+]
+
+[[package]]
 name = "tungsten-lsp"
 version = "0.1.0"
 dependencies = [

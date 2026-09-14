@@ -1,0 +1,13 @@
+[package]
+name = "tungsten-fuzz"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+tungsten-syntax = { path = "../tungsten-syntax" }
+tungsten-typeck = { path = "../tungsten-typeck" }
+tungsten-tir = { path = "../tungsten-tir" }
+tungsten-codegen = { path = "../tungsten-codegen" }
+tungsten-vm = { path = "../tungsten-vm" }

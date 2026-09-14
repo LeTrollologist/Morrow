@@ -4,9 +4,9 @@ use tungsten_syntax::ast::BinOp;
 
 pub fn run_const_fold(func: &mut TirFunction) -> usize {
     let mut changes = 0;
-    let mut const_map: HashMap<Var, TirConstant> = HashMap::new();
 
     for block in &mut func.blocks {
+        let mut const_map: HashMap<Var, TirConstant> = HashMap::new();
         for inst in &mut block.instructions {
             if let Instruction::Assign { dest, rvalue, .. } = inst {
                 // 1. Substitute operands from const_map

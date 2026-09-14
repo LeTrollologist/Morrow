@@ -20,6 +20,8 @@ struct TirLowerer {
     var_intervals: HashMap<String, Interval>,
     arena_stack: Vec<Operand>,
     next_region_id: usize,
+    scopes: Vec<HashMap<String, (Var, Type)>>,
+    next_var_version: usize,
 }
 
 impl TirLowerer {
@@ -33,7 +35,35 @@ impl TirLowerer {
             var_intervals: HashMap::new(),
             arena_stack: Vec::new(),
             next_region_id: 1,
+            scopes: Vec::new(),
+            next_var_version: 0,
         }
+    }
+
+    fn push_scope(&mut self) {
+        self.scopes.push(HashMap::new());
+    }
+
+    fn pop_scope(&mut self) {
+        self.scopes.pop();
+    }
+
+    fn define_scoped_var(&mut self, name: &str, ty: Type) -> Var {
+        let var = Var::Named(format!("{}_{}", name, self.next_var_version));
+        self.next_var_version += 1;
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.insert(name.to_string(), (var.clone(), ty));
+        }
+        var
+    }
+
+    fn lookup_scoped_var(&self, name: &str) -> Option<(Var, Type)> {
+        for scope in self.scopes.iter().rev() {
+            if let Some(entry) = scope.get(name) {
+                return Some(entry.clone());
+            }
+        }
+        None
     }
 
     fn new_block(&mut self, label: Option<&str>) -> BlockId {
@@ -111,6 +141,8 @@ impl TirLowerer {
         self.next_temp_id = 0;
         self.var_types.clear();
         self.var_intervals.clear();
+        self.scopes.clear();
+        self.push_scope();
 
         let entry_id = self.new_block(Some("entry"));
         self.set_current_block(entry_id);
@@ -131,6 +163,10 @@ impl TirLowerer {
             if let Some(int) = interval {
                 self.var_intervals.insert(p.name.clone(), int);
             }
+            self.scopes
+                .last_mut()
+                .unwrap()
+                .insert(p.name.clone(), (Var::Named(p.name.clone()), ty.clone()));
 
             tir_params.push(TirParam {
                 name: p.name.clone(),
@@ -175,6 +211,7 @@ impl TirLowerer {
     }
 
     fn lower_block(&mut self, block: &Block) -> Option<Operand> {
+        self.push_scope();
         for stmt in &block.stmts {
             self.lower_stmt(stmt);
             if self.is_current_terminated() {
@@ -183,14 +220,17 @@ impl TirLowerer {
         }
 
         if self.is_current_terminated() {
+            self.pop_scope();
             return None;
         }
 
-        if let Some(expr) = &block.trailing_expr {
+        let res = if let Some(expr) = &block.trailing_expr {
             Some(self.lower_expr(expr))
         } else {
             None
-        }
+        };
+        self.pop_scope();
+        res
     }
 
     fn lower_stmt(&mut self, stmt: &Stmt) {
@@ -222,7 +262,7 @@ impl TirLowerer {
                 }
 
                 self.var_types.insert(name.clone(), resolved_ty.clone());
-                let dest = Var::Named(name.clone());
+                let dest = self.define_scoped_var(name, resolved_ty.clone());
                 self.emit(Instruction::Assign {
                     dest,
                     rvalue: RValue::Use(init_op),
@@ -238,7 +278,9 @@ impl TirLowerer {
                 let val_op = self.lower_expr(value);
                 match &target.kind {
                     ExprKind::Ident(name) => {
-                        let ty = self.var_types.get(name).cloned().unwrap_or(val_op.get_type());
+                        let (dest, ty) = self
+                            .lookup_scoped_var(name)
+                            .unwrap_or_else(|| (Var::Named(name.clone()), val_op.get_type()));
                         if let Some(interval) = self.var_intervals.get(name) {
                             self.emit(Instruction::AssertRefinement {
                                 operand: val_op.clone(),
@@ -248,7 +290,7 @@ impl TirLowerer {
                             });
                         }
                         self.emit(Instruction::Assign {
-                            dest: Var::Named(name.clone()),
+                            dest,
                             rvalue: RValue::Use(val_op),
                             ty,
                             span: *span,
@@ -256,8 +298,11 @@ impl TirLowerer {
                     }
                     ExprKind::FieldAccess { target: base, field } => {
                         if let ExprKind::Ident(base_name) = &base.kind {
+                            let (base_var, _) = self
+                                .lookup_scoped_var(base_name)
+                                .unwrap_or_else(|| (Var::Named(base_name.clone()), Type::Unit));
                             self.emit(Instruction::SetField {
-                                base: Var::Named(base_name.clone()),
+                                base: base_var,
                                 field: field.clone(),
                                 val: val_op,
                                 span: *span,
@@ -290,8 +335,13 @@ impl TirLowerer {
             ExprKind::Str(val) => Operand::Constant(TirConstant::Str(val.clone())),
             ExprKind::Bool(val) => Operand::Constant(TirConstant::Bool(*val)),
             ExprKind::Ident(name) => {
-                let ty = self.var_types.get(name).cloned().unwrap_or(Type::Unit);
-                Operand::Var(Var::Named(name.clone()), ty)
+                let (var, ty) = self
+                    .lookup_scoped_var(name)
+                    .unwrap_or_else(|| {
+                        let ty = self.var_types.get(name).cloned().unwrap_or(Type::Unit);
+                        (Var::Named(name.clone()), ty)
+                    });
+                Operand::Var(var, ty)
             }
             ExprKind::Binary { op, left, right } => {
                 let l_op = self.lower_expr(left);
@@ -511,29 +561,43 @@ impl TirLowerer {
                     else_block: actual_else_bb,
                 });
 
+                // Allocate a temp var for the result of the if expression
+                let (res_var, res_op) = self.alloc_temp(Type::I64);
+
                 // Then branch
                 self.set_current_block(then_bb);
                 let then_res = self.lower_block(then_branch);
                 if !self.is_current_terminated() {
+                    if let Some(tr) = then_res {
+                        self.emit(Instruction::Assign {
+                            dest: res_var.clone(),
+                            rvalue: RValue::Use(tr),
+                            ty: Type::I64,
+                            span: expr.span,
+                        });
+                    }
                     self.terminate(Terminator::Branch(merge_bb));
                 }
 
                 // Else branch
-                let mut else_res = None;
                 if let Some(e_branch) = else_branch {
                     self.set_current_block(else_bb);
-                    else_res = self.lower_block(e_branch);
+                    let else_res = self.lower_block(e_branch);
                     if !self.is_current_terminated() {
+                        if let Some(er) = else_res {
+                            self.emit(Instruction::Assign {
+                                dest: res_var.clone(),
+                                rvalue: RValue::Use(er),
+                                ty: Type::I64,
+                                span: expr.span,
+                            });
+                        }
                         self.terminate(Terminator::Branch(merge_bb));
                     }
                 }
 
                 self.set_current_block(merge_bb);
-                if let (Some(tr), Some(_)) = (then_res, else_res) {
-                    tr
-                } else {
-                    Operand::Constant(TirConstant::Unit)
-                }
+                res_op
             }
             ExprKind::Handle { body, handlers } => {
                 let body_bb = self.new_block(Some("handle_body"));

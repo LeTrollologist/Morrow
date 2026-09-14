@@ -138,23 +138,42 @@ impl PhysicalArena {
         }
         let align_mask = align - 1;
         let current_addr = (self.current_ptr as usize) + self.current_offset;
-        let aligned_addr = (current_addr + align_mask) & !align_mask;
+        let aligned_addr = match current_addr.checked_add(align_mask) {
+            Some(addr) => addr & !align_mask,
+            None => return std::ptr::null_mut(),
+        };
         let offset = aligned_addr - (self.current_ptr as usize);
 
-        if offset + size <= self.current_capacity {
-            self.current_offset = offset + size;
-            aligned_addr as *mut u8
-        } else {
-            let chunk_align = align.max(128);
-            let new_cap = (self.current_capacity * 2).max(size + chunk_align).max(4096);
-            let layout = std::alloc::Layout::from_size_align(new_cap, chunk_align).unwrap();
-            let new_ptr = unsafe { std::alloc::alloc(layout) };
-            self.chunks.push((new_ptr, new_cap, chunk_align));
-            self.current_ptr = new_ptr;
-            self.current_capacity = new_cap;
-            self.current_offset = size;
-            new_ptr
+        if let Some(req_offset) = offset.checked_add(size) {
+            if req_offset <= self.current_capacity {
+                self.current_offset = req_offset;
+                return aligned_addr as *mut u8;
+            }
         }
+
+        let chunk_align = align.max(128);
+        let min_required = match size.checked_add(chunk_align) {
+            Some(sum) => sum,
+            None => return std::ptr::null_mut(),
+        };
+        let new_cap = match self.current_capacity.checked_mul(2) {
+            Some(doubled) => doubled.max(min_required).max(4096),
+            None => min_required.max(4096),
+        };
+
+        let layout = match std::alloc::Layout::from_size_align(new_cap, chunk_align) {
+            Ok(l) => l,
+            Err(_) => return std::ptr::null_mut(),
+        };
+        let new_ptr = unsafe { std::alloc::alloc(layout) };
+        if new_ptr.is_null() {
+            return std::ptr::null_mut();
+        }
+        self.chunks.push((new_ptr, new_cap, chunk_align));
+        self.current_ptr = new_ptr;
+        self.current_capacity = new_cap;
+        self.current_offset = size;
+        new_ptr
     }
 
     pub fn destroy(mut self) {
@@ -256,5 +275,39 @@ pub extern "C" fn tungsten_channel_recv(cid: u64) -> i64 {
         0
     }
 }
+
+static EFFECT_TRACES: std::sync::OnceLock<std::sync::Mutex<Vec<String>>> = std::sync::OnceLock::new();
+
+fn get_effect_traces() -> &'static std::sync::Mutex<Vec<String>> {
+    EFFECT_TRACES.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+
+pub fn clear_effect_traces() {
+    get_effect_traces().lock().unwrap().clear();
+}
+
+pub fn get_recorded_effect_traces() -> Vec<String> {
+    get_effect_traces().lock().unwrap().clone()
+}
+
+#[no_mangle]
+pub extern "C" fn tungsten_trace_effect(
+    eff_ptr: *const u8,
+    eff_len: usize,
+    op_ptr: *const u8,
+    op_len: usize,
+) {
+    if !eff_ptr.is_null() && !op_ptr.is_null() {
+        unsafe {
+            let eff_bytes = slice::from_raw_parts(eff_ptr, eff_len);
+            let op_bytes = slice::from_raw_parts(op_ptr, op_len);
+            if let (Ok(eff_str), Ok(op_str)) = (str::from_utf8(eff_bytes), str::from_utf8(op_bytes)) {
+                let entry = format!("{}:{}", eff_str, op_str);
+                get_effect_traces().lock().unwrap().push(entry);
+            }
+        }
+    }
+}
+
 
 

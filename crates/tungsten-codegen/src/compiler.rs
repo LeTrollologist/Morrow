@@ -24,6 +24,7 @@ pub struct RuntimeFuncs {
     pub region_enter: FuncId,
     pub region_alloc: FuncId,
     pub region_exit: FuncId,
+    pub trace_effect: FuncId,
 }
 
 
@@ -111,6 +112,14 @@ impl FunctionCompiler {
                         builder.switch_to_block(cont_bb);
                     }
                     Instruction::PerformEffect { effect, op, args, dest, .. } => {
+                        // Log effect trace for VM/JIT parity
+                        let eff_str_val = Self::create_string_constant(effect, &mut builder, module, ptr_type)?;
+                        let eff_len_val = builder.ins().iconst(ptr_type, effect.len() as i64);
+                        let op_str_val = Self::create_string_constant(op, &mut builder, module, ptr_type)?;
+                        let op_len_val = builder.ins().iconst(ptr_type, op.len() as i64);
+                        let trace_ref = module.declare_func_in_func(runtime.trace_effect, &mut builder.func);
+                        builder.ins().call(trace_ref, &[eff_str_val, eff_len_val, op_str_val, op_len_val]);
+
                         if effect == "IO" && op == "print" {
                             if let Some(first_arg) = args.first() {
                                 Self::emit_print_call(first_arg, &mut builder, module, &val_map, runtime, ptr_type, true)?;

@@ -9,6 +9,7 @@ members = [
     "crates/tungsten-codegen",
     "crates/tungsten-fiber",
     "crates/forge",
+    "crates/tungsten-fuzz",
 ]
 
 [workspace.package]

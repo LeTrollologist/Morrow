@@ -10,6 +10,7 @@ pub struct Evaluator {
     scopes: Vec<HashMap<String, Arc<Mutex<Value>>>>,
     handler_stack: Vec<Vec<ActiveHandler>>,
     pub stdout_lines: Vec<String>,
+    pub effect_traces: Vec<String>,
     pub scheduler: Arc<Scheduler>,
     fiber_handles: HashMap<u64, FiberHandle<Value>>,
     channels: Arc<Mutex<HashMap<u64, Arc<Channel<Value>>>>>,
@@ -29,6 +30,7 @@ impl Evaluator {
             scopes: vec![HashMap::new()],
             handler_stack: Vec::new(),
             stdout_lines: Vec::new(),
+            effect_traces: Vec::new(),
             scheduler: Scheduler::new(0),
             fiber_handles: HashMap::new(),
             channels: Arc::new(Mutex::new(HashMap::new())),
@@ -306,6 +308,7 @@ impl Evaluator {
                 if path.len() == 2 {
                     let namespace = &path[0];
                     let op = &path[1];
+                    self.effect_traces.push(format!("{}:{}", namespace, op));
 
                     // Check for active algebraic effect handler
                     if let Some(result) = self.dispatch_effect(namespace, op, eval_args.clone()) {

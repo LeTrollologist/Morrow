@@ -41,6 +41,7 @@ impl JitEngine {
         builder.symbol("tungsten_region_enter", runtime::tungsten_region_enter as *const u8);
         builder.symbol("tungsten_region_alloc", runtime::tungsten_region_alloc as *const u8);
         builder.symbol("tungsten_region_exit", runtime::tungsten_region_exit as *const u8);
+        builder.symbol("tungsten_trace_effect", runtime::tungsten_trace_effect as *const u8);
 
         let mut module = JITModule::new(builder);
         let ptr_type = module.target_config().pointer_type();
@@ -178,6 +179,16 @@ impl JitEngine {
             .declare_function("tungsten_region_exit", Linkage::Import, &sig)
             .map_err(|e| e.to_string())?;
 
+        // trace_effect: (eff_ptr: ptr, eff_len: ptr, op_ptr: ptr, op_len: ptr) -> ()
+        let mut sig = module.make_signature();
+        sig.params.push(AbiParam::new(ptr_type));
+        sig.params.push(AbiParam::new(ptr_type));
+        sig.params.push(AbiParam::new(ptr_type));
+        sig.params.push(AbiParam::new(ptr_type));
+        let trace_effect = module
+            .declare_function("tungsten_trace_effect", Linkage::Import, &sig)
+            .map_err(|e| e.to_string())?;
+
         Ok(RuntimeFuncs {
             print_i64,
             println_i64,
@@ -195,6 +206,7 @@ impl JitEngine {
             region_enter,
             region_alloc,
             region_exit,
+            trace_effect,
         })
 
     }
