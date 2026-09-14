@@ -101,6 +101,10 @@ pub extern "C" fn tungsten_refinement_panic(val: i64, min: i64, max: i64) {
 
 #[no_mangle]
 pub extern "C" fn tungsten_alloc(size: usize, align: usize) -> *mut u8 {
+    let align = align.max(1).next_power_of_two();
+    if size == 0 {
+        return align as *mut u8;
+    }
     let layout = std::alloc::Layout::from_size_align(size, align).unwrap_or_else(|_| {
         std::alloc::Layout::from_size_align(8, 8).unwrap()
     });
@@ -117,10 +121,10 @@ pub struct PhysicalArena {
 impl PhysicalArena {
     pub fn new() -> Self {
         const INITIAL_CAPACITY: usize = 4096;
-        let layout = std::alloc::Layout::from_size_align(INITIAL_CAPACITY, 16).unwrap();
+        let layout = std::alloc::Layout::from_size_align(INITIAL_CAPACITY, 128).unwrap();
         let ptr = unsafe { std::alloc::alloc(layout) };
         Self {
-            chunks: vec![(ptr, INITIAL_CAPACITY, 16)],
+            chunks: vec![(ptr, INITIAL_CAPACITY, 128)],
             current_ptr: ptr,
             current_offset: 0,
             current_capacity: INITIAL_CAPACITY,
@@ -128,25 +132,28 @@ impl PhysicalArena {
     }
 
     pub fn alloc(&mut self, size: usize, align: usize) -> *mut u8 {
-        let align = align.max(1);
+        let align = align.max(1).next_power_of_two();
+        if size == 0 {
+            return align as *mut u8;
+        }
         let align_mask = align - 1;
-        let offset = (self.current_offset + align_mask) & !align_mask;
+        let current_addr = (self.current_ptr as usize) + self.current_offset;
+        let aligned_addr = (current_addr + align_mask) & !align_mask;
+        let offset = aligned_addr - (self.current_ptr as usize);
+
         if offset + size <= self.current_capacity {
-            let result = unsafe { self.current_ptr.add(offset) };
             self.current_offset = offset + size;
-            result
+            aligned_addr as *mut u8
         } else {
-            let chunk_align = align.max(16);
+            let chunk_align = align.max(128);
             let new_cap = (self.current_capacity * 2).max(size + chunk_align).max(4096);
             let layout = std::alloc::Layout::from_size_align(new_cap, chunk_align).unwrap();
             let new_ptr = unsafe { std::alloc::alloc(layout) };
             self.chunks.push((new_ptr, new_cap, chunk_align));
             self.current_ptr = new_ptr;
             self.current_capacity = new_cap;
-            let offset = 0;
-            let result = unsafe { self.current_ptr.add(offset) };
-            self.current_offset = offset + size;
-            result
+            self.current_offset = size;
+            new_ptr
         }
     }
 

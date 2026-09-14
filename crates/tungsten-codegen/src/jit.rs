@@ -259,9 +259,20 @@ impl JitEngine {
         // 4. Invoke native `main` function
         if let Some(main_id) = func_ids.get("main") {
             let main_ptr = self.module.get_finalized_function(*main_id);
-            let main_fn: fn() -> () = unsafe { std::mem::transmute(main_ptr) };
-            main_fn();
-            Ok(0)
+            let main_func_def = tir_module.functions.iter().find(|f| f.name == "main");
+            let has_return = main_func_def
+                .map(|f| !matches!(f.return_type, tungsten_typeck::types::Type::Unit))
+                .unwrap_or(false);
+
+            if has_return {
+                let main_fn: fn() -> i64 = unsafe { std::mem::transmute(main_ptr) };
+                let res = main_fn();
+                Ok(res)
+            } else {
+                let main_fn: fn() -> () = unsafe { std::mem::transmute(main_ptr) };
+                main_fn();
+                Ok(0)
+            }
         } else {
             Err("No 'main' function found in module".into())
         }

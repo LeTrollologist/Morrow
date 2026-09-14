@@ -200,5 +200,28 @@ mod tests {
         let errs = res.unwrap_err();
         assert!(errs.iter().any(|e| e.message.contains("Region escape violation")));
     }
+
+    #[test]
+    fn test_region_trailing_ref_escape_rejection() {
+        let code = r#"
+        struct Point {
+            x: i64,
+            y: i64,
+        }
+
+        fn escape_trailing() {
+            let escaped_ref = region r {
+                let p = Point { x: 1, y: 2 };
+                &p
+            };
+        }
+        "#;
+
+        let ast = parse(code).expect("syntax parse ok");
+        let res = check(&ast);
+        assert!(res.is_err(), "Yielding reference from region block should be rejected");
+        let errs = res.unwrap_err();
+        assert!(errs.iter().any(|e| e.message.contains("Region escape violation")));
+    }
 }
 
