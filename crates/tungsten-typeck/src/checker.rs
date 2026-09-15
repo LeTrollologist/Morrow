@@ -58,6 +58,7 @@ pub struct HandlerArmCtx {
 
 pub struct FnChecker<'a> {
     parent: &'a TypeChecker,
+    current_type_params: Vec<String>,
     scopes: Vec<Scope>,
     allowed_yields: HashSet<String>,
     handled_effects: Vec<(HashSet<String>, RegionId)>,
@@ -391,10 +392,10 @@ impl TypeChecker {
         for item in &program.items {
             if let Item::Fn(f) = item {
                 let yields_set: HashSet<String> = f.yields_effects.iter().cloned().collect();
-                let mut fn_checker = FnChecker::new(self, yields_set);
+                let type_params = &f.type_params;
+                let mut fn_checker = FnChecker::new(self, yields_set, type_params.clone());
                 fn_checker.push_scope();
 
-                let type_params = &f.type_params;
                 for p in &f.params {
                     let ty = self.resolve_type_expr_with_generics(&p.ty, type_params).unwrap_or(Type::Unit);
                     fn_checker.define_var(p.name.clone(), ty, p.is_mut);
@@ -421,9 +422,10 @@ impl TypeChecker {
 
 
 impl<'a> FnChecker<'a> {
-    fn new(parent: &'a TypeChecker, allowed_yields: HashSet<String>) -> Self {
+    fn new(parent: &'a TypeChecker, allowed_yields: HashSet<String>, current_type_params: Vec<String>) -> Self {
         Self {
             parent,
+            current_type_params,
             scopes: Vec::new(),
             allowed_yields,
             handled_effects: Vec::new(),
@@ -516,11 +518,11 @@ impl<'a> FnChecker<'a> {
                 ));
             }
             // Region escape check: if returning from function scope (or expected return is specified)
-            if let Type::Ref { region: Some(r), .. } = &ty {
+            if let Some(r) = ty.region() {
                 if expected_ret != &Type::Unit && r.0 > 0 {
                     self.errors.push(TypeError::new(
                         format!(
-                            "Region escape violation: reference with local region '{}' cannot escape function return",
+                            "Region escape violation: region-backed value with local region '{}' cannot escape function return",
                             r
                         ),
                         trailing.span,
@@ -540,7 +542,7 @@ impl<'a> FnChecker<'a> {
             Stmt::Let { name, is_mut, ty, init, span } => {
                 let (init_ty, _) = self.check_expr(init);
                 if let Some(declared_ty_expr) = ty {
-                    match self.parent.resolve_type_expr(declared_ty_expr) {
+                    match self.parent.resolve_type_expr_with_generics(declared_ty_expr, &self.current_type_params) {
                         Ok(declared_ty) => {
                             if !init_ty.is_compatible_with(&declared_ty) {
                                 self.errors.push(TypeError::new(
@@ -567,19 +569,29 @@ impl<'a> FnChecker<'a> {
                     ));
                 }
 
-                // Region escape check for assignment: inner region reference assigned to outer variable
-                if let Type::Ref { region: Some(val_reg), .. } = &val_ty {
-                    if let ExprKind::Ident(ref target_name) = target.kind {
-                        if let Some(target_reg) = self.lookup_var_region(target_name) {
-                            if val_reg.0 > target_reg.0 {
-                                self.errors.push(TypeError::new(
-                                    format!(
-                                        "Region escape violation: cannot assign reference from inner region '{}' to outer variable '{}' in region '{}'",
-                                        val_reg, target_name, target_reg
-                                    ),
-                                    *span,
-                                ));
+                // Region escape check for assignment: inner region value assigned to outer variable or field
+                if let Some(val_reg) = val_ty.region() {
+                    let target_reg = match &target.kind {
+                        ExprKind::Ident(ref target_name) => self.lookup_var_region(target_name),
+                        ExprKind::FieldAccess { target: base, .. } => {
+                            if let ExprKind::Ident(ref base_name) = base.kind {
+                                self.lookup_var_region(base_name)
+                            } else {
+                                Some(self.current_region())
                             }
+                        }
+                        _ => Some(self.current_region()),
+                    };
+
+                    if let Some(t_reg) = target_reg {
+                        if val_reg.0 > t_reg.0 {
+                            self.errors.push(TypeError::new(
+                                format!(
+                                    "Region escape violation: cannot assign region-backed value from inner region '{}' to outer target in region '{}'",
+                                    val_reg, t_reg
+                                ),
+                                *span,
+                            ));
                         }
                     }
                 }
@@ -613,12 +625,12 @@ impl<'a> FnChecker<'a> {
             Stmt::Return { value, span } => {
                 if let Some(v) = value {
                     let (ret_ty, _) = self.check_expr(v);
-                    if let Type::Ref { region: Some(r), .. } = &ret_ty {
+                    if let Some(r) = ret_ty.region() {
                         if r.0 > 0 {
                             self.errors.push(TypeError::new(
                                 format!(
-                                    "Region escape violation: reference with local region '{}' cannot escape function return",
-                                    r
+                                    "Region escape violation: region-backed value of type '{}' with local region '{}' cannot escape function return",
+                                    ret_ty, r
                                 ),
                                 *span,
                             ));
@@ -643,14 +655,15 @@ impl<'a> FnChecker<'a> {
             }
             ExprKind::FieldAccess { target, field } => {
                 let (target_ty, is_mut) = self.check_assign_target(target);
-                let inner_ty = match &target_ty {
+                let stripped = target_ty.strip_region();
+                let inner_ty = match stripped {
                     Type::Ref { is_mut: m, inner, .. } => {
                         if !*m {
                             self.errors.push(TypeError::new("Cannot mutate field through immutable reference", expr.span));
                         }
-                        inner.as_ref()
+                        inner.strip_region()
                     }
-                    _ => &target_ty,
+                    _ => stripped,
                 };
                 if let Type::Struct(sname) = inner_ty {
                     if let Some(fields) = self.parent.structs.get(sname) {
@@ -708,6 +721,37 @@ impl<'a> FnChecker<'a> {
                     }
                     other => {
                         self.errors.push(TypeError::new(format!("Cannot dereference non-pointer type '{}'", other), expr.span));
+                        (Type::Unit, false)
+                    }
+                }
+            }
+            ExprKind::Index { target: base, index } => {
+                let (base_ty, is_mut) = self.check_assign_target(base);
+                let (idx_ty, _) = self.check_expr(index);
+                if !idx_ty.is_compatible_with(&Type::Usize) && !idx_ty.is_compatible_with(&Type::I64) {
+                    self.errors.push(TypeError::new(format!("Index must be integer, found '{}'", idx_ty), index.span));
+                }
+                match base_ty {
+                    Type::Array { elem, .. } => (*elem, is_mut),
+                    Type::Ref { is_mut: m, inner, .. } => {
+                        if let Type::Array { elem, .. } = *inner {
+                            (*elem, m)
+                        } else {
+                            self.errors.push(TypeError::new(format!("Cannot index non-array type '&{}'", inner), expr.span));
+                            (Type::Unit, false)
+                        }
+                    }
+                    Type::Ptr { is_mut: m, inner } => {
+                        if !self.in_unsafe {
+                            self.errors.push(TypeError::new("Indexing a raw pointer requires an explicit 'unsafe { ... }' block", expr.span));
+                        }
+                        if !m {
+                            self.errors.push(TypeError::new("Cannot assign through immutable pointer (*const T)", expr.span));
+                        }
+                        (*inner, m)
+                    }
+                    other => {
+                        self.errors.push(TypeError::new(format!("Cannot index non-array/non-pointer type '{}'", other), expr.span));
                         (Type::Unit, false)
                     }
                 }
@@ -773,7 +817,9 @@ impl<'a> FnChecker<'a> {
             }
             ExprKind::Ref { is_mut, expr: inner } => {
                 let (inner_ty, _) = self.check_expr(inner);
-                let inferred_reg = if let ExprKind::Ident(ref var_name) = inner.kind {
+                let inferred_reg = if let Some(r) = inner_ty.region() {
+                    r
+                } else if let ExprKind::Ident(ref var_name) = inner.kind {
                     self.lookup_var_region(var_name).unwrap_or(self.current_region())
                 } else {
                     self.current_region()
@@ -790,8 +836,9 @@ impl<'a> FnChecker<'a> {
 
             ExprKind::FieldAccess { target, field } => {
                 let (target_ty, _) = self.check_expr(target);
-                let base_ty = match &target_ty {
-                    Type::Ref { inner, .. } => inner.as_ref(),
+                let stripped = target_ty.strip_region();
+                let base_ty = match stripped {
+                    Type::Ref { inner, .. } => inner.strip_region(),
                     other => other,
                 };
                 if let Type::Struct(sname) = base_ty {
@@ -1031,6 +1078,36 @@ impl<'a> FnChecker<'a> {
                             arg_types.push(self.check_expr(a));
                         }
 
+                        // Container store region check: if passing &mut Container and an item, item cannot be from inner region
+                        if args.len() >= 2 {
+                            let first_arg_reg = arg_types[0].0.region().or_else(|| {
+                                if let ExprKind::Ref { expr: inner, .. } = &args[0].kind {
+                                    if let ExprKind::Ident(ref name) = inner.kind {
+                                        self.lookup_var_region(name)
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
+                            });
+                            if let Some(target_reg) = first_arg_reg {
+                                for (_, (arg_ty, _)) in args[1..].iter().zip(arg_types[1..].iter()) {
+                                    if let Some(item_reg) = arg_ty.region() {
+                                        if item_reg.0 > target_reg.0 {
+                                            self.errors.push(TypeError::new(
+                                                format!(
+                                                    "Region escape violation: cannot store value from inner region '{}' into outer container in region '{}'",
+                                                    item_reg, target_reg
+                                                ),
+                                                expr.span,
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         // Unify argument types with parameter types
                         for ((arg_expr, (arg_ty, _)), param) in args.iter().zip(arg_types.iter()).zip(fdecl.params.iter()) {
                             let expected_param_ty = self.parent.resolve_type_expr_with_generics(&param.ty, &fdecl.type_params).unwrap_or(Type::Unit);
@@ -1063,13 +1140,21 @@ impl<'a> FnChecker<'a> {
                             }
                         }
 
-                        let ret_ty = match &fdecl.return_type {
+                        let mut ret_ty = match &fdecl.return_type {
                             Some(rt) => {
                                 let raw_ret = self.parent.resolve_type_expr_with_generics(rt, &fdecl.type_params).unwrap_or(Type::Unit);
                                 crate::unify::substitute(&raw_ret, &subst)
                             }
                             None => Type::Unit,
                         };
+
+                        // Propagate region bounds from arguments (e.g. vec_new_in(r))
+                        let max_arg_region = arg_types.iter().filter_map(|(ty, _)| ty.region()).max();
+                        if let Some(r) = max_arg_region {
+                            if matches!(ret_ty.strip_region(), Type::Instantiated { .. } | Type::Struct(_) | Type::Ptr { .. } | Type::Ref { .. }) {
+                                ret_ty = ret_ty.bounded_with(r);
+                            }
+                        }
 
                         return (ret_ty, None);
                     }
@@ -1096,8 +1181,10 @@ impl<'a> FnChecker<'a> {
                             }
                         }
 
+                        let mut arg_tys = Vec::new();
                         for ((arg_expr, (param_name, param_ty, _)), p_ty_expr) in args.iter().zip(sig.params.iter()).zip(sig.param_type_exprs.iter()) {
                             let (arg_ty, _) = self.check_expr(arg_expr);
+                            arg_tys.push(arg_ty.clone());
                             if !arg_ty.is_compatible_with(param_ty) {
                                 self.errors.push(TypeError::new(
                                     format!("Type mismatch for parameter '{}': expected '{}', found '{}'", param_name, param_ty, arg_ty),
@@ -1115,7 +1202,16 @@ impl<'a> FnChecker<'a> {
                                 }
                             }
                         }
-                        return (sig.return_type, None);
+
+                        let mut ret_ty = sig.return_type;
+                        let max_arg_region = arg_tys.iter().filter_map(|ty| ty.region()).max();
+                        if let Some(r) = max_arg_region {
+                            if matches!(ret_ty.strip_region(), Type::Instantiated { .. } | Type::Struct(_) | Type::Ptr { .. } | Type::Ref { .. }) {
+                                ret_ty = ret_ty.bounded_with(r);
+                            }
+                        }
+
+                        return (ret_ty, None);
                     }
                 }
 
@@ -1149,9 +1245,13 @@ impl<'a> FnChecker<'a> {
                 (Type::Unit, None)
             }
             ExprKind::StructInit { name, fields } => {
+                let mut max_field_reg = None;
                 if let Some(expected_fields) = self.parent.structs.get(name).cloned() {
                     for (fname, fval) in fields {
                         let (val_ty, val_int) = self.check_expr(fval);
+                        if let Some(r) = val_ty.region() {
+                            max_field_reg = Some(max_field_reg.map_or(r, |existing: RegionId| RegionId(existing.0.max(r.0))));
+                        }
                         if let Some(expected_ty) = expected_fields.get(fname) {
                             // Refinement verification
                             if let Type::Refined { interval, .. } = expected_ty {
@@ -1177,11 +1277,18 @@ impl<'a> FnChecker<'a> {
                             self.errors.push(TypeError::new(format!("Unknown field '{}' for struct '{}'", fname, name), fval.span));
                         }
                     }
-                    (Type::Struct(name.clone()), None)
+                    let mut res_ty = Type::Struct(name.clone());
+                    if let Some(r) = max_field_reg {
+                        res_ty = res_ty.bounded_with(r);
+                    }
+                    (res_ty, None)
                 } else if let Some(st_decl) = self.parent.generic_structs.get(name).cloned() {
                     let mut subst = crate::unify::Subst::new();
                     for (fname, fval) in fields {
                         let (val_ty, _) = self.check_expr(fval);
+                        if let Some(r) = val_ty.region() {
+                            max_field_reg = Some(max_field_reg.map_or(r, |existing: RegionId| RegionId(existing.0.max(r.0))));
+                        }
                         if let Some(fdef) = st_decl.fields.iter().find(|f| f.name == *fname) {
                             let expected_field_ty = self.parent.resolve_type_expr_with_generics(&fdef.ty, &st_decl.type_params).unwrap_or(Type::Unit);
                             if let Err(err) = crate::unify::unify(&expected_field_ty, &val_ty, &mut subst) {
@@ -1195,7 +1302,11 @@ impl<'a> FnChecker<'a> {
                         }
                     }
                     let args: Vec<Type> = st_decl.type_params.iter().map(|tp| subst.get(tp).cloned().unwrap_or(Type::Unit)).collect();
-                    (Type::Instantiated { name: name.clone(), args }, None)
+                    let mut res_ty = Type::Instantiated { name: name.clone(), args };
+                    if let Some(r) = max_field_reg {
+                        res_ty = res_ty.bounded_with(r);
+                    }
+                    (res_ty, None)
                 } else {
                     self.errors.push(TypeError::new(format!("Unknown struct '{}'", name), expr.span));
                     (Type::Unit, None)
@@ -1203,7 +1314,7 @@ impl<'a> FnChecker<'a> {
             }
             ExprKind::Cast { expr: inner, target_ty } => {
                 let (_, inner_int) = self.check_expr(inner);
-                let resolved = match self.parent.resolve_type_expr(target_ty) {
+                let resolved = match self.parent.resolve_type_expr_with_generics(target_ty, &self.current_type_params) {
                     Ok(ty) => ty,
                     Err(e) => {
                         self.errors.push(e);
@@ -1362,28 +1473,34 @@ impl<'a> FnChecker<'a> {
                 self.check_block(b, &Type::Unit);
                 (Type::Unit, None)
             }
-            ExprKind::Region { name: _, body } => {
+            ExprKind::Region { name, body } => {
                 let reg_id = RegionId(self.next_region_id);
                 self.next_region_id += 1;
                 self.region_stack.push(reg_id);
 
+                self.push_scope();
+                if let Some(r_name) = name {
+                    let r_ty = Type::Ptr { is_mut: true, inner: Box::new(Type::U8) }.bounded_with(reg_id);
+                    self.define_var(r_name.clone(), r_ty, false);
+                }
                 let (body_ty, body_intv) = self.check_block(body, &Type::Unit);
+                self.pop_scope();
 
                 self.region_stack.pop();
 
-                // Linear escape analysis: ensure no reference or raw pointer allocated in this region escapes
-                if let Type::Ref { region: Some(r), .. } = &body_ty {
+                // Linear escape analysis: ensure no reference, raw pointer, or region-bounded collection escapes
+                if let Some(r) = body_ty.region() {
                     if r.0 >= reg_id.0 {
                         self.errors.push(TypeError::new(
                             format!(
-                                "Region escape violation: reference with region '{}' cannot escape enclosing region block",
-                                r
+                                "Region escape violation: region-backed value of type '{}' with region '{}' cannot escape enclosing region block",
+                                body_ty, r
                             ),
                             body.span,
                         ));
                     }
                 }
-                if matches!(&body_ty, Type::Ptr { .. }) {
+                if matches!(body_ty.strip_region(), Type::Ptr { .. }) {
                     self.errors.push(TypeError::new(
                         "Pointer escape violation: raw pointer cannot escape enclosing region block".to_string(),
                         body.span,
@@ -1464,6 +1581,14 @@ impl<'a> FnChecker<'a> {
                         }
                     }
                     (*elem.clone(), None)
+                } else if let Type::Ptr { inner, .. } = inner_target {
+                    if !self.in_unsafe {
+                        self.errors.push(TypeError::new(
+                            "Indexing a raw pointer is unsafe and requires an 'unsafe { ... }' block",
+                            expr.span,
+                        ));
+                    }
+                    (*inner.clone(), None)
                 } else {
                     self.errors.push(TypeError::new(
                         format!("Cannot index into non-array type '{}'", target_ty),

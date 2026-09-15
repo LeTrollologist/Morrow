@@ -166,6 +166,13 @@ pub enum Instruction {
         value: Operand,
         span: Span,
     },
+    StoreIndex {
+        target: Operand,
+        index: Operand,
+        stride: usize,
+        value: Operand,
+        span: Span,
+    },
     SetField {
         base: Var,
         field: String,
@@ -258,6 +265,7 @@ pub struct TirFunction {
     pub yields_effects: Vec<String>,
     pub blocks: Vec<BasicBlock>,
     pub entry_block: BlockId,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -267,4 +275,6 @@ pub struct TirModule {
     pub enums: Vec<tungsten_syntax::ast::EnumDecl>,
     pub effects: Vec<tungsten_syntax::ast::EffectDecl>,
     pub extern_blocks: Vec<tungsten_syntax::ast::ExternBlock>,
+    pub source_file: Option<String>,
+    pub source_dir: Option<String>,
 }

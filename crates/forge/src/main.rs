@@ -1,17 +1,21 @@
 use std::env;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process;
 
 mod bindgen;
+mod builder;
 mod lockfile;
 mod manifest;
 mod package;
 mod resolver;
 
-use lockfile::Lockfile;
+use builder::{
+    build_target, clean_target, get_latest_source_mtime, get_target_dir_root, load_program_auto,
+    resolve_source_info, BuildOptions,
+};
 use manifest::{DependencySpec, DetailedDependency, Manifest};
-use package::{compile_package_ast, find_manifest, ProjectPackage};
+use package::{find_manifest, ProjectPackage};
 use resolver::DependencyResolver;
 
 fn main() {
@@ -31,6 +35,9 @@ fn main() {
         }
         "build" => {
             run_build(&args[2..]);
+        }
+        "clean" => {
+            run_clean(&args[2..]);
         }
         "fmt" => {
             if args.len() < 3 {
@@ -101,8 +108,10 @@ USAGE:
 
 SUBCOMMANDS:
     check [file.tg]                       Typecheck project or file, verify refinement bounds & effects
-    run [--native|--release] [file.tg]   Compile and execute project or file (VM, Cranelift JIT, or LLVM AOT)
-    build [--release] [file.tg]          Compile a Tungsten package to native machine code (Cranelift or LLVM O3)
+    run [--release] [file.tg]            Incrementally compile and execute project or file (LLVM AOT)
+    build [--release] [--emit-llvm] [--emit-asm] [-o <path>] [file.tg]
+                                          Compile native binary (target/debug/ -O0 or target/release/ -O3)
+    clean [path]                          Remove target/ directory and build artifacts
     new <project_name> [--lib]            Create a new Tungsten binary or library package
     add <dep> [--path P] [--ver V]        Add a dependency to Forge.toml and update Forge.lock
     lock                                  Resolve dependencies and update Forge.lock
@@ -114,55 +123,6 @@ SUBCOMMANDS:
     help                                  Display this help message
 "#
     );
-}
-
-fn load_program_auto(target: Option<&str>) -> Result<(tungsten_syntax::ast::Program, String), String> {
-    let current_dir = env::current_dir().map_err(|e| format!("Could not get current dir: {}", e))?;
-
-    if let Some(path_str) = target {
-        let p = Path::new(path_str);
-        if p.is_file() {
-            // Check if it belongs to a project with a Forge.toml
-            if let Some(manifest_path) = find_manifest(p) {
-                let resolver = DependencyResolver::new();
-                let graph = resolver.resolve(&manifest_path).ok();
-                let ast = compile_package_ast(p, graph.as_ref())?;
-                return Ok((ast, path_str.to_string()));
-            } else {
-                let ast = compile_package_ast(p, None)?;
-                return Ok((ast, path_str.to_string()));
-            }
-        } else if p.is_dir() {
-            let pkg = ProjectPackage::discover(p)?;
-            let resolver = DependencyResolver::new();
-            let graph = resolver.resolve(&pkg.manifest_path)?;
-            let lock_path = pkg.manifest_path.parent().unwrap().join("Forge.lock");
-            if lock_path.is_file() {
-                if let Ok(lock) = Lockfile::from_file(&lock_path) {
-                    if let Err(e) = graph.verify_lockfile(&lock) {
-                        eprintln!("[Forge Warning] {}", e);
-                    }
-                }
-            }
-            let ast = compile_package_ast(&pkg.entry_file, Some(&graph))?;
-            return Ok((ast, pkg.entry_file.display().to_string()));
-        }
-    }
-
-    // Discover package in current directory
-    let pkg = ProjectPackage::discover(&current_dir)?;
-    let resolver = DependencyResolver::new();
-    let graph = resolver.resolve(&pkg.manifest_path)?;
-    let lock_path = pkg.manifest_path.parent().unwrap().join("Forge.lock");
-    if lock_path.is_file() {
-        if let Ok(lock) = Lockfile::from_file(&lock_path) {
-            if let Err(e) = graph.verify_lockfile(&lock) {
-                eprintln!("[Forge Warning] {}", e);
-            }
-        }
-    }
-    let ast = compile_package_ast(&pkg.entry_file, Some(&graph))?;
-    Ok((ast, pkg.entry_file.display().to_string()))
 }
 
 fn run_check(args: &[String]) {
@@ -190,93 +150,90 @@ fn run_check(args: &[String]) {
     }
 }
 
-fn run_file(args: &[String]) {
-    let mut native = false;
+fn run_clean(args: &[String]) {
+    let target = args.first().map(|s| s.as_str());
+    match clean_target(target) {
+        Ok(dir) => {
+            println!("Cleaned target directory: {}", dir.display());
+        }
+        Err(e) => {
+            eprintln!("Error cleaning target: {}", e);
+            process::exit(1);
+        }
+    }
+}
+
+fn run_build(args: &[String]) {
     let mut release = false;
+    let mut emit_llvm = false;
+    let mut emit_asm = false;
+    let mut custom_out = None;
+    let mut target = None;
+
+    let mut i = 0;
+    while i < args.len() {
+        let arg = &args[i];
+        if arg == "--release" || arg == "-r" {
+            release = true;
+        } else if arg == "--emit-llvm" {
+            emit_llvm = true;
+        } else if arg == "--emit-asm" {
+            emit_asm = true;
+        } else if (arg == "--out" || arg == "-o") && i + 1 < args.len() {
+            custom_out = Some(PathBuf::from(&args[i + 1]));
+            i += 1;
+        } else if !arg.starts_with('-') && target.is_none() {
+            target = Some(arg.as_str());
+        }
+        i += 1;
+    }
+
+    let options = BuildOptions {
+        release,
+        emit_llvm,
+        emit_asm,
+        custom_out,
+    };
+
+    match build_target(target, &options) {
+        Ok(out_exe) => {
+            let profile = if release {
+                "release [optimized]"
+            } else {
+                "debug [unoptimized + debuginfo]"
+            };
+            println!("Finished {} target(s) -> {}", profile, out_exe.display());
+        }
+        Err(e) => {
+            eprintln!("{}", e);
+            process::exit(1);
+        }
+    }
+}
+
+fn run_file(args: &[String]) {
+    let mut release = false;
+    let mut vm = false;
     let mut target = None;
 
     for arg in args {
         if arg == "--release" || arg == "-r" {
             release = true;
-        } else if arg == "--native" || arg == "-n" {
-            native = true;
-        } else if target.is_none() {
+        } else if arg == "--vm" {
+            vm = true;
+        } else if !arg.starts_with('-') && target.is_none() {
             target = Some(arg.as_str());
         }
     }
 
-    let (ast, path_desc) = match load_program_auto(target) {
-        Ok(res) => res,
-        Err(err) => {
-            eprintln!("{}", err);
-            process::exit(1);
-        }
-    };
-
-    if let Err(errs) = tungsten_typeck::check(&ast) {
-        eprintln!("\n[Type & Effect Error] {} error(s) found in {}:", errs.len(), path_desc);
-        for (idx, err) in errs.iter().enumerate() {
-            eprintln!("  {}. [Line {}, Col {}]: {}", idx + 1, err.span.line, err.span.column, err.message);
-        }
-        process::exit(1);
-    }
-
-    if release {
-        let mut tir_module = match tungsten_tir::compile(&ast) {
-            Ok(m) => m,
-            Err(e) => {
-                eprintln!("\n[TIR Lowering Error]: {}", e);
+    if vm {
+        let (ast, _path_desc) = match load_program_auto(target) {
+            Ok(res) => res,
+            Err(err) => {
+                eprintln!("{}", err);
                 process::exit(1);
             }
         };
-        tungsten_tir::optimize(&mut tir_module);
-
-        match tungsten_codegen::compile_and_run_llvm(&tir_module) {
-            Ok((code, stdout)) => {
-                print!("{}", stdout);
-                if code != 0 {
-                    process::exit(code);
-                }
-            }
-            Err(err) => {
-                eprintln!("\n[LLVM Execution Error]: {}", err);
-                process::exit(1);
-            }
-        }
-    } else if native {
-        let mut tir_module = match tungsten_tir::compile(&ast) {
-            Ok(m) => m,
-            Err(e) => {
-                eprintln!("\n[TIR Lowering Error]: {}", e);
-                process::exit(1);
-            }
-        };
-        tungsten_tir::optimize(&mut tir_module);
-
-        if !tir_module.extern_blocks.is_empty() {
-            match tungsten_codegen::compile_and_run_llvm(&tir_module) {
-                Ok((code, stdout)) => {
-                    print!("{}", stdout);
-                    if code != 0 {
-                        process::exit(code);
-                    }
-                }
-                Err(err) => {
-                    eprintln!("\n[LLVM Execution Error]: {}", err);
-                    process::exit(1);
-                }
-            }
-            return;
-        }
-
-        match tungsten_codegen::compile_and_run(&tir_module) {
-            Ok(_) => {}
-            Err(err) => {
-                eprintln!("\n[Native Execution Error]: {}", err);
-                process::exit(1);
-            }
-        }
-    } else {
         match tungsten_vm::execute(&ast) {
             Ok(_) => {}
             Err(runtime_err) => {
@@ -284,80 +241,96 @@ fn run_file(args: &[String]) {
                 process::exit(1);
             }
         }
-    }
-}
-
-fn run_build(args: &[String]) {
-    let mut release = false;
-    let mut target = None;
-
-    for arg in args {
-        if arg == "--release" || arg == "-r" {
-            release = true;
-        } else if target.is_none() {
-            target = Some(arg.as_str());
-        }
+        return;
     }
 
-    let (ast, path_desc) = match load_program_auto(target) {
-        Ok(res) => res,
-        Err(err) => {
-            eprintln!("{}", err);
-            process::exit(1);
+    let root_dir = get_target_dir_root(target);
+    let bin_name = if let Some(t) = target {
+        let p = Path::new(t);
+        if p.is_file() {
+            p.file_stem().and_then(|s| s.to_str()).unwrap_or("app").to_string()
+        } else if let Ok(pkg) = ProjectPackage::discover(p) {
+            pkg.root_dir.file_name().and_then(|s| s.to_str()).unwrap_or("app").to_string()
+        } else {
+            "app".to_string()
         }
+    } else if let Ok(pkg) = ProjectPackage::discover(&env::current_dir().unwrap_or_default()) {
+        pkg.root_dir.file_name().and_then(|s| s.to_str()).unwrap_or("app").to_string()
+    } else {
+        "app".to_string()
     };
 
-    if let Err(errs) = tungsten_typeck::check(&ast) {
-        eprintln!("\n[Type & Effect Error] {} error(s) found in {}:", errs.len(), path_desc);
-        for (idx, err) in errs.iter().enumerate() {
-            eprintln!("  {}. [Line {}, Col {}]: {}", idx + 1, err.span.line, err.span.column, err.message);
-        }
-        process::exit(1);
-    }
+    let profile_dir = if release { "release" } else { "debug" };
+    let exe_path = root_dir.join("target").join(profile_dir).join(format!("{}.exe", bin_name));
 
-    let mut module = match tungsten_tir::compile(&ast) {
-        Ok(m) => m,
-        Err(e) => {
-            eprintln!("\n[TIR Lowering Error]: {}", e);
-            process::exit(1);
-        }
-    };
-    let stats = tungsten_tir::optimize(&mut module);
-
-    if release {
-        let out_dir = Path::new("target").join("release");
-        let _ = fs::create_dir_all(&out_dir);
-        let bin_name = Path::new(&path_desc)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("app");
-        let out_exe = out_dir.join(format!("{}.exe", bin_name));
-
-        println!("Compiling {} with LLVM backend (--release, -O3, SIMD vectorization, LTO)...", path_desc);
-        println!("  - TIR Optimized: {} constant folds, {} bounds checks eliminated", stats.const_folds, stats.bounds_checks_eliminated);
-
-        match tungsten_codegen::compile_to_native_binary(&module, &out_exe, "O3") {
-            Ok(_) => {
-                println!("Finished release [optimized] target(s) -> {}", out_exe.display());
+    let is_up_to_date = if exe_path.is_file() {
+        if let Ok(exe_meta) = fs::metadata(&exe_path) {
+            if let Ok(exe_mtime) = exe_meta.modified() {
+                if let Some(src_mtime) = get_latest_source_mtime(target) {
+                    exe_mtime >= src_mtime
+                } else {
+                    false
+                }
+            } else {
+                false
             }
-            Err(e) => {
-                eprintln!("Release build failed: {}", e);
-                process::exit(1);
-            }
+        } else {
+            false
         }
     } else {
-        println!("Compiling {} with Cranelift backend...", path_desc);
-        println!("  - Optimized: {} constant folds, {} bounds checks eliminated", stats.const_folds, stats.bounds_checks_eliminated);
+        false
+    };
 
-        match tungsten_codegen::compile_and_run(&module) {
-            Ok(_) => {
-                println!("Finished build: verification run successful.");
-            }
+    let target_bin = if is_up_to_date {
+        // Incremental skip: already up-to-date
+        exe_path
+    } else {
+        let options = BuildOptions {
+            release,
+            emit_llvm: false,
+            emit_asm: false,
+            custom_out: None,
+        };
+        match build_target(target, &options) {
+            Ok(p) => p,
             Err(e) => {
-                eprintln!("Build verification failed: {}", e);
+                eprintln!("{}", e);
                 process::exit(1);
             }
         }
+    };
+
+    // Execute compiled binary with Windows Error 5 retry loop (exponential backoff)
+    let mut output_res = None;
+    for attempt in 0..15 {
+        match std::process::Command::new(&target_bin).status() {
+            Ok(status) => {
+                output_res = Some(status);
+                break;
+            }
+            Err(e) if e.raw_os_error() == Some(5) => {
+                std::thread::sleep(std::time::Duration::from_millis(20 * (1 << attempt.min(5))));
+            }
+            Err(e) => {
+                eprintln!("Failed to execute binary '{}': {}", target_bin.display(), e);
+                process::exit(1);
+            }
+        }
+    }
+
+    let status = match output_res {
+        Some(s) => s,
+        None => {
+            eprintln!(
+                "Failed to execute binary '{}' after retries (Error 5 Access Denied)",
+                target_bin.display()
+            );
+            process::exit(1);
+        }
+    };
+
+    if !status.success() {
+        process::exit(status.code().unwrap_or(1));
     }
 }
 
@@ -563,7 +536,8 @@ fn run_tir(args: &[String]) {
         process::exit(1);
     }
 
-    let mut module = match tungsten_tir::compile(&ast) {
+    let (src_file, src_dir) = resolve_source_info(&path_desc);
+    let mut module = match tungsten_tir::compile_with_source(&ast, src_file, src_dir) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("\n[TIR Lowering Error]: {}", e);

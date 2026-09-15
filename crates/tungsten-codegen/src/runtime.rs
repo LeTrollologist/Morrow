@@ -198,6 +198,52 @@ impl PhysicalArena {
         new_ptr
     }
 
+    pub fn try_grow(&mut self, ptr: *mut u8, old_size: usize, new_size: usize, align: usize) -> *mut u8 {
+        if ptr.is_null() || old_size == 0 {
+            return self.alloc(new_size, align);
+        }
+        if new_size <= old_size {
+            return ptr;
+        }
+
+        let align = align.max(1).next_power_of_two();
+        let align_mask = align - 1;
+        let ptr_addr = ptr as usize;
+        let current_base = self.current_ptr as usize;
+        let current_top = current_base + self.current_offset;
+
+        // Check if `ptr` belongs to current chunk and satisfies required alignment
+        let is_in_current_chunk = ptr_addr >= current_base && ptr_addr < current_top;
+        let is_aligned = (ptr_addr & align_mask) == 0;
+
+        if is_in_current_chunk && is_aligned {
+            let end_of_alloc = match ptr_addr.checked_add(old_size) {
+                Some(end) => end,
+                None => return std::ptr::null_mut(),
+            };
+
+            // Invariant: ptr + old_size == current_top (strictly the current tail of the arena)
+            if end_of_alloc == current_top {
+                let diff = new_size - old_size;
+                if let Some(new_offset) = self.current_offset.checked_add(diff) {
+                    if new_offset <= self.current_capacity {
+                        self.current_offset = new_offset;
+                        return ptr; // O(1) in-place growth with ZERO memcpy!
+                    }
+                }
+            }
+        }
+
+        // Fallback: Allocate new buffer in arena, copy old contents
+        let new_ptr = self.alloc(new_size, align);
+        if !new_ptr.is_null() && old_size > 0 {
+            unsafe {
+                std::ptr::copy_nonoverlapping(ptr, new_ptr, old_size.min(new_size));
+            }
+        }
+        new_ptr
+    }
+
     pub fn destroy(&mut self) {
         for (ptr, cap, chunk_align) in self.chunks.drain(..) {
             if !ptr.is_null() && cap > 0 {
@@ -229,6 +275,30 @@ pub extern "C" fn tungsten_region_alloc(arena: *mut PhysicalArena, size: usize, 
     }
     unsafe {
         (*arena).alloc(size, align)
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn tungsten_region_grow(
+    arena: *mut PhysicalArena,
+    ptr: *mut u8,
+    old_size: usize,
+    new_size: usize,
+    align: usize,
+) -> *mut u8 {
+    if arena.is_null() {
+        unsafe {
+            if ptr.is_null() {
+                tungsten_alloc(new_size, align)
+            } else {
+                let layout = std::alloc::Layout::from_size_align(old_size, align.max(1)).unwrap();
+                std::alloc::realloc(ptr, layout, new_size)
+            }
+        }
+    } else {
+        unsafe {
+            (*arena).try_grow(ptr, old_size, new_size, align)
+        }
     }
 }
 

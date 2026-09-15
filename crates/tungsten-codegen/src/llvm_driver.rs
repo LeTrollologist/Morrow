@@ -67,13 +67,58 @@ impl LlvmToolchain {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct AotOptions {
+    pub opt_level: String,
+    pub emit_llvm: Option<PathBuf>,
+    pub emit_asm: Option<PathBuf>,
+    pub extra_libs: Vec<String>,
+}
+
+impl Default for AotOptions {
+    fn default() -> Self {
+        Self {
+            opt_level: "O0".to_string(),
+            emit_llvm: None,
+            emit_asm: None,
+            extra_libs: Vec::new(),
+        }
+    }
+}
+
 pub fn compile_llvm_aot(
     module: &TirModule,
     out_exe: &Path,
     opt_level: &str,
 ) -> Result<(), String> {
+    let options = AotOptions {
+        opt_level: opt_level.to_string(),
+        emit_llvm: None,
+        emit_asm: None,
+        extra_libs: Vec::new(),
+    };
+    compile_llvm_aot_with_options(module, out_exe, &options)
+}
+
+pub fn compile_llvm_aot_with_options(
+    module: &TirModule,
+    out_exe: &Path,
+    options: &AotOptions,
+) -> Result<(), String> {
     let toolchain = LlvmToolchain::discover()?;
     let ir_text = emit_llvm_ir(module);
+
+    if let Some(parent) = out_exe.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+
+    if let Some(ref dst) = options.emit_llvm {
+        if let Some(parent) = dst.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        fs::write(dst, &ir_text)
+            .map_err(|e| format!("Failed to write LLVM IR to {}: {}", dst.display(), e))?;
+    }
 
     let temp_dir = env::temp_dir();
     let unique_id = std::time::SystemTime::now()
@@ -84,19 +129,53 @@ pub fn compile_llvm_aot(
     let ll_path = temp_dir.join(format!("tungsten_{}.ll", unique_id));
     let o_path = temp_dir.join(format!("tungsten_{}.o", unique_id));
 
-    fs::write(&ll_path, ir_text)
+    fs::write(&ll_path, &ir_text)
         .map_err(|e| format!("Failed to write LLVM IR to {}: {}", ll_path.display(), e))?;
 
-    // Compile .ll to .o using clang with optimization
-    let clang_opt = format!("-{}", opt_level);
+    let is_release = options.opt_level == "O3" || options.opt_level == "3";
+
+    // If emit_asm is requested, run clang -S
+    if let Some(ref asm_dst) = options.emit_asm {
+        if let Some(parent) = asm_dst.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let clang_opt = format!("-{}", options.opt_level);
+        let mut asm_cmd = Command::new(&toolchain.clang_path);
+        asm_cmd
+            .arg("--target=x86_64-pc-windows-gnu")
+            .arg("-g")
+            .arg("-gcodeview")
+            .arg("-S")
+            .arg(&ll_path)
+            .arg(&clang_opt);
+        if is_release {
+            asm_cmd
+                .arg("-ffunction-sections")
+                .arg("-fdata-sections");
+        }
+        asm_cmd.arg("-o").arg(asm_dst);
+        let _ = asm_cmd.output();
+    }
+
+    // Compile .ll to .o using clang with optimization and debug symbols
+    let clang_opt = format!("-{}", options.opt_level);
     let mut clang_cmd = Command::new(&toolchain.clang_path);
     clang_cmd
         .arg("--target=x86_64-pc-windows-gnu")
+        .arg("-g")
+        .arg("-gcodeview")
         .arg("-c")
         .arg(&ll_path)
-        .arg(&clang_opt)
-        .arg("-o")
-        .arg(&o_path);
+        .arg(&clang_opt);
+
+    if is_release {
+        clang_cmd
+            .arg("-ffunction-sections")
+            .arg("-fdata-sections")
+            .arg("-flto");
+    }
+
+    clang_cmd.arg("-o").arg(&o_path);
 
     let clang_res = clang_cmd.output().map_err(|e| format!("Failed to run clang: {}", e))?;
     if !clang_res.status.success() {
@@ -105,37 +184,66 @@ pub fn compile_llvm_aot(
         return Err(format!("LLVM clang compilation error:\n{}", err));
     }
 
-    // Link .o to .exe using rust-lld
+    // Link .o to .exe using rust-lld with CodeView PDB symbols and exponential backoff
+    let pdb_path = out_exe.with_extension("pdb");
     let crt2_path = toolchain.crt_dir.join("crt2.o");
-    let mut lld_cmd = Command::new(&toolchain.lld_path);
-    lld_cmd
-        .arg("-flavor")
-        .arg("gnu")
-        .arg("-m")
-        .arg("i386pep")
-        .arg("-Bdynamic")
-        .arg("-o")
-        .arg(out_exe)
-        .arg(&crt2_path)
-        .arg(&o_path)
-        .arg(format!("-L{}", toolchain.crt_dir.display()))
-        .arg("-lmingw32")
-        .arg("-lmingwex")
-        .arg("-lmsvcrt")
-        .arg("-lkernel32")
-        .arg("-luser32")
-        .arg("-lws2_32")
-        .arg("-lgcc");
 
-    let lld_res = lld_cmd.output().map_err(|e| format!("Failed to run rust-lld: {}", e))?;
+    let mut link_error = None;
+    for attempt in 0..10 {
+        let mut lld_cmd = Command::new(&toolchain.lld_path);
+        lld_cmd
+            .arg("-flavor")
+            .arg("gnu")
+            .arg("-m")
+            .arg("i386pep")
+            .arg("-Bdynamic")
+            .arg(format!("--pdb={}", pdb_path.display()))
+            .arg("-o")
+            .arg(out_exe)
+            .arg(&crt2_path)
+            .arg(&o_path)
+            .arg(format!("-L{}", toolchain.crt_dir.display()));
+
+        if is_release {
+            lld_cmd.arg("--gc-sections");
+        }
+
+        lld_cmd
+            .arg("-lmingw32")
+            .arg("-lmingwex")
+            .arg("-lmsvcrt")
+            .arg("-lkernel32")
+            .arg("-luser32")
+            .arg("-lws2_32")
+            .arg("-lgcc");
+
+        for lib in &options.extra_libs {
+            lld_cmd.arg(format!("-l{}", lib));
+        }
+
+        match lld_cmd.output() {
+            Ok(res) if res.status.success() => {
+                link_error = None;
+                break;
+            }
+            Ok(res) => {
+                let err = String::from_utf8_lossy(&res.stderr).to_string();
+                link_error = Some(format!("LLVM rust-lld linking error:\n{}", err));
+                std::thread::sleep(std::time::Duration::from_millis(15 * (1 << attempt.min(5))));
+            }
+            Err(e) => {
+                link_error = Some(format!("Failed to run rust-lld: {}", e));
+                std::thread::sleep(std::time::Duration::from_millis(15 * (1 << attempt.min(5))));
+            }
+        }
+    }
 
     // Cleanup temp files
     let _ = fs::remove_file(&ll_path);
     let _ = fs::remove_file(&o_path);
 
-    if !lld_res.status.success() {
-        let err = String::from_utf8_lossy(&lld_res.stderr);
-        return Err(format!("LLVM rust-lld linking error:\n{}", err));
+    if let Some(err) = link_error {
+        return Err(err);
     }
 
     Ok(())
@@ -178,6 +286,7 @@ pub fn run_llvm_aot(module: &TirModule) -> Result<(i32, String), String> {
     };
 
     let _ = fs::remove_file(&exe_path);
+    let _ = fs::remove_file(exe_path.with_extension("pdb"));
 
     let mut stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();

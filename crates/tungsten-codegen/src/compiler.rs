@@ -424,6 +424,15 @@ impl FunctionCompiler {
                         let val = Self::lower_operand(value, &mut builder, module, &var_map, func_ids, ptr_type)?;
                         builder.ins().store(MemFlagsData::new(), val, ptr_val, 0);
                     }
+                    Instruction::StoreIndex { target, index, stride, value, .. } => {
+                        let base_val = Self::lower_operand(target, &mut builder, module, &var_map, func_ids, ptr_type)?;
+                        let idx_val = Self::lower_operand(index, &mut builder, module, &var_map, func_ids, ptr_type)?;
+                        let stride_const = builder.ins().iconst(types::I64, *stride as i64);
+                        let offset = builder.ins().imul(idx_val, stride_const);
+                        let addr = builder.ins().iadd(base_val, offset);
+                        let val = Self::lower_operand(value, &mut builder, module, &var_map, func_ids, ptr_type)?;
+                        builder.ins().store(MemFlagsData::new(), val, addr, 0);
+                    }
                 }
             }
 

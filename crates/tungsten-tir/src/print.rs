@@ -96,6 +96,9 @@ pub fn print_function(func: &TirFunction) -> String {
                 Instruction::Store { ptr, value, .. } => {
                     writeln!(out, "    store {} = {}", ptr, value).unwrap();
                 }
+                Instruction::StoreIndex { target, index, stride, value, .. } => {
+                    writeln!(out, "    store_index {}[{}] (stride {}) = {}", target, index, stride, value).unwrap();
+                }
                 Instruction::SetField { base, field, val, .. } => {
                     writeln!(out, "    set_field {}.{} = {}", base, field, val).unwrap();
                 }

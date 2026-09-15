@@ -32,13 +32,31 @@ pub fn unify(expected: &Type, actual: &Type, subst: &mut Subst) -> Result<(), St
     match (expected, actual) {
         (Type::GenericParam(name), ty) => {
             if let Some(existing) = subst.get(name) {
-                if !existing.is_compatible_with(ty) && !ty.is_compatible_with(existing) {
-                    return Err(format!("Cannot unify generic '{}': inferred as '{}' and '{}'", name, existing, ty));
+                if !ty.is_compatible_with(existing) {
+                    return Err(format!("Cannot unify generic '{}': inferred as '{}' but found incompatible argument '{}'", name, existing, ty));
                 }
             } else {
                 subst.bind(name.clone(), ty.clone());
             }
             Ok(())
+        }
+        (Type::RegionBounded { inner, region: r1 }, Type::RegionBounded { inner: i2, region: r2 }) => {
+            if r1.0 < r2.0 {
+                return Err(format!("Region lifetime mismatch: expected region '{}', found inner region '{}'", r1, r2));
+            }
+            unify(inner, i2, subst)
+        }
+        (Type::RegionBounded { inner, .. }, other) => unify(inner, other, subst),
+        (other, Type::RegionBounded { inner, .. }) => unify(other, inner, subst),
+        (Type::Ptr { is_mut: m1, inner: i1 }, Type::Ptr { is_mut: m2, inner: i2 }) => {
+            if *m1 && !*m2 {
+                return Err("Cannot unify mutable pointer with immutable pointer".into());
+            }
+            if **i1 == Type::U8 || **i2 == Type::U8 {
+                Ok(())
+            } else {
+                unify(i1, i2, subst)
+            }
         }
         (Type::Instantiated { name: n1, args: a1 }, Type::Instantiated { name: n2, args: a2 }) => {
             if n1 != n2 || a1.len() != a2.len() {
@@ -162,6 +180,24 @@ pub fn substitute(ty: &Type, subst: &Subst) -> Type {
                 params: new_params,
                 return_type: Box::new(new_ret),
                 yields_effects: new_effects.into_iter().collect(),
+            }
+        }
+        Type::RegionBounded { inner, region } => {
+            Type::RegionBounded {
+                inner: Box::new(substitute(inner, subst)),
+                region: *region,
+            }
+        }
+        Type::Ptr { is_mut, inner } => {
+            Type::Ptr {
+                is_mut: *is_mut,
+                inner: Box::new(substitute(inner, subst)),
+            }
+        }
+        Type::Array { elem, len } => {
+            Type::Array {
+                elem: Box::new(substitute(elem, subst)),
+                len: *len,
             }
         }
         other => other.clone(),

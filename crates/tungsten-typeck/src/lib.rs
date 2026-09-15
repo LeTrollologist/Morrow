@@ -478,6 +478,228 @@ mod tests {
         let errs = res.unwrap_err();
         assert!(errs.iter().any(|e| e.message.contains("Pointer escape violation")));
     }
+
+    #[test]
+    fn test_region_escape_vec_return_from_block() {
+        let code = r#"
+        struct Vec<T> {
+            len: i64,
+            cap: i64,
+            arena: *mut u8,
+        }
+
+        fn vec_new_in<T>(arena: *mut u8) -> Vec<T> {
+            Vec { len: 0, cap: 8, arena: arena }
+        }
+
+        fn main() {
+            let escaped = region r {
+                let v = vec_new_in(r);
+                v
+            };
+        }
+        "#;
+        let ast = parse(code).unwrap();
+        let res = check(&ast);
+        assert!(res.is_err(), "Returning region-backed vector from region block must be rejected");
+        let errs = res.unwrap_err();
+        assert!(errs.iter().any(|e| e.message.contains("Region escape violation")));
+    }
+
+    #[test]
+    fn test_region_escape_vec_return_from_fn() {
+        let code = r#"
+        struct Vec<T> {
+            len: i64,
+            cap: i64,
+            arena: *mut u8,
+        }
+
+        fn vec_new_in<T>(arena: *mut u8) -> Vec<T> {
+            Vec { len: 0, cap: 8, arena: arena }
+        }
+
+        fn make_vec() -> Vec<i64> {
+            region r {
+                let v = vec_new_in(r);
+                return v;
+            }
+        }
+        "#;
+        let ast = parse(code).unwrap();
+        let res = check(&ast);
+        assert!(res.is_err(), "Returning region-backed vector from function must be rejected");
+        let errs = res.unwrap_err();
+        assert!(errs.iter().any(|e| e.message.contains("Region escape violation")));
+    }
+
+    #[test]
+    fn test_region_escape_vec_assign_to_outer_var() {
+        let code = r#"
+        struct Vec<T> {
+            len: i64,
+            cap: i64,
+            arena: *mut u8,
+        }
+
+        fn vec_new<T>() -> Vec<T> {
+            let null_ptr: *mut u8 = 0 as *mut u8;
+            Vec { len: 0, cap: 8, arena: null_ptr }
+        }
+
+        fn vec_new_in<T>(arena: *mut u8) -> Vec<T> {
+            Vec { len: 0, cap: 8, arena: arena }
+        }
+
+        fn main() {
+            let mut outer_v = vec_new();
+            region r {
+                let inner_v = vec_new_in(r);
+                outer_v = inner_v;
+            }
+        }
+        "#;
+        let ast = parse(code).unwrap();
+        let res = check(&ast);
+        assert!(res.is_err(), "Assigning region-backed vector to outer variable must be rejected");
+        let errs = res.unwrap_err();
+        assert!(errs.iter().any(|e| e.message.contains("Region escape violation")));
+    }
+
+    #[test]
+    fn test_region_escape_vec_assign_to_outer_struct_field() {
+        let code = r#"
+        struct Vec<T> {
+            len: i64,
+            cap: i64,
+            arena: *mut u8,
+        }
+
+        struct Container<T> {
+            v: Vec<T>,
+        }
+
+        fn vec_new<T>() -> Vec<T> {
+            let null_ptr: *mut u8 = 0 as *mut u8;
+            Vec { len: 0, cap: 8, arena: null_ptr }
+        }
+
+        fn vec_new_in<T>(arena: *mut u8) -> Vec<T> {
+            Vec { len: 0, cap: 8, arena: arena }
+        }
+
+        fn main() {
+            let mut c = Container { v: vec_new() };
+            region r {
+                let inner_v = vec_new_in(r);
+                c.v = inner_v;
+            }
+        }
+        "#;
+        let ast = parse(code).unwrap();
+        let res = check(&ast);
+        assert!(res.is_err(), "Storing region-backed vector inside outer struct must be rejected");
+        let errs = res.unwrap_err();
+        assert!(errs.iter().any(|e| e.message.contains("Region escape violation")));
+    }
+
+    #[test]
+    fn test_region_escape_nested_regions() {
+        let code = r#"
+        struct Vec<T> {
+            len: i64,
+            cap: i64,
+            arena: *mut u8,
+        }
+
+        fn vec_new_in<T>(arena: *mut u8) -> Vec<T> {
+            Vec { len: 0, cap: 8, arena: arena }
+        }
+
+        fn main() {
+            region r1 {
+                let mut v1 = vec_new_in(r1);
+                region r2 {
+                    let v2 = vec_new_in(r2);
+                    v1 = v2;
+                }
+            }
+        }
+        "#;
+        let ast = parse(code).unwrap();
+        let res = check(&ast);
+        assert!(res.is_err(), "Assigning nested region vector to outer region must be rejected");
+        let errs = res.unwrap_err();
+        assert!(errs.iter().any(|e| e.message.contains("Region escape violation")));
+    }
+
+    #[test]
+    fn test_valid_region_vec_usage() {
+        let code = r#"
+        struct Vec<T> {
+            len: i64,
+            cap: i64,
+            arena: *mut u8,
+        }
+
+        fn vec_new_in<T>(arena: *mut u8) -> Vec<T> {
+            Vec { len: 0, cap: 8, arena: arena }
+        }
+
+        fn sum_elements(v: &Vec<i64>) -> i64 {
+            v.len
+        }
+
+        fn main() {
+            let total = region r {
+                let mut v = vec_new_in(r);
+                let count = sum_elements(&v);
+                count + 10
+            };
+        }
+        "#;
+        let ast = parse(code).unwrap();
+        let res = check(&ast);
+        assert!(res.is_ok(), "Valid region vector usage should succeed: {:?}", res.err());
+    }
+
+    #[test]
+    fn test_region_escape_storing_inner_ref_into_outer_vec() {
+        let code = r#"
+        struct Point {
+            x: i64,
+            y: i64,
+        }
+
+        struct Vec<T> {
+            len: i64,
+            cap: i64,
+            arena: *mut u8,
+        }
+
+        fn vec_new<T>() -> Vec<T> {
+            let null_ptr: *mut u8 = 0 as *mut u8;
+            Vec { len: 0, cap: 8, arena: null_ptr }
+        }
+
+        fn vec_push<T>(v: &mut Vec<T>, item: T) {
+            v.len = v.len + 1;
+        }
+
+        fn main() {
+            let mut outer_v: Vec<&Point> = vec_new();
+            region r {
+                let p = Point { x: 1, y: 2 };
+                vec_push(&mut outer_v, &p);
+            }
+        }
+        "#;
+        let ast = parse(code).unwrap();
+        let res = check(&ast);
+        assert!(res.is_err(), "Storing inner reference into outer vector must be rejected");
+        let errs = res.unwrap_err();
+        assert!(errs.iter().any(|e| e.message.contains("Type unification error") || e.message.contains("Region") || e.message.contains("mismatch")));
+    }
 }
 
 

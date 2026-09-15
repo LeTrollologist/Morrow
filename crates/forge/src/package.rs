@@ -90,6 +90,24 @@ pub struct ModuleExports {
     pub mangled_names: HashMap<String, String>,
 }
 
+const EMBEDDED_PRELUDE: &str = include_str!("../../../std/prelude.tg");
+const EMBEDDED_REFINEMENTS: &str = include_str!("../../../std/refinements.tg");
+const EMBEDDED_EFFECTS: &str = include_str!("../../../std/effects.tg");
+const EMBEDDED_COLLECTIONS: &str = include_str!("../../../std/collections.tg");
+const EMBEDDED_SYNC: &str = include_str!("../../../std/sync.tg");
+const EMBEDDED_NET: &str = include_str!("../../../std/net.tg");
+const EMBEDDED_SLICE: &str = include_str!("../../../std/slice.tg");
+
+pub const EMBEDDED_STD_FILES: &[(&str, &str)] = &[
+    ("prelude.tg", EMBEDDED_PRELUDE),
+    ("refinements.tg", EMBEDDED_REFINEMENTS),
+    ("effects.tg", EMBEDDED_EFFECTS),
+    ("collections.tg", EMBEDDED_COLLECTIONS),
+    ("sync.tg", EMBEDDED_SYNC),
+    ("net.tg", EMBEDDED_NET),
+    ("slice.tg", EMBEDDED_SLICE),
+];
+
 /// Recursively compile a package and its dependencies into a unified Program AST
 pub fn compile_package_ast(
     entry_file: &Path,
@@ -153,56 +171,51 @@ pub fn compile_package_ast(
     let is_stdlib = canonical_entry.to_string_lossy().contains("std");
 
     if !is_no_std && !is_stdlib {
-        if let Some(std_dir) = find_std_dir(&current_pkg_root) {
-            let std_files = [
-                "prelude.tg",
-                "refinements.tg",
-                "effects.tg",
-                "collections.tg",
-                "sync.tg",
-                "net.tg",
-                "slice.tg",
-            ];
+        let std_dir_opt = find_std_dir(&current_pkg_root);
 
-            let existing_names: HashSet<String> = compiled_items.iter().filter_map(|it| match it {
-                Item::TypeAlias(a) => Some(a.name.clone()),
-                Item::Struct(s) => Some(s.name.clone()),
-                Item::Fn(f) => Some(f.name.clone()),
-                Item::Effect(e) => Some(e.name.clone()),
-                Item::Enum(e) => Some(e.name.clone()),
-                Item::Import(_) => None,
-                Item::ExternBlock(_) => None,
-            }).collect();
+        let existing_names: HashSet<String> = compiled_items.iter().filter_map(|it| match it {
+            Item::TypeAlias(a) => Some(a.name.clone()),
+            Item::Struct(s) => Some(s.name.clone()),
+            Item::Fn(f) => Some(f.name.clone()),
+            Item::Effect(e) => Some(e.name.clone()),
+            Item::Enum(e) => Some(e.name.clone()),
+            Item::Import(_) => None,
+            Item::ExternBlock(_) => None,
+        }).collect();
 
-            let mut std_items = Vec::new();
-            for sf in &std_files {
-                let p = std_dir.join(sf);
-                if let Ok(content) = fs::read_to_string(&p) {
-                    if let Ok(std_ast) = tungsten_syntax::parse(&content) {
-                        for item in std_ast.items {
-                            let name_opt = match &item {
-                                Item::TypeAlias(a) => Some(&a.name),
-                                Item::Struct(s) => Some(&s.name),
-                                Item::Fn(f) => Some(&f.name),
-                                Item::Effect(e) => Some(&e.name),
-                                Item::Enum(e) => Some(&e.name),
-                                Item::Import(_) => None,
-                                Item::ExternBlock(_) => None,
-                            };
-                            if let Some(name) = name_opt {
-                                if !existing_names.contains(name) {
-                                    std_items.push(item);
-                                }
-                            } else if matches!(item, Item::ExternBlock(_)) {
-                                std_items.push(item);
-                            }
+        let mut std_items = Vec::new();
+        for (sf, embedded_content) in EMBEDDED_STD_FILES {
+            let content = match &std_dir_opt {
+                Some(dir) => {
+                    let p = dir.join(sf);
+                    fs::read_to_string(&p).unwrap_or_else(|_| embedded_content.to_string())
+                }
+                None => embedded_content.to_string(),
+            };
+
+            if let Ok(std_ast) = tungsten_syntax::parse(&content) {
+                for item in std_ast.items {
+                    let name_opt = match &item {
+                        Item::TypeAlias(a) => Some(&a.name),
+                        Item::Struct(s) => Some(&s.name),
+                        Item::Fn(f) => Some(&f.name),
+                        Item::Effect(e) => Some(&e.name),
+                        Item::Enum(e) => Some(&e.name),
+                        Item::Import(_) => None,
+                        Item::ExternBlock(_) => None,
+                    };
+                    if let Some(name) = name_opt {
+                        if !existing_names.contains(name) {
+                            std_items.push(item);
                         }
+                    } else if matches!(item, Item::ExternBlock(_)) {
+                        std_items.push(item);
                     }
                 }
             }
-            std_items.append(&mut compiled_items);
-            compiled_items = std_items;
         }
+        std_items.append(&mut compiled_items);
+        compiled_items = std_items;
     }
 
     Ok(Program {

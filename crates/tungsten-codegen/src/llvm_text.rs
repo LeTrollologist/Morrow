@@ -10,10 +10,18 @@ pub struct LlvmTextEmitter<'a> {
     string_map: HashMap<String, usize>,
     temp_counter: usize,
     var_types: HashMap<Var, String>,
+    source_file: String,
+    source_dir: String,
+    next_meta_id: usize,
+    subprogram_ids: HashMap<String, usize>,
+    location_ids: HashMap<(usize, usize, usize), usize>,
+    metadata_lines: Vec<String>,
 }
 
 impl<'a> LlvmTextEmitter<'a> {
     pub fn new(module: &'a TirModule) -> Self {
+        let source_file = module.source_file.clone().unwrap_or_else(|| "main.tg".to_string());
+        let source_dir = module.source_dir.clone().unwrap_or_else(|| ".".to_string());
         Self {
             module,
             out: String::new(),
@@ -21,6 +29,12 @@ impl<'a> LlvmTextEmitter<'a> {
             string_map: HashMap::new(),
             temp_counter: 0,
             var_types: HashMap::new(),
+            source_file,
+            source_dir,
+            next_meta_id: 6,
+            subprogram_ids: HashMap::new(),
+            location_ids: HashMap::new(),
+            metadata_lines: Vec::new(),
         }
     }
 
@@ -39,6 +53,58 @@ impl<'a> LlvmTextEmitter<'a> {
             self.string_map.insert(s.to_string(), idx);
             idx
         }
+    }
+
+    fn inst_span(&self, inst: &Instruction) -> tungsten_syntax::token::Span {
+        match inst {
+            Instruction::Assign { span, .. } => *span,
+            Instruction::AssertRefinement { span, .. } => *span,
+            Instruction::PerformEffect { span, .. } => *span,
+            Instruction::Call { span, .. } => *span,
+            Instruction::ExternCall { span, .. } => *span,
+            Instruction::Store { span, .. } => *span,
+            Instruction::StoreIndex { span, .. } => *span,
+            Instruction::SetField { span, .. } => *span,
+            Instruction::RegionEnter { span, .. } => *span,
+            Instruction::RegionExit { span, .. } => *span,
+            Instruction::NurseryEnter { span, .. } => *span,
+            Instruction::NurseryExit { span, .. } => *span,
+        }
+    }
+
+    fn get_or_create_location(&mut self, span: tungsten_syntax::token::Span, subprog_id: usize) -> usize {
+        let line = if span.line > 0 { span.line } else { 1 };
+        let col = if span.column > 0 { span.column } else { 1 };
+        let key = (line, col, subprog_id);
+        if let Some(&loc_id) = self.location_ids.get(&key) {
+            loc_id
+        } else {
+            let loc_id = self.next_meta_id;
+            self.next_meta_id += 1;
+            self.location_ids.insert(key, loc_id);
+            self.metadata_lines.push(format!(
+                "!{} = !DILocation(line: {}, column: {}, scope: !{})",
+                loc_id, line, col, subprog_id
+            ));
+            loc_id
+        }
+    }
+
+    fn tag_emitted_slice_with_dbg(&mut self, start_pos: usize, loc_id: usize) {
+        let slice = &self.out[start_pos..];
+        let mut modified = String::with_capacity(slice.len() + 64);
+        for line in slice.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.ends_with(':') || trimmed.starts_with(';') || trimmed.contains("!dbg") {
+                modified.push_str(line);
+            } else {
+                modified.push_str(line);
+                modified.push_str(&format!(", !dbg !{}", loc_id));
+            }
+            modified.push('\n');
+        }
+        self.out.truncate(start_pos);
+        self.out.push_str(&modified);
     }
 
     pub fn emit(mut self) -> String {
@@ -61,6 +127,7 @@ impl<'a> LlvmTextEmitter<'a> {
 
         // External C declarations
         header.push_str("; C Library Runtime Declarations\n");
+        header.push_str("declare void @llvm.memcpy.p0.p0.i64(ptr noalias nocapture writeonly, ptr noalias nocapture readonly, i64, i1 immarg)\n");
         header.push_str("declare i32 @printf(ptr, ...)\n");
         header.push_str("declare i32 @putchar(i32)\n");
         header.push_str("declare void @exit(i32)\n");
@@ -92,7 +159,16 @@ impl<'a> LlvmTextEmitter<'a> {
             "WSAStartup", "socket", "bind", "listen", "accept", "recv", "send",
             "closesocket", "setsockopt", "strlen", "CreateThread", "CloseHandle",
             "CreateSemaphoreA", "CreateMutexA", "WaitForSingleObject",
-            "ReleaseSemaphore", "ReleaseMutex"
+            "ReleaseSemaphore", "ReleaseMutex",
+            "tungsten_alloc", "tungsten_region_alloc", "tungsten_region_grow",
+            "tungsten_region_enter", "tungsten_region_exit",
+            "tungsten_print_i64", "tungsten_println_i64", "tungsten_print_str",
+            "tungsten_println_str", "tungsten_io_print", "tungsten_refinement_panic",
+            "tungsten_fiber_spawn", "tungsten_fiber_yield", "tungsten_fiber_sleep",
+            "tungsten_channel_new", "tungsten_channel_send", "tungsten_channel_recv",
+            "tungsten_net_listen", "tungsten_net_accept", "tungsten_net_connect",
+            "tungsten_net_read", "tungsten_net_write", "tungsten_net_close",
+            "tungsten_trace_effect", "tungsten_thread_thunk"
         ].iter().map(|s| s.to_string()).collect();
 
         for block in &self.module.extern_blocks {
@@ -184,6 +260,49 @@ impl<'a> LlvmTextEmitter<'a> {
         header.push_str("    %new_offset = add i64 %offset, %size\n");
         header.push_str("    store i64 %new_offset, ptr %offset_ptr\n");
         header.push_str("    ret ptr %ptr\n}\n\n");
+
+        header.push_str("define ptr @tungsten_region_grow(ptr %arena, ptr %ptr, i64 %old_sz, i64 %new_sz, i64 %align) {\n");
+        header.push_str("    %is_null = icmp eq ptr %arena, null\n");
+        header.push_str("    br i1 %is_null, label %heap_realloc, label %check_in_place\n");
+        header.push_str("heap_realloc:\n");
+        header.push_str("    %is_ptr_null = icmp eq ptr %ptr, null\n");
+        header.push_str("    br i1 %is_ptr_null, label %heap_malloc, label %do_realloc\n");
+        header.push_str("heap_malloc:\n");
+        header.push_str("    %m_ptr = call ptr @malloc(i64 %new_sz)\n");
+        header.push_str("    ret ptr %m_ptr\n");
+        header.push_str("do_realloc:\n");
+        header.push_str("    %r_ptr = call ptr @realloc(ptr %ptr, i64 %new_sz)\n");
+        header.push_str("    ret ptr %r_ptr\n");
+        header.push_str("check_in_place:\n");
+        header.push_str("    %buf = load ptr, ptr %arena\n");
+        header.push_str("    %offset_ptr = getelementptr inbounds i8, ptr %arena, i64 8\n");
+        header.push_str("    %offset = load i64, ptr %offset_ptr\n");
+        header.push_str("    %cap_ptr = getelementptr inbounds i8, ptr %arena, i64 16\n");
+        header.push_str("    %cap = load i64, ptr %cap_ptr\n");
+        header.push_str("    %current_top = getelementptr inbounds i8, ptr %buf, i64 %offset\n");
+        header.push_str("    %end_of_alloc = getelementptr inbounds i8, ptr %ptr, i64 %old_sz\n");
+        header.push_str("    %is_last = icmp eq ptr %end_of_alloc, %current_top\n");
+        header.push_str("    br i1 %is_last, label %check_capacity, label %fallback_alloc\n");
+        header.push_str("check_capacity:\n");
+        header.push_str("    %diff = sub i64 %new_sz, %old_sz\n");
+        header.push_str("    %new_offset = add i64 %offset, %diff\n");
+        header.push_str("    %has_room = icmp sle i64 %new_offset, %cap\n");
+        header.push_str("    br i1 %has_room, label %grow_in_place, label %fallback_alloc\n");
+        header.push_str("grow_in_place:\n");
+        header.push_str("    store i64 %new_offset, ptr %offset_ptr\n");
+        header.push_str("    ret ptr %ptr\n");
+        header.push_str("fallback_alloc:\n");
+        header.push_str("    %new_buf = call ptr @tungsten_region_alloc(ptr %arena, i64 %new_sz, i64 %align)\n");
+        header.push_str("    %not_null = icmp ne ptr %ptr, null\n");
+        header.push_str("    br i1 %not_null, label %do_copy, label %done_grow\n");
+        header.push_str("do_copy:\n");
+        header.push_str("    %has_old = icmp sgt i64 %old_sz, 0\n");
+        header.push_str("    br i1 %has_old, label %copy_bytes, label %done_grow\n");
+        header.push_str("copy_bytes:\n");
+        header.push_str("    call void @llvm.memcpy.p0.p0.i64(ptr %new_buf, ptr %ptr, i64 %old_sz, i1 false)\n");
+        header.push_str("    br label %done_grow\n");
+        header.push_str("done_grow:\n");
+        header.push_str("    ret ptr %new_buf\n}\n\n");
 
         header.push_str("define void @tungsten_region_exit(ptr %arena) {\n");
         header.push_str("    %is_null = icmp eq ptr %arena, null\n");
@@ -458,6 +577,18 @@ impl<'a> LlvmTextEmitter<'a> {
         }
         header.push('\n');
 
+        // Register debug subprograms
+        for func in &self.module.functions {
+            let line = if func.span.line > 0 { func.span.line } else { 1 };
+            let subprog_id = self.next_meta_id;
+            self.next_meta_id += 1;
+            self.subprogram_ids.insert(func.name.clone(), subprog_id);
+            self.metadata_lines.push(format!(
+                "!{} = distinct !DISubprogram(name: \"{}\", scope: !3, file: !3, line: {}, type: !4, scopeLine: {}, spFlags: DISPFlagDefinition, unit: !2)",
+                subprog_id, func.name, line, line
+            ));
+        }
+
         // Functions
         for func in &self.module.functions {
             self.emit_function(func);
@@ -465,6 +596,28 @@ impl<'a> LlvmTextEmitter<'a> {
 
         let mut full = header;
         full.push_str(&self.out);
+
+        full.push_str("\n; ==========================================================\n");
+        full.push_str("; LLVM Debug Information Metadata (Genesis v1.0)\n");
+        full.push_str("; ==========================================================\n");
+        full.push_str("!llvm.module.flags = !{!0, !1}\n");
+        full.push_str("!llvm.dbg.cu = !{!2}\n\n");
+        full.push_str("!0 = !{i32 2, !\"Debug Info Version\", i32 3}\n");
+        full.push_str("!1 = !{i32 2, !\"CodeView\", i32 1}\n");
+        full.push_str(&format!(
+            "!2 = distinct !DICompileUnit(language: DW_LANG_C99, file: !3, producer: \"Tungsten v1.0 Genesis\", isOptimized: false, runtimeVersion: 0, emissionKind: FullDebug)\n"
+        ));
+        full.push_str(&format!(
+            "!3 = !DIFile(filename: \"{}\", directory: \"{}\")\n",
+            self.source_file.replace('\\', "/"), self.source_dir.replace('\\', "/")
+        ));
+        full.push_str("!4 = !DISubroutineType(types: !5)\n");
+        full.push_str("!5 = !{null}\n");
+        for meta in &self.metadata_lines {
+            full.push_str(meta);
+            full.push('\n');
+        }
+
         full
     }
 
@@ -633,6 +786,11 @@ impl<'a> LlvmTextEmitter<'a> {
                 self.collect_vars_from_op(ptr, vars);
                 self.collect_vars_from_op(value, vars);
             }
+            Instruction::StoreIndex { target, index, value, .. } => {
+                self.collect_vars_from_op(target, vars);
+                self.collect_vars_from_op(index, vars);
+                self.collect_vars_from_op(value, vars);
+            }
         }
     }
 
@@ -720,10 +878,13 @@ impl<'a> LlvmTextEmitter<'a> {
             params_sig.push(format!("{} %arg_{}", ty_str, p.name));
         }
 
-        self.out.push_str(&format!("define {} @{}({}) {{\n", ret_llvm_ty, func.name, params_sig.join(", ")));
+        let subprog_id = self.subprogram_ids.get(&func.name).copied().unwrap_or(2);
+        self.out.push_str(&format!("define {} @{}({}) !dbg !{} {{\n", ret_llvm_ty, func.name, params_sig.join(", "), subprog_id));
 
         // Entry block: allocate stack slots for parameters and local variables
         self.out.push_str("entry:\n");
+        let entry_loc = self.get_or_create_location(func.span, subprog_id);
+        let allocas_start = self.out.len();
 
         // Collect all variables used in the function
         let mut vars = HashMap::new();
@@ -764,15 +925,21 @@ impl<'a> LlvmTextEmitter<'a> {
 
         // Jump to first basic block
         self.out.push_str(&format!("    br label %bb{}\n\n", func.entry_block.0));
+        self.tag_emitted_slice_with_dbg(allocas_start, entry_loc);
 
         // Emit basic blocks
         for block in &func.blocks {
             self.out.push_str(&format!("bb{}:\n", block.id.0));
 
             for inst in &block.instructions {
+                let inst_loc = self.get_or_create_location(self.inst_span(inst), subprog_id);
+                let inst_start = self.out.len();
                 self.emit_instruction(inst);
+                self.tag_emitted_slice_with_dbg(inst_start, inst_loc);
             }
 
+            let term_loc = self.get_or_create_location(func.span, subprog_id);
+            let term_start = self.out.len();
             if let Some(ref term) = block.terminator {
                 self.emit_terminator(term, is_main, &func.return_type);
             } else {
@@ -784,6 +951,7 @@ impl<'a> LlvmTextEmitter<'a> {
                     self.out.push_str(&format!("    ret {} 0\n", ret_llvm_ty));
                 }
             }
+            self.tag_emitted_slice_with_dbg(term_start, term_loc);
             self.out.push('\n');
         }
 
@@ -1141,6 +1309,32 @@ impl<'a> LlvmTextEmitter<'a> {
                 let val_ty = self.get_operand_llvm_type(value);
                 self.out.push_str(&format!("    store {} {}, ptr {}\n", val_ty, val, ptr_coerced));
             }
+            Instruction::StoreIndex { target, index, stride, value, .. } => {
+                let target_v = self.emit_operand(target);
+                let target_ty = self.get_operand_llvm_type(target);
+                let target_ptr = self.coerce_val(&target_v, &target_ty, "ptr");
+
+                let idx_v = self.emit_operand(index);
+                let idx_ty = self.get_operand_llvm_type(index);
+                let idx_i64 = self.coerce_val(&idx_v, &idx_ty, "i64");
+
+                let offset_t = self.next_temp();
+                self.out.push_str(&format!("    {} = mul i64 {}, {}\n", offset_t, idx_i64, stride));
+
+                let gep = self.next_temp();
+                self.out.push_str(&format!("    {} = getelementptr inbounds i8, ptr {}, i64 {}\n", gep, target_ptr, offset_t));
+
+                let val_v = self.emit_operand(value);
+                let val_ty = self.get_operand_llvm_type(value);
+                let elem_llvm_ty = match stride {
+                    1 => "i8",
+                    2 => "i16",
+                    4 => "i32",
+                    _ => "i64",
+                };
+                let coerced_val = self.coerce_val(&val_v, &val_ty, elem_llvm_ty);
+                self.out.push_str(&format!("    store {} {}, ptr {}\n", elem_llvm_ty, coerced_val, gep));
+            }
         }
     }
 
@@ -1360,9 +1554,15 @@ impl<'a> LlvmTextEmitter<'a> {
             }
             RValue::Ref { operand, .. } => {
                 match operand {
-                    Operand::Var(v, _) => {
+                    Operand::Var(v, ty) => {
                         let slot = var_to_slot_name(v);
-                        (slot, "ptr".to_string())
+                        if matches!(ty.strip_region(), Type::Struct(_) | Type::Instantiated { .. } | Type::Ref { .. } | Type::Array { .. }) {
+                            let loaded = self.next_temp();
+                            self.out.push_str(&format!("    {} = load ptr, ptr {}\n", loaded, slot));
+                            (loaded, "ptr".to_string())
+                        } else {
+                            (slot, "ptr".to_string())
+                        }
                     }
                     Operand::Constant(TirConstant::Str(s)) => {
                         let idx = self.intern_string(s);
@@ -1675,6 +1875,7 @@ fn type_to_llvm(ty: &Type) -> String {
             "ptr".to_string()
         }
         Type::Refined { base, .. } | Type::Relational { base, .. } => type_to_llvm(base),
+        Type::RegionBounded { inner, .. } => type_to_llvm(inner),
         _ => "i64".to_string(),
     }
 }

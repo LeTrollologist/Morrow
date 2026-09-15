@@ -112,6 +112,11 @@ fn collect_used_vars_in_inst(inst: &Instruction, used: &mut HashSet<Var>) {
             collect_used_vars_in_operand(ptr, used);
             collect_used_vars_in_operand(value, used);
         }
+        Instruction::StoreIndex { target, index, value, .. } => {
+            collect_used_vars_in_operand(target, used);
+            collect_used_vars_in_operand(index, used);
+            collect_used_vars_in_operand(value, used);
+        }
         Instruction::SetField { base, val, .. } => {
             used.insert(base.clone());
             collect_used_vars_in_operand(val, used);

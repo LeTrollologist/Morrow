@@ -7,7 +7,17 @@ use tungsten_typeck::types::Type;
 use crate::ir::*;
 
 pub fn lower_program(program: &Program) -> Result<TirModule, String> {
+    lower_program_with_source(program, None, None)
+}
+
+pub fn lower_program_with_source(
+    program: &Program,
+    source_file: Option<String>,
+    source_dir: Option<String>,
+) -> Result<TirModule, String> {
     let mut lowerer = TirLowerer::new();
+    lowerer.source_file = source_file;
+    lowerer.source_dir = source_dir;
     lowerer.lower(program)
 }
 
@@ -25,6 +35,8 @@ struct TirLowerer {
     scopes: Vec<HashMap<String, (Var, Type)>>,
     next_var_version: usize,
     continuation_stack: Vec<BlockId>,
+    source_file: Option<String>,
+    source_dir: Option<String>,
 }
 
 impl TirLowerer {
@@ -43,6 +55,8 @@ impl TirLowerer {
             scopes: Vec::new(),
             next_var_version: 0,
             continuation_stack: Vec::new(),
+            source_file: None,
+            source_dir: None,
         }
     }
 
@@ -144,6 +158,8 @@ impl TirLowerer {
             enums,
             effects,
             extern_blocks,
+            source_file: self.source_file.clone(),
+            source_dir: self.source_dir.clone(),
         })
     }
 
@@ -219,6 +235,7 @@ impl TirLowerer {
             yields_effects: fdecl.yields_effects.clone(),
             blocks: self.blocks.clone(),
             entry_block: entry_id,
+            span: fdecl.span,
         }
     }
 
@@ -335,6 +352,27 @@ impl TirLowerer {
                         let ptr_op = self.lower_expr(ptr_expr);
                         self.emit(Instruction::Store {
                             ptr: ptr_op,
+                            value: val_op,
+                            span: *span,
+                        });
+                    }
+                    ExprKind::Index { target: base, index: idx } => {
+                        let base_op = self.lower_expr(base);
+                        let idx_op = self.lower_expr(idx);
+                        let stride = match base_op.get_type().strip_region() {
+                            Type::Array { elem, .. } => elem.stride(),
+                            Type::Ref { inner, .. } => match inner.strip_region() {
+                                Type::Array { elem, .. } => elem.stride(),
+                                _ => 8,
+                            },
+                            Type::Ptr { inner, .. } => inner.stride(),
+                            _ => 8,
+                        };
+                        let stride = if stride == 0 { 8 } else { stride };
+                        self.emit(Instruction::StoreIndex {
+                            target: base_op,
+                            index: idx_op,
+                            stride,
                             value: val_op,
                             span: *span,
                         });
@@ -759,18 +797,30 @@ impl TirLowerer {
                 self.set_current_block(loop_exit);
                 Operand::Constant(TirConstant::Unit)
             }
-            ExprKind::Region { body, .. } => {
+            ExprKind::Region { name, body } => {
                 let region_id = self.next_region_id;
                 self.next_region_id += 1;
-                let (arena_dest, arena_op) = self.alloc_temp(Type::Unit);
+                let ptr_u8_ty = Type::Ptr { is_mut: true, inner: Box::new(Type::U8) };
+                let (arena_dest, arena_op) = self.alloc_temp(ptr_u8_ty.clone());
                 self.emit(Instruction::RegionEnter {
                     dest: arena_dest,
                     region_id,
                     span: expr.span,
                 });
+                self.push_scope();
+                if let Some(r_name) = name {
+                    let var = self.define_scoped_var(r_name, ptr_u8_ty.clone());
+                    self.emit(Instruction::Assign {
+                        dest: var,
+                        rvalue: RValue::Use(arena_op.clone()),
+                        ty: ptr_u8_ty,
+                        span: expr.span,
+                    });
+                }
                 self.arena_stack.push(arena_op.clone());
                 let res = self.lower_block(body).unwrap_or(Operand::Constant(TirConstant::Unit));
                 self.arena_stack.pop();
+                self.pop_scope();
                 self.emit(Instruction::RegionExit {
                     arena: arena_op,
                     span: expr.span,
@@ -861,18 +911,22 @@ impl TirLowerer {
             ExprKind::Index { target, index } => {
                 let t_op = self.lower_expr(target);
                 let i_op = self.lower_expr(index);
-                let (elem_ty, stride) = match t_op.get_type() {
+                let (elem_ty, stride) = match t_op.get_type().strip_region() {
                     Type::Array { elem, .. } => {
                         let s = elem.stride();
-                        (*elem, if s == 0 { 8 } else { s })
+                        (*elem.clone(), if s == 0 { 8 } else { s })
                     }
-                    Type::Ref { inner, .. } => match *inner {
+                    Type::Ref { inner, .. } => match inner.strip_region() {
                         Type::Array { elem, .. } => {
                             let s = elem.stride();
-                            (*elem, if s == 0 { 8 } else { s })
+                            (*elem.clone(), if s == 0 { 8 } else { s })
                         }
                         _ => (Type::I64, 8),
                     },
+                    Type::Ptr { inner, .. } => {
+                        let s = inner.stride();
+                        (*inner.clone(), if s == 0 { 8 } else { s })
+                    }
                     _ => (Type::I64, 8),
                 };
                 let (dest, res_op) = self.alloc_temp(elem_ty.clone());

@@ -56,6 +56,12 @@ pub enum Type {
         return_type: Box<Type>,
         yields_effects: Vec<String>,
     },
+    /// A value bounded to a specific region's lexical lifetime.
+    /// Values of this type cannot escape outliving their declaring region.
+    RegionBounded {
+        inner: Box<Type>,
+        region: RegionId,
+    },
 }
 
 impl Type {
@@ -75,7 +81,38 @@ impl Type {
         match self {
             Type::Refined { base, .. } => base.base_type(),
             Type::Relational { base, .. } => base.base_type(),
+            Type::RegionBounded { inner, .. } => inner.base_type(),
             _ => self,
+        }
+    }
+
+    pub fn region(&self) -> Option<RegionId> {
+        match self {
+            Type::Ref { region, .. } => *region,
+            Type::RegionBounded { region, .. } => Some(*region),
+            _ => None,
+        }
+    }
+
+    pub fn strip_region(&self) -> &Type {
+        match self {
+            Type::RegionBounded { inner, .. } => inner.strip_region(),
+            _ => self,
+        }
+    }
+
+    pub fn bounded_with(self, reg: RegionId) -> Type {
+        match self {
+            Type::RegionBounded { inner, region: existing } => {
+                Type::RegionBounded {
+                    inner,
+                    region: RegionId(existing.0.max(reg.0)),
+                }
+            }
+            _ => Type::RegionBounded {
+                inner: Box::new(self),
+                region: reg,
+            },
         }
     }
 
@@ -89,6 +126,7 @@ impl Type {
             Type::Unit => 0,
             Type::Refined { base, .. } => base.stride(),
             Type::Relational { base, .. } => base.stride(),
+            Type::RegionBounded { inner, .. } => inner.stride(),
             Type::Ref { .. } => 8,
             Type::Ptr { .. } => 8,
             Type::Struct(_) => 8,
@@ -106,6 +144,11 @@ impl Type {
         }
         match (self, other) {
             (Type::GenericParam(_), _) | (_, Type::GenericParam(_)) => true,
+            (Type::RegionBounded { inner: i1, region: r1 }, Type::RegionBounded { inner: i2, region: r2 }) => {
+                r1.0 <= r2.0 && i1.is_compatible_with(i2)
+            }
+            (Type::RegionBounded { inner, .. }, other) => inner.is_compatible_with(other),
+            (other, Type::RegionBounded { inner, .. }) => other.is_compatible_with(inner),
             (Type::Refined { base: b1, interval: i1, .. }, Type::Refined { base: b2, interval: i2, .. }) => {
                 b1 == b2 && i1.is_subset_of(i2)
             }
@@ -127,7 +170,7 @@ impl Type {
             }
             (Type::Ref { is_mut: m1, inner: i1, region: r1 }, Type::Ref { is_mut: m2, inner: i2, region: r2 }) => {
                 let region_compat = match (r1, r2) {
-                    (Some(reg1), Some(reg2)) => reg1.0 <= reg2.0, // reg1 is at outer or equal scope, outliving reg2
+                    (Some(reg1), Some(reg2)) => reg1.0 <= reg2.0,
                     _ => true,
                 };
                 (*m1 == *m2 || (!m2 && *m1)) && i1.is_compatible_with(i2) && region_compat
@@ -213,6 +256,7 @@ impl fmt::Display for Type {
                 }
                 write!(f, " -> {}", return_type)
             }
+            Type::RegionBounded { inner, region } => write!(f, "{} in {}", inner, region),
         }
     }
 }

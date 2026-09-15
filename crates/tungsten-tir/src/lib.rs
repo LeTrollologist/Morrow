@@ -7,7 +7,15 @@ pub mod verify;
 use tungsten_syntax::ast::Program;
 
 pub fn compile(program: &Program) -> Result<ir::TirModule, String> {
-    let module = lower::lower_program(program)?;
+    compile_with_source(program, None, None)
+}
+
+pub fn compile_with_source(
+    program: &Program,
+    source_file: Option<String>,
+    source_dir: Option<String>,
+) -> Result<ir::TirModule, String> {
+    let module = lower::lower_program_with_source(program, source_file, source_dir)?;
     if let Err(errs) = verify::verify_module(&module) {
         let err_strs: Vec<String> = errs.into_iter().map(|e| e.to_string()).collect();
         return Err(err_strs.join("\n"));
