@@ -667,6 +667,58 @@ impl Evaluator {
                             return EvalSignal::Normal(Value::Unit);
                         }
                     }
+
+                    // FS effect runtime operations
+                    if namespace == "FS" {
+                        if op == "read_file" || op == "read_file_in" {
+                            let file_path = eval_args.first().and_then(|v| v.as_str()).unwrap_or_default();
+                            return match std::fs::read_to_string(&file_path) {
+                                Ok(content) => EvalSignal::Normal(Value::Str(content)),
+                                Err(e) => EvalSignal::Error(format!("FS.read_file error for '{}': {}", file_path, e)),
+                            };
+                        }
+                        if op == "write_file" {
+                            let file_path = eval_args.first().and_then(|v| v.as_str()).unwrap_or_default();
+                            let content = eval_args.get(1).and_then(|v| v.as_str()).unwrap_or_default();
+                            return match std::fs::write(&file_path, &content) {
+                                Ok(_) => EvalSignal::Normal(Value::Bool(true)),
+                                Err(_) => EvalSignal::Normal(Value::Bool(false)),
+                            };
+                        }
+                        if op == "file_exists" {
+                            let file_path = eval_args.first().and_then(|v| v.as_str()).unwrap_or_default();
+                            let exists = std::path::Path::new(&file_path).exists();
+                            return EvalSignal::Normal(Value::Bool(exists));
+                        }
+                        if op == "file_size" {
+                            let file_path = eval_args.first().and_then(|v| v.as_str()).unwrap_or_default();
+                            let sz = std::fs::metadata(&file_path).map(|m| m.len() as i64).unwrap_or(0);
+                            return EvalSignal::Normal(Value::Int(sz));
+                        }
+                        if op == "delete_file" {
+                            let file_path = eval_args.first().and_then(|v| v.as_str()).unwrap_or_default();
+                            let ok = std::fs::remove_file(&file_path).is_ok();
+                            return EvalSignal::Normal(Value::Bool(ok));
+                        }
+                    }
+
+                    // Process effect runtime operations
+                    if namespace == "Process" {
+                        if op == "spawn" {
+                            let cmd_str = eval_args.first().and_then(|v| v.as_str()).unwrap_or_default();
+                            let args_str = eval_args.get(1).and_then(|v| v.as_str()).unwrap_or_default();
+                            let mut cmd = std::process::Command::new(&cmd_str);
+                            if !args_str.is_empty() {
+                                for arg in args_str.split_whitespace() {
+                                    cmd.arg(arg);
+                                }
+                            }
+                            return match cmd.status() {
+                                Ok(status) => EvalSignal::Normal(Value::Int(status.code().unwrap_or(0) as i64)),
+                                Err(_) => EvalSignal::Normal(Value::Int(-1)),
+                            };
+                        }
+                    }
                 }
 
                 let full_path = path.join("::");

@@ -29,3 +29,18 @@ effect Time {
     fn now_ms() -> u64;
     fn sleep_ms(duration: u64) -> ();
 }
+
+// Filesystem effect
+effect FS {
+    fn read_file(path: String) -> String;
+    fn read_file_in(path: String, arena: *mut u8) -> String;
+    fn write_file(path: String, content: String) -> bool;
+    fn file_exists(path: String) -> bool;
+    fn file_size(path: String) -> i64;
+    fn delete_file(path: String) -> bool;
+}
+
+// Process management and command execution effect
+effect Process {
+    fn spawn(cmd: String, args: String) -> i64;
+}

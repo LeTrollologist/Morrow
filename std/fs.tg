@@ -1,0 +1,45 @@
+// Tungsten Standard Library - Filesystem Module (std::fs)
+
+pub fn fs_read_to_string(path: String) -> String yields [FS] {
+    FS::read_file(path)
+}
+
+pub fn fs_read_to_string_in(path: String, arena: *mut u8) -> String yields [FS] {
+    FS::read_file_in(path, arena)
+}
+
+pub fn fs_write_string(path: String, content: String) -> bool yields [FS] {
+    FS::write_file(path, content)
+}
+
+pub fn fs_exists(path: String) -> bool yields [FS] {
+    FS::file_exists(path)
+}
+
+pub fn fs_size(path: String) -> i64 yields [FS] {
+    FS::file_size(path)
+}
+
+pub fn fs_delete(path: String) -> bool yields [FS] {
+    FS::delete_file(path)
+}
+
+pub struct File {
+    path: String,
+    is_open: bool,
+}
+
+pub fn file_open(path: String) -> File yields [FS] {
+    File {
+        path: path,
+        is_open: fs_exists(path),
+    }
+}
+
+pub fn file_read(f: File) -> String yields [FS] {
+    FS::read_file(f.path)
+}
+
+pub fn file_write(f: File, content: String) -> bool yields [FS] {
+    FS::write_file(f.path, content)
+}

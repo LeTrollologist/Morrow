@@ -10,6 +10,7 @@ pub struct LlvmTextEmitter<'a> {
     string_map: HashMap<String, usize>,
     temp_counter: usize,
     var_types: HashMap<Var, String>,
+    var_tungsten_types: HashMap<Var, Type>,
     source_file: String,
     source_dir: String,
     next_meta_id: usize,
@@ -29,6 +30,7 @@ impl<'a> LlvmTextEmitter<'a> {
             string_map: HashMap::new(),
             temp_counter: 0,
             var_types: HashMap::new(),
+            var_tungsten_types: HashMap::new(),
             source_file,
             source_dir,
             next_meta_id: 6,
@@ -151,15 +153,27 @@ impl<'a> LlvmTextEmitter<'a> {
         header.push_str("declare ptr @CreateMutexA(ptr, i32, ptr)\n");
         header.push_str("declare i32 @WaitForSingleObject(ptr, i32)\n");
         header.push_str("declare i32 @ReleaseSemaphore(ptr, i32, ptr)\n");
-        header.push_str("declare i32 @ReleaseMutex(ptr)\n\n");
+        header.push_str("declare i32 @ReleaseMutex(ptr)\n");
+        header.push_str("declare ptr @fopen(ptr, ptr)\n");
+        header.push_str("declare i64 @fread(ptr, i64, i64, ptr)\n");
+        header.push_str("declare i64 @fwrite(ptr, i64, i64, ptr)\n");
+        header.push_str("declare i32 @fclose(ptr)\n");
+        header.push_str("declare i32 @fseek(ptr, i64, i32)\n");
+        header.push_str("declare i64 @ftell(ptr)\n");
+        header.push_str("declare i32 @remove(ptr)\n");
+        header.push_str("declare i32 @system(ptr)\n");
+        header.push_str("declare i32 @strcmp(ptr, ptr)\n");
+        header.push_str("declare ptr @memset(ptr, i32, i64)\n");
+        header.push_str("declare i32 @fflush(ptr)\n\n");
 
         // Dynamic C declarations from extern_blocks
         let mut declared_c_fns: std::collections::HashSet<String> = [
-            "printf", "putchar", "exit", "malloc", "realloc", "free", "Sleep",
+            "printf", "putchar", "exit", "malloc", "realloc", "free", "Sleep", "fflush",
             "WSAStartup", "socket", "bind", "listen", "accept", "recv", "send",
             "closesocket", "setsockopt", "strlen", "CreateThread", "CloseHandle",
             "CreateSemaphoreA", "CreateMutexA", "WaitForSingleObject",
-            "ReleaseSemaphore", "ReleaseMutex",
+            "ReleaseSemaphore", "ReleaseMutex", "fopen", "fread", "fwrite", "fclose",
+            "fseek", "ftell", "remove", "system", "strcmp", "memset",
             "tungsten_alloc", "tungsten_region_alloc", "tungsten_region_grow",
             "tungsten_region_enter", "tungsten_region_exit",
             "tungsten_print_i64", "tungsten_println_i64", "tungsten_print_str",
@@ -167,8 +181,7 @@ impl<'a> LlvmTextEmitter<'a> {
             "tungsten_fiber_spawn", "tungsten_fiber_yield", "tungsten_fiber_sleep",
             "tungsten_channel_new", "tungsten_channel_send", "tungsten_channel_recv",
             "tungsten_net_listen", "tungsten_net_accept", "tungsten_net_connect",
-            "tungsten_net_read", "tungsten_net_write", "tungsten_net_close",
-            "tungsten_trace_effect", "tungsten_thread_thunk"
+            "tungsten_net_close",
         ].iter().map(|s| s.to_string()).collect();
 
         for block in &self.module.extern_blocks {
@@ -196,10 +209,12 @@ impl<'a> LlvmTextEmitter<'a> {
         header.push_str("; Tungsten Native Runtime Functions\n");
         header.push_str("define void @tungsten_print_i64(i64 %v) {\n");
         header.push_str("    call i32 (ptr, ...) @printf(ptr @fmt_i64_raw, i64 %v)\n");
+        header.push_str("    call i32 @fflush(ptr null)\n");
         header.push_str("    ret void\n}\n\n");
 
         header.push_str("define void @tungsten_println_i64(i64 %v) {\n");
         header.push_str("    call i32 (ptr, ...) @printf(ptr @fmt_i64, i64 %v)\n");
+        header.push_str("    call i32 @fflush(ptr null)\n");
         header.push_str("    ret void\n}\n\n");
 
         header.push_str("define void @tungsten_print_str(ptr %s, i64 %len) {\n");
@@ -207,6 +222,7 @@ impl<'a> LlvmTextEmitter<'a> {
         header.push_str("    br i1 %null_check, label %ret_blk, label %print_blk\n");
         header.push_str("print_blk:\n");
         header.push_str("    call i32 (ptr, ...) @printf(ptr @fmt_str_raw, ptr %s)\n");
+        header.push_str("    call i32 @fflush(ptr null)\n");
         header.push_str("    br label %ret_blk\n");
         header.push_str("ret_blk:\n    ret void\n}\n\n");
 
@@ -215,9 +231,11 @@ impl<'a> LlvmTextEmitter<'a> {
         header.push_str("    br i1 %null_check, label %empty_blk, label %print_blk\n");
         header.push_str("print_blk:\n");
         header.push_str("    call i32 (ptr, ...) @printf(ptr @fmt_str, ptr %s)\n");
+        header.push_str("    call i32 @fflush(ptr null)\n");
         header.push_str("    ret void\n");
         header.push_str("empty_blk:\n");
         header.push_str("    call i32 @putchar(i32 10)\n");
+        header.push_str("    call i32 @fflush(ptr null)\n");
         header.push_str("    ret void\n}\n\n");
 
         header.push_str("define void @tungsten_io_print(ptr %s, i64 %len) {\n");
@@ -225,9 +243,11 @@ impl<'a> LlvmTextEmitter<'a> {
         header.push_str("    br i1 %null_check, label %empty_blk, label %print_blk\n");
         header.push_str("print_blk:\n");
         header.push_str("    call i32 (ptr, ...) @printf(ptr @fmt_io_str, ptr %s)\n");
+        header.push_str("    call i32 @fflush(ptr null)\n");
         header.push_str("    ret void\n");
         header.push_str("empty_blk:\n");
         header.push_str("    call i32 (ptr, ...) @printf(ptr @fmt_io_empty)\n");
+        header.push_str("    call i32 @fflush(ptr null)\n");
         header.push_str("    ret void\n}\n\n");
 
         header.push_str("define void @tungsten_refinement_panic(i64 %val, i64 %min_v, i64 %max_v) {\n");
@@ -568,6 +588,108 @@ impl<'a> LlvmTextEmitter<'a> {
         header.push_str("    call void @free(ptr %ctx)\n");
         header.push_str("    ret i64 %res\n}\n\n");
 
+        header.push_str("@str_mode_rb = internal constant [3 x i8] c\"rb\\00\"\n");
+        header.push_str("@str_mode_wb = internal constant [3 x i8] c\"wb\\00\"\n");
+        header.push_str("@str_empty = internal constant [1 x i8] c\"\\00\"\n\n");
+
+        header.push_str("define ptr @tungsten_fs_read_file_in(ptr %path, ptr %arena) {\n");
+        header.push_str("    %fp = call ptr @fopen(ptr %path, ptr @str_mode_rb)\n");
+        header.push_str("    %is_null = icmp eq ptr %fp, null\n");
+        header.push_str("    br i1 %is_null, label %ret_empty, label %read_content\n");
+        header.push_str("ret_empty:\n");
+        header.push_str("    ret ptr @str_empty\n");
+        header.push_str("read_content:\n");
+        header.push_str("    call i32 @fseek(ptr %fp, i64 0, i32 2)\n");
+        header.push_str("    %sz = call i64 @ftell(ptr %fp)\n");
+        header.push_str("    call i32 @fseek(ptr %fp, i64 0, i32 0)\n");
+        header.push_str("    %buf_sz = add i64 %sz, 1\n");
+        header.push_str("    %is_arena_null = icmp eq ptr %arena, null\n");
+        header.push_str("    br i1 %is_arena_null, label %alloc_heap, label %alloc_arena\n");
+        header.push_str("alloc_heap:\n");
+        header.push_str("    %h_buf = call ptr @malloc(i64 %buf_sz)\n");
+        header.push_str("    br label %do_read\n");
+        header.push_str("alloc_arena:\n");
+        header.push_str("    %a_buf = call ptr @tungsten_region_alloc(ptr %arena, i64 %buf_sz, i64 8)\n");
+        header.push_str("    br label %do_read\n");
+        header.push_str("do_read:\n");
+        header.push_str("    %buf = phi ptr [ %h_buf, %alloc_heap ], [ %a_buf, %alloc_arena ]\n");
+        header.push_str("    %n = call i64 @fread(ptr %buf, i64 1, i64 %sz, ptr %fp)\n");
+        header.push_str("    call i32 @fclose(ptr %fp)\n");
+        header.push_str("    %term = getelementptr inbounds i8, ptr %buf, i64 %n\n");
+        header.push_str("    store i8 0, ptr %term\n");
+        header.push_str("    ret ptr %buf\n}\n\n");
+
+        header.push_str("define ptr @tungsten_fs_read_file(ptr %path) {\n");
+        header.push_str("    %res = call ptr @tungsten_fs_read_file_in(ptr %path, ptr null)\n");
+        header.push_str("    ret ptr %res\n}\n\n");
+
+        header.push_str("define i1 @tungsten_fs_write_file(ptr %path, ptr %content) {\n");
+        header.push_str("    %fp = call ptr @fopen(ptr %path, ptr @str_mode_wb)\n");
+        header.push_str("    %is_null = icmp eq ptr %fp, null\n");
+        header.push_str("    br i1 %is_null, label %fail, label %write_bytes\n");
+        header.push_str("write_bytes:\n");
+        header.push_str("    %len = call i64 @strlen(ptr %content)\n");
+        header.push_str("    call i64 @fwrite(ptr %content, i64 1, i64 %len, ptr %fp)\n");
+        header.push_str("    call i32 @fclose(ptr %fp)\n");
+        header.push_str("    ret i1 true\n");
+        header.push_str("fail:\n");
+        header.push_str("    ret i1 false\n}\n\n");
+
+        header.push_str("define i1 @tungsten_fs_file_exists(ptr %path) {\n");
+        header.push_str("    %fp = call ptr @fopen(ptr %path, ptr @str_mode_rb)\n");
+        header.push_str("    %is_null = icmp eq ptr %fp, null\n");
+        header.push_str("    br i1 %is_null, label %not_exists, label %exists\n");
+        header.push_str("exists:\n");
+        header.push_str("    call i32 @fclose(ptr %fp)\n");
+        header.push_str("    ret i1 true\n");
+        header.push_str("not_exists:\n");
+        header.push_str("    ret i1 false\n}\n\n");
+
+        header.push_str("define i64 @tungsten_fs_file_size(ptr %path) {\n");
+        header.push_str("    %fp = call ptr @fopen(ptr %path, ptr @str_mode_rb)\n");
+        header.push_str("    %is_null = icmp eq ptr %fp, null\n");
+        header.push_str("    br i1 %is_null, label %zero_sz, label %calc_sz\n");
+        header.push_str("calc_sz:\n");
+        header.push_str("    call i32 @fseek(ptr %fp, i64 0, i32 2)\n");
+        header.push_str("    %sz = call i64 @ftell(ptr %fp)\n");
+        header.push_str("    call i32 @fclose(ptr %fp)\n");
+        header.push_str("    ret i64 %sz\n");
+        header.push_str("zero_sz:\n");
+        header.push_str("    ret i64 0\n}\n\n");
+
+        header.push_str("define i1 @tungsten_fs_delete_file(ptr %path) {\n");
+        header.push_str("    %res = call i32 @remove(ptr %path)\n");
+        header.push_str("    %ok = icmp eq i32 %res, 0\n");
+        header.push_str("    ret i1 %ok\n}\n\n");
+
+        header.push_str("define i64 @tungsten_process_exec(ptr %cmd, ptr %args) {\n");
+        header.push_str("    %is_args_null = icmp eq ptr %args, null\n");
+        header.push_str("    br i1 %is_args_null, label %run_simple, label %check_args_empty\n");
+        header.push_str("check_args_empty:\n");
+        header.push_str("    %args_len = call i64 @strlen(ptr %args)\n");
+        header.push_str("    %is_empty = icmp eq i64 %args_len, 0\n");
+        header.push_str("    br i1 %is_empty, label %run_simple, label %build_cmd\n");
+        header.push_str("build_cmd:\n");
+        header.push_str("    %cmd_len = call i64 @strlen(ptr %cmd)\n");
+        header.push_str("    %total = add i64 %cmd_len, %args_len\n");
+        header.push_str("    %total_plus_2 = add i64 %total, 2\n");
+        header.push_str("    %full_buf = call ptr @malloc(i64 %total_plus_2)\n");
+        header.push_str("    call void @llvm.memcpy.p0.p0.i64(ptr %full_buf, ptr %cmd, i64 %cmd_len, i1 false)\n");
+        header.push_str("    %space_ptr = getelementptr inbounds i8, ptr %full_buf, i64 %cmd_len\n");
+        header.push_str("    store i8 32, ptr %space_ptr\n");
+        header.push_str("    %args_dest = getelementptr inbounds i8, ptr %space_ptr, i64 1\n");
+        header.push_str("    call void @llvm.memcpy.p0.p0.i64(ptr %args_dest, ptr %args, i64 %args_len, i1 false)\n");
+        header.push_str("    %term_ptr = getelementptr inbounds i8, ptr %args_dest, i64 %args_len\n");
+        header.push_str("    store i8 0, ptr %term_ptr\n");
+        header.push_str("    %res_code = call i32 @system(ptr %full_buf)\n");
+        header.push_str("    call void @free(ptr %full_buf)\n");
+        header.push_str("    %res_i64 = sext i32 %res_code to i64\n");
+        header.push_str("    ret i64 %res_i64\n");
+        header.push_str("run_simple:\n");
+        header.push_str("    %code = call i32 @system(ptr %cmd)\n");
+        header.push_str("    %code_i64 = sext i32 %code to i64\n");
+        header.push_str("    ret i64 %code_i64\n}\n\n");
+
         // Emit interned string constants
         header.push_str("; User String Literals\n");
         for (i, s) in self.strings.iter().enumerate() {
@@ -732,125 +854,131 @@ impl<'a> LlvmTextEmitter<'a> {
         }
     }
 
-    fn collect_vars_from_inst(&self, inst: &Instruction, vars: &mut HashMap<Var, String>) {
+    fn collect_vars_from_inst(&self, inst: &Instruction, vars: &mut HashMap<Var, String>, tungsten_vars: &mut HashMap<Var, Type>) {
         match inst {
             Instruction::Assign { dest, rvalue, ty, .. } => {
                 vars.insert(dest.clone(), type_to_llvm(ty));
-                self.collect_vars_from_rvalue(rvalue, vars);
+                tungsten_vars.insert(dest.clone(), ty.clone());
+                self.collect_vars_from_rvalue(rvalue, vars, tungsten_vars);
             }
             Instruction::AssertRefinement { operand, .. } => {
-                self.collect_vars_from_op(operand, vars);
+                self.collect_vars_from_op(operand, vars, tungsten_vars);
             }
             Instruction::Call { dest, func, args, ty, .. } => {
                 if let Some(d) = dest {
                     vars.insert(d.clone(), type_to_llvm(ty));
+                    tungsten_vars.insert(d.clone(), ty.clone());
                 }
-                self.collect_vars_from_op(func, vars);
+                self.collect_vars_from_op(func, vars, tungsten_vars);
                 for a in args {
-                    self.collect_vars_from_op(a, vars);
+                    self.collect_vars_from_op(a, vars, tungsten_vars);
                 }
             }
             Instruction::PerformEffect { dest, args, ty, .. } => {
                 if let Some(d) = dest {
                     vars.insert(d.clone(), type_to_llvm(ty));
+                    tungsten_vars.insert(d.clone(), ty.clone());
                 }
                 for a in args {
-                    self.collect_vars_from_op(a, vars);
+                    self.collect_vars_from_op(a, vars, tungsten_vars);
                 }
             }
             Instruction::SetField { base, val, .. } => {
                 vars.entry(base.clone()).or_insert_with(|| "ptr".to_string());
-                self.collect_vars_from_op(val, vars);
+                self.collect_vars_from_op(val, vars, tungsten_vars);
             }
             Instruction::RegionEnter { dest, .. } => {
                 vars.insert(dest.clone(), "ptr".to_string());
+                tungsten_vars.insert(dest.clone(), Type::Ptr { is_mut: true, inner: Box::new(Type::U8) });
             }
             Instruction::RegionExit { arena, .. } => {
-                self.collect_vars_from_op(arena, vars);
+                self.collect_vars_from_op(arena, vars, tungsten_vars);
             }
             Instruction::NurseryEnter { dest, .. } => {
                 vars.insert(dest.clone(), "ptr".to_string());
             }
             Instruction::NurseryExit { nursery, .. } => {
-                self.collect_vars_from_op(nursery, vars);
+                self.collect_vars_from_op(nursery, vars, tungsten_vars);
             }
             Instruction::ExternCall { dest, args, ty, .. } => {
                 if let Some(d) = dest {
                     vars.insert(d.clone(), type_to_llvm(ty));
+                    tungsten_vars.insert(d.clone(), ty.clone());
                 }
                 for a in args {
-                    self.collect_vars_from_op(a, vars);
+                    self.collect_vars_from_op(a, vars, tungsten_vars);
                 }
             }
             Instruction::Store { ptr, value, .. } => {
-                self.collect_vars_from_op(ptr, vars);
-                self.collect_vars_from_op(value, vars);
+                self.collect_vars_from_op(ptr, vars, tungsten_vars);
+                self.collect_vars_from_op(value, vars, tungsten_vars);
             }
             Instruction::StoreIndex { target, index, value, .. } => {
-                self.collect_vars_from_op(target, vars);
-                self.collect_vars_from_op(index, vars);
-                self.collect_vars_from_op(value, vars);
+                self.collect_vars_from_op(target, vars, tungsten_vars);
+                self.collect_vars_from_op(index, vars, tungsten_vars);
+                self.collect_vars_from_op(value, vars, tungsten_vars);
             }
         }
     }
 
-    fn collect_vars_from_rvalue(&self, rv: &RValue, vars: &mut HashMap<Var, String>) {
+    fn collect_vars_from_rvalue(&self, rv: &RValue, vars: &mut HashMap<Var, String>, tungsten_vars: &mut HashMap<Var, Type>) {
         match rv {
             RValue::Use(op) | RValue::Cast { operand: op, .. } | RValue::Ref { operand: op, .. } | RValue::Deref(op) | RValue::AddrOf(op) => {
-                self.collect_vars_from_op(op, vars);
+                self.collect_vars_from_op(op, vars, tungsten_vars);
             }
             RValue::BinaryOp(_, l, r) => {
-                self.collect_vars_from_op(l, vars);
-                self.collect_vars_from_op(r, vars);
+                self.collect_vars_from_op(l, vars, tungsten_vars);
+                self.collect_vars_from_op(r, vars, tungsten_vars);
             }
             RValue::FieldAccess { target, .. } => {
-                self.collect_vars_from_op(target, vars);
+                self.collect_vars_from_op(target, vars, tungsten_vars);
             }
             RValue::MethodCall { target, args, .. } => {
-                self.collect_vars_from_op(target, vars);
+                self.collect_vars_from_op(target, vars, tungsten_vars);
                 for a in args {
-                    self.collect_vars_from_op(a, vars);
+                    self.collect_vars_from_op(a, vars, tungsten_vars);
                 }
             }
             RValue::StructInit { fields, arena, .. } => {
                 for (_, f) in fields {
-                    self.collect_vars_from_op(f, vars);
+                    self.collect_vars_from_op(f, vars, tungsten_vars);
                 }
                 if let Some(a) = arena {
-                    self.collect_vars_from_op(a, vars);
+                    self.collect_vars_from_op(a, vars, tungsten_vars);
                 }
             }
             RValue::EnumInit { payload, arena, .. } => {
                 for p in payload {
-                    self.collect_vars_from_op(p, vars);
+                    self.collect_vars_from_op(p, vars, tungsten_vars);
                 }
                 if let Some(a) = arena {
-                    self.collect_vars_from_op(a, vars);
+                    self.collect_vars_from_op(a, vars, tungsten_vars);
                 }
             }
             RValue::EnumTag(target) => {
-                self.collect_vars_from_op(target, vars);
+                self.collect_vars_from_op(target, vars, tungsten_vars);
             }
             RValue::EnumPayload { target, .. } => {
-                self.collect_vars_from_op(target, vars);
+                self.collect_vars_from_op(target, vars, tungsten_vars);
             }
             RValue::ArrayInit { elements, arena, .. } => {
                 for e in elements {
-                    self.collect_vars_from_op(e, vars);
+                    self.collect_vars_from_op(e, vars, tungsten_vars);
                 }
                 if let Some(a) = arena {
-                    self.collect_vars_from_op(a, vars);
+                    self.collect_vars_from_op(a, vars, tungsten_vars);
                 }
             }
             RValue::ArrayIndex { target, index, .. } => {
-                self.collect_vars_from_op(target, vars);
-                self.collect_vars_from_op(index, vars);
+                self.collect_vars_from_op(target, vars, tungsten_vars);
+                self.collect_vars_from_op(index, vars, tungsten_vars);
             }
         }
     }
 
-    fn collect_vars_from_op(&self, op: &Operand, vars: &mut HashMap<Var, String>) {
+    fn collect_vars_from_op(&self, op: &Operand, vars: &mut HashMap<Var, String>, tungsten_vars: &mut HashMap<Var, Type>) {
         if let Operand::Var(v, ty) = op {
+            tungsten_vars.entry(v.clone()).or_insert_with(|| ty.clone());
             if let Var::Named(name) = v {
                 if name.starts_with('@') {
                     return;
@@ -888,23 +1016,26 @@ impl<'a> LlvmTextEmitter<'a> {
 
         // Collect all variables used in the function
         let mut vars = HashMap::new();
+        let mut tungsten_vars = HashMap::new();
         for p in &func.params {
             vars.insert(Var::Named(p.name.clone()), type_to_llvm(&p.ty));
+            tungsten_vars.insert(Var::Named(p.name.clone()), p.ty.clone());
         }
         for block in &func.blocks {
             for inst in &block.instructions {
-                self.collect_vars_from_inst(inst, &mut vars);
+                self.collect_vars_from_inst(inst, &mut vars, &mut tungsten_vars);
             }
             if let Some(ref term) = block.terminator {
                 match term {
-                    Terminator::Return(Some(op)) => self.collect_vars_from_op(op, &mut vars),
-                    Terminator::BranchCond { cond, .. } => self.collect_vars_from_op(cond, &mut vars),
+                    Terminator::Return(Some(op)) => self.collect_vars_from_op(op, &mut vars, &mut tungsten_vars),
+                    Terminator::BranchCond { cond, .. } => self.collect_vars_from_op(cond, &mut vars, &mut tungsten_vars),
                     _ => {}
                 }
             }
         }
 
         self.var_types = vars.clone();
+        self.var_tungsten_types = tungsten_vars;
 
         for (v, ty_str) in &vars {
             let v_name = var_to_slot_name(v);
@@ -1174,6 +1305,103 @@ impl<'a> LlvmTextEmitter<'a> {
                         let conn_i64 = self.coerce_val(&conn_val, &conn_ty, "i64");
                         self.out.push_str(&format!("    call void @tungsten_net_close(i64 {})\n", conn_i64));
                     }
+                } else if effect == "FS" {
+                    if op == "read_file" {
+                        let path_val = args.first().map(|a| self.emit_operand(a)).unwrap_or_else(|| "null".to_string());
+                        let path_ty = args.first().map(|a| self.get_operand_llvm_type(a)).unwrap_or_else(|| "ptr".to_string());
+                        let path_ptr = self.coerce_val(&path_val, &path_ty, "ptr");
+                        let res_temp = self.next_temp();
+                        self.out.push_str(&format!("    {} = call ptr @tungsten_fs_read_file(ptr {})\n", res_temp, path_ptr));
+                        if let Some(d) = dest {
+                            let slot = var_to_slot_name(d);
+                            let target_ty = self.var_types.get(d).cloned().unwrap_or_else(|| type_to_llvm(ty));
+                            let coerced = self.coerce_val(&res_temp, "ptr", &target_ty);
+                            self.out.push_str(&format!("    store {} {}, ptr {}\n", target_ty, coerced, slot));
+                        }
+                    } else if op == "read_file_in" {
+                        let path_val = args.first().map(|a| self.emit_operand(a)).unwrap_or_else(|| "null".to_string());
+                        let path_ty = args.first().map(|a| self.get_operand_llvm_type(a)).unwrap_or_else(|| "ptr".to_string());
+                        let path_ptr = self.coerce_val(&path_val, &path_ty, "ptr");
+                        let arena_val = args.get(1).map(|a| self.emit_operand(a)).unwrap_or_else(|| "null".to_string());
+                        let arena_ty = args.get(1).map(|a| self.get_operand_llvm_type(a)).unwrap_or_else(|| "ptr".to_string());
+                        let arena_ptr = self.coerce_val(&arena_val, &arena_ty, "ptr");
+                        let res_temp = self.next_temp();
+                        self.out.push_str(&format!("    {} = call ptr @tungsten_fs_read_file_in(ptr {}, ptr {})\n", res_temp, path_ptr, arena_ptr));
+                        if let Some(d) = dest {
+                            let slot = var_to_slot_name(d);
+                            let target_ty = self.var_types.get(d).cloned().unwrap_or_else(|| type_to_llvm(ty));
+                            let coerced = self.coerce_val(&res_temp, "ptr", &target_ty);
+                            self.out.push_str(&format!("    store {} {}, ptr {}\n", target_ty, coerced, slot));
+                        }
+                    } else if op == "write_file" {
+                        let path_val = args.first().map(|a| self.emit_operand(a)).unwrap_or_else(|| "null".to_string());
+                        let path_ty = args.first().map(|a| self.get_operand_llvm_type(a)).unwrap_or_else(|| "ptr".to_string());
+                        let path_ptr = self.coerce_val(&path_val, &path_ty, "ptr");
+                        let content_val = args.get(1).map(|a| self.emit_operand(a)).unwrap_or_else(|| "null".to_string());
+                        let content_ty = args.get(1).map(|a| self.get_operand_llvm_type(a)).unwrap_or_else(|| "ptr".to_string());
+                        let content_ptr = self.coerce_val(&content_val, &content_ty, "ptr");
+                        let res_temp = self.next_temp();
+                        self.out.push_str(&format!("    {} = call i1 @tungsten_fs_write_file(ptr {}, ptr {})\n", res_temp, path_ptr, content_ptr));
+                        if let Some(d) = dest {
+                            let slot = var_to_slot_name(d);
+                            let target_ty = self.var_types.get(d).cloned().unwrap_or_else(|| type_to_llvm(ty));
+                            let coerced = self.coerce_val(&res_temp, "i1", &target_ty);
+                            self.out.push_str(&format!("    store {} {}, ptr {}\n", target_ty, coerced, slot));
+                        }
+                    } else if op == "file_exists" {
+                        let path_val = args.first().map(|a| self.emit_operand(a)).unwrap_or_else(|| "null".to_string());
+                        let path_ty = args.first().map(|a| self.get_operand_llvm_type(a)).unwrap_or_else(|| "ptr".to_string());
+                        let path_ptr = self.coerce_val(&path_val, &path_ty, "ptr");
+                        let res_temp = self.next_temp();
+                        self.out.push_str(&format!("    {} = call i1 @tungsten_fs_file_exists(ptr {})\n", res_temp, path_ptr));
+                        if let Some(d) = dest {
+                            let slot = var_to_slot_name(d);
+                            let target_ty = self.var_types.get(d).cloned().unwrap_or_else(|| type_to_llvm(ty));
+                            let coerced = self.coerce_val(&res_temp, "i1", &target_ty);
+                            self.out.push_str(&format!("    store {} {}, ptr {}\n", target_ty, coerced, slot));
+                        }
+                    } else if op == "file_size" {
+                        let path_val = args.first().map(|a| self.emit_operand(a)).unwrap_or_else(|| "null".to_string());
+                        let path_ty = args.first().map(|a| self.get_operand_llvm_type(a)).unwrap_or_else(|| "ptr".to_string());
+                        let path_ptr = self.coerce_val(&path_val, &path_ty, "ptr");
+                        let res_temp = self.next_temp();
+                        self.out.push_str(&format!("    {} = call i64 @tungsten_fs_file_size(ptr {})\n", res_temp, path_ptr));
+                        if let Some(d) = dest {
+                            let slot = var_to_slot_name(d);
+                            let target_ty = self.var_types.get(d).cloned().unwrap_or_else(|| type_to_llvm(ty));
+                            let coerced = self.coerce_val(&res_temp, "i64", &target_ty);
+                            self.out.push_str(&format!("    store {} {}, ptr {}\n", target_ty, coerced, slot));
+                        }
+                    } else if op == "delete_file" {
+                        let path_val = args.first().map(|a| self.emit_operand(a)).unwrap_or_else(|| "null".to_string());
+                        let path_ty = args.first().map(|a| self.get_operand_llvm_type(a)).unwrap_or_else(|| "ptr".to_string());
+                        let path_ptr = self.coerce_val(&path_val, &path_ty, "ptr");
+                        let res_temp = self.next_temp();
+                        self.out.push_str(&format!("    {} = call i1 @tungsten_fs_delete_file(ptr {})\n", res_temp, path_ptr));
+                        if let Some(d) = dest {
+                            let slot = var_to_slot_name(d);
+                            let target_ty = self.var_types.get(d).cloned().unwrap_or_else(|| type_to_llvm(ty));
+                            let coerced = self.coerce_val(&res_temp, "i1", &target_ty);
+                            self.out.push_str(&format!("    store {} {}, ptr {}\n", target_ty, coerced, slot));
+                        }
+                    }
+                } else if effect == "Process" {
+                    if op == "spawn" {
+                        let cmd_val = args.first().map(|a| self.emit_operand(a)).unwrap_or_else(|| "null".to_string());
+                        let cmd_ty = args.first().map(|a| self.get_operand_llvm_type(a)).unwrap_or_else(|| "ptr".to_string());
+                        let cmd_ptr = self.coerce_val(&cmd_val, &cmd_ty, "ptr");
+                        let args_val = args.get(1).map(|a| self.emit_operand(a)).unwrap_or_else(|| "null".to_string());
+                        let args_ty = args.get(1).map(|a| self.get_operand_llvm_type(a)).unwrap_or_else(|| "ptr".to_string());
+                        let args_ptr = self.coerce_val(&args_val, &args_ty, "ptr");
+                        let res_temp = self.next_temp();
+                        self.out.push_str(&format!("    {} = call i64 @tungsten_process_exec(ptr {}, ptr {})\n", res_temp, cmd_ptr, args_ptr));
+                        if let Some(d) = dest {
+                            let slot = var_to_slot_name(d);
+                            let target_ty = self.var_types.get(d).cloned().unwrap_or_else(|| type_to_llvm(ty));
+                            let coerced = self.coerce_val(&res_temp, "i64", &target_ty);
+                            self.out.push_str(&format!("    store {} {}, ptr {}\n", target_ty, coerced, slot));
+                        }
+                    }
                 } else if (effect == "Foreign" || effect == "ForeignCall") && (op == "call" || op == "blocking") {
                     let fn_arg = args.first().map(|a| self.emit_operand(a)).unwrap_or_else(|| "null".to_string());
                     let a1_val = args.get(1).map(|a| self.emit_operand(a)).unwrap_or_else(|| "0".to_string());
@@ -1236,7 +1464,8 @@ impl<'a> LlvmTextEmitter<'a> {
                 let base_val = self.next_temp();
                 self.out.push_str(&format!("    {} = load {}, ptr {}\n", base_val, base_ty, base_slot));
                 let base_ptr = self.coerce_val(&base_val, &base_ty, "ptr");
-                let offset = self.calculate_field_offset(field);
+                let s_name = self.var_tungsten_types.get(base).and_then(get_struct_name);
+                let offset = self.calculate_field_offset(s_name, field);
                 let gep = self.next_temp();
                 self.out.push_str(&format!("    {} = getelementptr inbounds i8, ptr {}, i64 {}\n", gep, base_ptr, offset));
                 let val_str = self.emit_operand(val);
@@ -1411,11 +1640,11 @@ impl<'a> LlvmTextEmitter<'a> {
     fn coerce_val(&mut self, val: &str, from_ty: &str, to_ty: &str) -> String {
         if from_ty == to_ty {
             val.to_string()
-        } else if from_ty == "i64" && (to_ty == "i8" || to_ty == "i16" || to_ty == "i32") {
+        } else if from_ty == "i64" && (to_ty == "i8" || to_ty == "i16" || to_ty == "i32" || to_ty == "i1") {
             let t = self.next_temp();
             self.out.push_str(&format!("    {} = trunc i64 {} to {}\n", t, val, to_ty));
             t
-        } else if (from_ty == "i8" || from_ty == "i16" || from_ty == "i32") && to_ty == "i64" {
+        } else if (from_ty == "i8" || from_ty == "i16" || from_ty == "i32" || from_ty == "i1") && to_ty == "i64" {
             let t = self.next_temp();
             self.out.push_str(&format!("    {} = zext {} {} to i64\n", t, from_ty, val));
             t
@@ -1538,7 +1767,9 @@ impl<'a> LlvmTextEmitter<'a> {
                 let target_v = self.emit_operand(target);
                 let target_ty = self.get_operand_llvm_type(target);
                 let target_ptr = self.coerce_val(&target_v, &target_ty, "ptr");
-                let offset = self.calculate_field_offset(field);
+                let target_t = target.get_type();
+                let s_name = get_struct_name(&target_t);
+                let offset = self.calculate_field_offset(s_name, field);
                 let gep = self.next_temp();
                 let loaded = self.next_temp();
                 self.out.push_str(&format!("    {} = getelementptr inbounds i8, ptr {}, i64 {}\n", gep, target_ptr, offset));
@@ -1838,7 +2069,14 @@ impl<'a> LlvmTextEmitter<'a> {
         }
     }
 
-    fn calculate_field_offset(&self, field_name: &str) -> usize {
+    fn calculate_field_offset(&self, struct_name: Option<&str>, field_name: &str) -> usize {
+        if let Some(s_name) = struct_name {
+            if let Some(s) = self.module.structs.iter().find(|s| s.name == s_name) {
+                if let Some((idx, _)) = s.fields.iter().enumerate().find(|(_, f)| f.name == field_name) {
+                    return idx * 8;
+                }
+            }
+        }
         for s in &self.module.structs {
             for (idx, f) in s.fields.iter().enumerate() {
                 if f.name == field_name {
@@ -1851,6 +2089,16 @@ impl<'a> LlvmTextEmitter<'a> {
         } else {
             8
         }
+    }
+}
+
+fn get_struct_name(ty: &Type) -> Option<&str> {
+    match ty.strip_region() {
+        Type::Struct(name) => Some(name.as_str()),
+        Type::Ref { inner, .. } => get_struct_name(inner),
+        Type::Ptr { inner, .. } => get_struct_name(inner),
+        Type::Instantiated { name, .. } => Some(name.as_str()),
+        _ => None,
     }
 }
 

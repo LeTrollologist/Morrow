@@ -967,6 +967,20 @@ impl Parser {
     }
 
     fn parse_unary(&mut self) -> Result<Expr, String> {
+        if self.check(&TokenKind::Exclamation) {
+            let tok = self.advance();
+            let inner = self.parse_unary()?;
+            let span = Span::new(tok.span.start, inner.span.end, tok.span.line, tok.span.column);
+            return Ok(Expr::new(
+                ExprKind::Binary {
+                    op: BinOp::Eq,
+                    left: Box::new(inner),
+                    right: Box::new(Expr::new(ExprKind::Bool(false), span)),
+                },
+                span,
+            ));
+        }
+
         if self.check(&TokenKind::Star) {
             let tok = self.advance();
             let inner = self.parse_unary()?;

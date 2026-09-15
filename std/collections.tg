@@ -6,6 +6,9 @@ extern "C" {
     fn tungsten_region_alloc(arena: *mut u8, size: usize, align: usize) -> *mut u8;
     fn tungsten_region_grow(arena: *mut u8, ptr: *mut u8, old_sz: usize, new_sz: usize, align: usize) -> *mut u8;
     fn free(ptr: *mut u8);
+    fn strcmp(s1: *const u8, s2: *const u8) -> i32;
+    fn strlen(s: *const u8) -> usize;
+    fn memset(dest: *mut u8, val: i32, len: usize) -> *mut u8;
 }
 
 // -----------------------------------------------------------------------------
@@ -143,23 +146,23 @@ fn vec_free<T>(v: &mut Vec<T>) {
 }
 
 // -----------------------------------------------------------------------------
-// Safe String Type - Backed by contiguous UTF-8 byte buffer
+// Safe StringBuffer Type - Backed by contiguous UTF-8 byte buffer
 // -----------------------------------------------------------------------------
 
-struct String {
+struct StringBuffer {
     buf: *mut u8,
     len: i64,
     cap: i64,
     arena: *mut u8,
 }
 
-fn string_new() -> String {
+fn string_buffer_new() -> StringBuffer {
     let initial_cap: i64 = 16;
     let null_arena: *mut u8 = 0 as *mut u8;
     let raw_buf = unsafe {
         tungsten_alloc(initial_cap, 8)
     };
-    String {
+    StringBuffer {
         buf: raw_buf,
         len: 0,
         cap: initial_cap,
@@ -167,12 +170,12 @@ fn string_new() -> String {
     }
 }
 
-fn string_new_in(arena: *mut u8) -> String {
+fn string_buffer_new_in(arena: *mut u8) -> StringBuffer {
     let initial_cap: i64 = 16;
     let raw_buf = unsafe {
         tungsten_region_alloc(arena, initial_cap, 8)
     };
-    String {
+    StringBuffer {
         buf: raw_buf,
         len: 0,
         cap: initial_cap,
@@ -180,23 +183,23 @@ fn string_new_in(arena: *mut u8) -> String {
     }
 }
 
-fn string_len(s: &String) -> i64 {
+fn string_buffer_len(s: &StringBuffer) -> i64 {
     s.len
 }
 
-fn string_cap(s: &String) -> i64 {
+fn string_buffer_cap(s: &StringBuffer) -> i64 {
     s.cap
 }
 
-fn string_is_empty(s: &String) -> bool {
+fn string_buffer_is_empty(s: &StringBuffer) -> bool {
     s.len == 0
 }
 
-fn string_as_ptr(s: &String) -> *const u8 {
+fn string_buffer_as_ptr(s: &StringBuffer) -> *const u8 {
     s.buf as *const u8
 }
 
-fn string_push_byte(s: &mut String, byte: u8) {
+fn string_buffer_push_byte(s: &mut StringBuffer, byte: u8) {
     if s.len == s.cap {
         let old_sz = s.cap;
         let new_cap = s.cap * 2;
@@ -213,16 +216,16 @@ fn string_push_byte(s: &mut String, byte: u8) {
     s.len = s.len + 1;
 }
 
-fn string_push_str_helper(s: &mut String, text: *const u8, i: i64, len: i64) {
+fn string_buffer_push_str_helper(s: &mut StringBuffer, text: *const u8, i: i64, len: i64) {
     if i < len {
         let b = unsafe { text[i] };
-        string_push_byte(s, b);
-        string_push_str_helper(s, text, i + 1, len);
+        string_buffer_push_byte(s, b);
+        string_buffer_push_str_helper(s, text, i + 1, len);
     }
 }
 
-fn string_push_str(s: &mut String, text: *const u8, text_len: i64) {
-    string_push_str_helper(s, text, 0, text_len);
+fn string_buffer_push_str(s: &mut StringBuffer, text: *const u8, text_len: i64) {
+    string_buffer_push_str_helper(s, text, 0, text_len);
 }
 
 fn string_validate_utf8_helper(ptr: *const u8, i: i64, len: i64) -> bool {
@@ -273,23 +276,23 @@ fn string_validate_utf8(ptr: *const u8, len: i64) -> bool {
     string_validate_utf8_helper(ptr, 0, len)
 }
 
-fn string_from_utf8(ptr: *const u8, len: i64) -> String {
-    let mut s = string_new();
+fn string_buffer_from_utf8(ptr: *const u8, len: i64) -> StringBuffer {
+    let mut s = string_buffer_new();
     if string_validate_utf8(ptr, len) {
-        string_push_str(&mut s, ptr, len);
+        string_buffer_push_str(&mut s, ptr, len);
     }
     s
 }
 
-fn string_from_utf8_in(arena: *mut u8, ptr: *const u8, len: i64) -> String {
-    let mut s = string_new_in(arena);
+fn string_buffer_from_utf8_in(arena: *mut u8, ptr: *const u8, len: i64) -> StringBuffer {
+    let mut s = string_buffer_new_in(arena);
     if string_validate_utf8(ptr, len) {
-        string_push_str(&mut s, ptr, len);
+        string_buffer_push_str(&mut s, ptr, len);
     }
     s
 }
 
-fn string_free(s: &mut String) {
+fn string_buffer_free(s: &mut StringBuffer) {
     let null_arena: *mut u8 = 0 as *mut u8;
     if s.arena == null_arena {
         unsafe {
@@ -300,22 +303,392 @@ fn string_free(s: &mut String) {
     s.cap = 0;
 }
 
+// Aliases for compatibility with earlier String buffer APIs
+fn string_new() -> StringBuffer { string_buffer_new() }
+fn string_new_in(arena: *mut u8) -> StringBuffer { string_buffer_new_in(arena) }
+fn string_len(s: &StringBuffer) -> i64 { string_buffer_len(s) }
+fn string_cap(s: &StringBuffer) -> i64 { string_buffer_cap(s) }
+fn string_is_empty(s: &StringBuffer) -> bool { string_buffer_is_empty(s) }
+fn string_as_ptr(s: &StringBuffer) -> *const u8 { s.buf as *const u8 }
+fn string_push_byte(s: &mut StringBuffer, byte: u8) { string_buffer_push_byte(s, byte) }
+fn string_push_str(s: &mut StringBuffer, text: *const u8, text_len: i64) { string_buffer_push_str(s, text, text_len) }
+fn string_from_utf8(ptr: *const u8, len: i64) -> StringBuffer { string_buffer_from_utf8(ptr, len) }
+fn string_from_utf8_in(arena: *mut u8, ptr: *const u8, len: i64) -> StringBuffer { string_buffer_from_utf8_in(arena, ptr, len) }
+fn string_free(s: &mut StringBuffer) { string_buffer_free(s) }
+
 // -----------------------------------------------------------------------------
-// HashMap<K, V> - Associative hash table
+// Robin Hood HashMap - High performance open-addressing hash table
+// Uses Probe Sequence Length (PSL) tracking and backward-shift deletion.
+// Supports both heap allocation (hashmap_new) and region allocation (hashmap_new_in).
+// -----------------------------------------------------------------------------
+// HashMap - Cache-conscious Robin Hood Hash Table
+// Structure-of-Arrays (SoA) layout for high performance & safe scalar indexing.
+// Supports both heap allocation (hashmap_new) and region allocation (hashmap_new_in).
 // -----------------------------------------------------------------------------
 
-struct HashMap<K, V> {
-    size: i64,
-    capacity: i64,
+pub struct HashMap {
+    keys: *mut String,
+    vals: *mut i64,
+    hashes: *mut i64,
+    psls: *mut i64,
+    occupied: *mut i64,
+    len: i64,
+    cap: i64,
+    arena: *mut u8,
 }
 
-fn hashmap_new<K, V>() -> HashMap<K, V> {
+fn hash_str_helper(ptr: *const u8, i: i64, len: i64, h: i64) -> i64 {
+    if i >= len {
+        if h < 0 {
+            return 0 - h;
+        }
+        return h;
+    }
+    let b = unsafe { ptr[i] } as i64;
+    let next_h = (h * 31 + b) * 1099511628211;
+    hash_str_helper(ptr, i + 1, len, next_h)
+}
+
+pub fn hash_str(s: String) -> i64 {
+    let ptr = s as *const u8;
+    let len = unsafe { strlen(ptr) } as i64;
+    hash_str_helper(ptr, 0, len, 1469598103934665603)
+}
+
+pub fn hashmap_new() -> HashMap {
+    let initial_cap: i64 = 16;
+    let bytes = (initial_cap * 8) as usize;
+    let keys_ptr = unsafe { tungsten_alloc(bytes, 8) as *mut String };
+    let vals_ptr = unsafe { tungsten_alloc(bytes, 8) as *mut i64 };
+    let hashes_ptr = unsafe { tungsten_alloc(bytes, 8) as *mut i64 };
+    let psls_ptr = unsafe {
+        let p = tungsten_alloc(bytes, 8);
+        memset(p, 0, bytes);
+        p as *mut i64
+    };
+    let occ_ptr = unsafe {
+        let p = tungsten_alloc(bytes, 8);
+        memset(p, 0, bytes);
+        p as *mut i64
+    };
+    let null_arena: *mut u8 = 0 as *mut u8;
     HashMap {
-        size: 0,
-        capacity: 16,
+        keys: keys_ptr,
+        vals: vals_ptr,
+        hashes: hashes_ptr,
+        psls: psls_ptr,
+        occupied: occ_ptr,
+        len: 0,
+        cap: initial_cap,
+        arena: null_arena,
     }
 }
 
-fn hashmap_size<K, V>(map: &HashMap<K, V>) -> i64 {
-    map.size
+pub fn hashmap_new_in(arena: *mut u8) -> HashMap {
+    let initial_cap: i64 = 16;
+    let bytes = (initial_cap * 8) as usize;
+    let keys_ptr = unsafe { tungsten_region_alloc(arena, bytes, 8) as *mut String };
+    let vals_ptr = unsafe { tungsten_region_alloc(arena, bytes, 8) as *mut i64 };
+    let hashes_ptr = unsafe { tungsten_region_alloc(arena, bytes, 8) as *mut i64 };
+    let psls_ptr = unsafe {
+        let p = tungsten_region_alloc(arena, bytes, 8);
+        memset(p, 0, bytes);
+        p as *mut i64
+    };
+    let occ_ptr = unsafe {
+        let p = tungsten_region_alloc(arena, bytes, 8);
+        memset(p, 0, bytes);
+        p as *mut i64
+    };
+    HashMap {
+        keys: keys_ptr,
+        vals: vals_ptr,
+        hashes: hashes_ptr,
+        psls: psls_ptr,
+        occupied: occ_ptr,
+        len: 0,
+        cap: initial_cap,
+        arena: arena,
+    }
+}
+
+pub fn hashmap_len(map: &HashMap) -> i64 {
+    map.len
+}
+
+pub fn hashmap_is_empty(map: &HashMap) -> bool {
+    map.len == 0
+}
+
+pub fn hashmap_insert(map: &mut HashMap, key: String, val: i64) {
+    if (map.len + 1) * 10 >= map.cap * 7 {
+        hashmap_grow(map);
+    }
+
+    let mut k = key;
+    let mut v = val;
+    let mut h = hash_str(k);
+    let mut curr_psl: i64 = 0;
+    let mut idx = h - (h / map.cap) * map.cap;
+
+    loop {
+        let occ = unsafe { map.occupied[idx] };
+        if occ == 0 {
+            unsafe {
+                map.keys[idx] = k;
+                map.vals[idx] = v;
+                map.hashes[idx] = h;
+                map.psls[idx] = curr_psl;
+                map.occupied[idx] = 1;
+            }
+            map.len = map.len + 1;
+            return;
+        }
+
+        let curr_h = unsafe { map.hashes[idx] };
+        if curr_h == h {
+            let existing_k = unsafe { map.keys[idx] };
+            if unsafe { strcmp(existing_k as *const u8, k as *const u8) == 0 } {
+                unsafe {
+                    map.vals[idx] = v;
+                }
+                return;
+            }
+        }
+
+        let psl = unsafe { map.psls[idx] };
+        if psl < curr_psl {
+            let tmp_k = unsafe { map.keys[idx] };
+            let tmp_v = unsafe { map.vals[idx] };
+            let tmp_h = curr_h;
+            let tmp_psl = psl;
+
+            unsafe {
+                map.keys[idx] = k;
+                map.vals[idx] = v;
+                map.hashes[idx] = h;
+                map.psls[idx] = curr_psl;
+            }
+
+            k = tmp_k;
+            v = tmp_v;
+            h = tmp_h;
+            curr_psl = tmp_psl;
+        }
+
+        idx = idx + 1;
+        if idx >= map.cap {
+            idx = 0;
+        }
+        curr_psl = curr_psl + 1;
+    }
+}
+
+pub fn hashmap_get(map: &HashMap, key: String) -> i64 {
+    let h = hash_str(key);
+    let mut idx = h - (h / map.cap) * map.cap;
+    let mut curr_psl: i64 = 0;
+
+    loop {
+        let occ = unsafe { map.occupied[idx] };
+        let psl = unsafe { map.psls[idx] };
+        if occ == 0 || psl < curr_psl {
+            return 0 - 1;
+        }
+
+        let curr_h = unsafe { map.hashes[idx] };
+        if curr_h == h {
+            let existing_k = unsafe { map.keys[idx] };
+            if unsafe { strcmp(existing_k as *const u8, key as *const u8) == 0 } {
+                return unsafe { map.vals[idx] };
+            }
+        }
+
+        idx = idx + 1;
+        if idx >= map.cap {
+            idx = 0;
+        }
+        curr_psl = curr_psl + 1;
+    }
+    return 0 - 1;
+}
+
+pub fn hashmap_contains(map: &HashMap, key: String) -> bool {
+    let h = hash_str(key);
+    let mut idx = h - (h / map.cap) * map.cap;
+    let mut curr_psl: i64 = 0;
+
+    loop {
+        let occ = unsafe { map.occupied[idx] };
+        let psl = unsafe { map.psls[idx] };
+        if occ == 0 || psl < curr_psl {
+            return false;
+        }
+
+        let curr_h = unsafe { map.hashes[idx] };
+        if curr_h == h {
+            let existing_k = unsafe { map.keys[idx] };
+            if unsafe { strcmp(existing_k as *const u8, key as *const u8) == 0 } {
+                return true;
+            }
+        }
+
+        idx = idx + 1;
+        if idx >= map.cap {
+            idx = 0;
+        }
+        curr_psl = curr_psl + 1;
+    }
+    return false;
+}
+
+fn hashmap_shift_back(map: &mut HashMap, curr: i64) {
+    let mut next = curr + 1;
+    if next >= map.cap {
+        next = 0;
+    }
+    let next_occ = unsafe { map.occupied[next] };
+    let next_psl = unsafe { map.psls[next] };
+    if next_occ == 0 || next_psl == 0 {
+        unsafe {
+            map.occupied[curr] = 0;
+            map.psls[curr] = 0;
+        }
+        return;
+    }
+
+    unsafe {
+        map.keys[curr] = map.keys[next];
+        map.vals[curr] = map.vals[next];
+        map.hashes[curr] = map.hashes[next];
+        map.psls[curr] = next_psl - 1;
+        map.occupied[curr] = 1;
+    }
+
+    hashmap_shift_back(map, next);
+}
+
+pub fn hashmap_remove(map: &mut HashMap, key: String) -> bool {
+    let h = hash_str(key);
+    let mut idx = h - (h / map.cap) * map.cap;
+    let mut curr_psl: i64 = 0;
+
+    loop {
+        let occ = unsafe { map.occupied[idx] };
+        let psl = unsafe { map.psls[idx] };
+        if occ == 0 || psl < curr_psl {
+            return false;
+        }
+
+        let curr_h = unsafe { map.hashes[idx] };
+        if curr_h == h {
+            let existing_k = unsafe { map.keys[idx] };
+            if unsafe { strcmp(existing_k as *const u8, key as *const u8) == 0 } {
+                hashmap_shift_back(map, idx);
+                map.len = map.len - 1;
+                return true;
+            }
+        }
+
+        idx = idx + 1;
+        if idx >= map.cap {
+            idx = 0;
+        }
+        curr_psl = curr_psl + 1;
+    }
+    return false;
+}
+
+fn hashmap_rehash_helper(map: &mut HashMap, old_keys: *mut String, old_vals: *mut i64, old_occ: *mut i64, old_cap: i64, i: i64) {
+    if i < old_cap {
+        let occ = unsafe { old_occ[i] };
+        if occ != 0 {
+            let k = unsafe { old_keys[i] };
+            let v = unsafe { old_vals[i] };
+            hashmap_insert(map, k, v);
+        }
+        hashmap_rehash_helper(map, old_keys, old_vals, old_occ, old_cap, i + 1);
+    }
+}
+
+pub fn hashmap_grow(map: &mut HashMap) {
+    let old_cap = map.cap;
+    let old_keys = map.keys;
+    let old_vals = map.vals;
+    let old_hashes = map.hashes;
+    let old_psls = map.psls;
+    let old_occ = map.occupied;
+
+    let new_cap = old_cap * 2;
+    let bytes = (new_cap * 8) as usize;
+
+    let null_arena: *mut u8 = 0 as *mut u8;
+    let mut new_keys: *mut String = 0 as *mut String;
+    let mut new_vals: *mut i64 = 0 as *mut i64;
+    let mut new_hashes: *mut i64 = 0 as *mut i64;
+    let mut new_psls: *mut i64 = 0 as *mut i64;
+    let mut new_occ: *mut i64 = 0 as *mut i64;
+
+    if map.arena == null_arena {
+        new_keys = unsafe { tungsten_alloc(bytes, 8) as *mut String };
+        new_vals = unsafe { tungsten_alloc(bytes, 8) as *mut i64 };
+        new_hashes = unsafe { tungsten_alloc(bytes, 8) as *mut i64 };
+        new_psls = unsafe {
+            let p = tungsten_alloc(bytes, 8);
+            memset(p, 0, bytes);
+            p as *mut i64
+        };
+        new_occ = unsafe {
+            let p = tungsten_alloc(bytes, 8);
+            memset(p, 0, bytes);
+            p as *mut i64
+        };
+    } else {
+        new_keys = unsafe { tungsten_region_alloc(map.arena, bytes, 8) as *mut String };
+        new_vals = unsafe { tungsten_region_alloc(map.arena, bytes, 8) as *mut i64 };
+        new_hashes = unsafe { tungsten_region_alloc(map.arena, bytes, 8) as *mut i64 };
+        new_psls = unsafe {
+            let p = tungsten_region_alloc(map.arena, bytes, 8);
+            memset(p, 0, bytes);
+            p as *mut i64
+        };
+        new_occ = unsafe {
+            let p = tungsten_region_alloc(map.arena, bytes, 8);
+            memset(p, 0, bytes);
+            p as *mut i64
+        };
+    }
+
+    map.keys = new_keys;
+    map.vals = new_vals;
+    map.hashes = new_hashes;
+    map.psls = new_psls;
+    map.occupied = new_occ;
+    map.cap = new_cap;
+    map.len = 0;
+
+    hashmap_rehash_helper(map, old_keys, old_vals, old_occ, old_cap, 0);
+
+    if map.arena == null_arena {
+        unsafe {
+            free(old_keys as *mut u8);
+            free(old_vals as *mut u8);
+            free(old_hashes as *mut u8);
+            free(old_psls as *mut u8);
+            free(old_occ as *mut u8);
+        }
+    }
+}
+
+pub fn hashmap_free(map: &mut HashMap) {
+    let null_arena: *mut u8 = 0 as *mut u8;
+    if map.arena == null_arena {
+        unsafe {
+            free(map.keys as *mut u8);
+            free(map.vals as *mut u8);
+            free(map.hashes as *mut u8);
+            free(map.psls as *mut u8);
+            free(map.occupied as *mut u8);
+        }
+    }
 }

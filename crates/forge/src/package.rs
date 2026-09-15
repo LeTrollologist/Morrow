@@ -97,6 +97,9 @@ const EMBEDDED_COLLECTIONS: &str = include_str!("../../../std/collections.tg");
 const EMBEDDED_SYNC: &str = include_str!("../../../std/sync.tg");
 const EMBEDDED_NET: &str = include_str!("../../../std/net.tg");
 const EMBEDDED_SLICE: &str = include_str!("../../../std/slice.tg");
+const EMBEDDED_FS: &str = include_str!("../../../std/fs.tg");
+const EMBEDDED_IO: &str = include_str!("../../../std/io.tg");
+const EMBEDDED_PROCESS: &str = include_str!("../../../std/process.tg");
 
 pub const EMBEDDED_STD_FILES: &[(&str, &str)] = &[
     ("prelude.tg", EMBEDDED_PRELUDE),
@@ -106,6 +109,9 @@ pub const EMBEDDED_STD_FILES: &[(&str, &str)] = &[
     ("sync.tg", EMBEDDED_SYNC),
     ("net.tg", EMBEDDED_NET),
     ("slice.tg", EMBEDDED_SLICE),
+    ("fs.tg", EMBEDDED_FS),
+    ("io.tg", EMBEDDED_IO),
+    ("process.tg", EMBEDDED_PROCESS),
 ];
 
 /// Recursively compile a package and its dependencies into a unified Program AST
@@ -193,24 +199,29 @@ pub fn compile_package_ast(
                 None => embedded_content.to_string(),
             };
 
-            if let Ok(std_ast) = tungsten_syntax::parse(&content) {
-                for item in std_ast.items {
-                    let name_opt = match &item {
-                        Item::TypeAlias(a) => Some(&a.name),
-                        Item::Struct(s) => Some(&s.name),
-                        Item::Fn(f) => Some(&f.name),
-                        Item::Effect(e) => Some(&e.name),
-                        Item::Enum(e) => Some(&e.name),
-                        Item::Import(_) => None,
-                        Item::ExternBlock(_) => None,
-                    };
-                    if let Some(name) = name_opt {
-                        if !existing_names.contains(name) {
+            match tungsten_syntax::parse(&content) {
+                Ok(std_ast) => {
+                    for item in std_ast.items {
+                        let name_opt = match &item {
+                            Item::TypeAlias(a) => Some(&a.name),
+                            Item::Struct(s) => Some(&s.name),
+                            Item::Fn(f) => Some(&f.name),
+                            Item::Effect(e) => Some(&e.name),
+                            Item::Enum(e) => Some(&e.name),
+                            Item::Import(_) => None,
+                            Item::ExternBlock(_) => None,
+                        };
+                        if let Some(name) = name_opt {
+                            if !existing_names.contains(name) {
+                                std_items.push(item);
+                            }
+                        } else if matches!(item, Item::ExternBlock(_)) {
                             std_items.push(item);
                         }
-                    } else if matches!(item, Item::ExternBlock(_)) {
-                        std_items.push(item);
                     }
+                }
+                Err(e) => {
+                    eprintln!("STD PARSE ERROR in {}: {}", sf, e);
                 }
             }
         }

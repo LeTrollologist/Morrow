@@ -1,0 +1,23 @@
+// Tungsten Standard Library - I/O Streams Module (std::io)
+
+pub fn io_print(msg: String) yields [IO] {
+    IO::print(msg)
+}
+
+pub fn io_read_line() -> String yields [IO] {
+    IO::read_line()
+}
+
+pub struct BufReader {
+    buffer: String,
+    pos: i64,
+    len: i64,
+}
+
+pub fn buf_reader_new(content: String) -> BufReader {
+    BufReader {
+        buffer: content,
+        pos: 0,
+        len: 0,
+    }
+}

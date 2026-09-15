@@ -99,6 +99,7 @@ impl TypeChecker {
         tc.types.insert("isize".into(), Type::I64);
         tc.types.insert("bool".into(), Type::Bool);
         tc.types.insert("String".into(), Type::String);
+        tc.types.insert("string".into(), Type::String);
 
         // Standard algebraic effects
         tc.known_effects.insert("Db".into());
@@ -116,6 +117,8 @@ impl TypeChecker {
         tc.known_effects.insert("Nursery".into());
         tc.known_effects.insert("Foreign".into());
         tc.known_effects.insert("ForeignCall".into());
+        tc.known_effects.insert("FS".into());
+        tc.known_effects.insert("Process".into());
 
         // Concurrency types
         tc.types.insert("FiberHandle".into(), Type::Struct("FiberHandle".into()));
@@ -985,6 +988,9 @@ impl<'a> FnChecker<'a> {
                             return (Type::U64, Some(Interval::new(0, i64::MAX)));
                         }
                         if namespace == "IO" {
+                            if op == "read_line" {
+                                return (Type::String, None);
+                            }
                             return (Type::Unit, None);
                         }
                         if namespace == "Async" {
@@ -1029,6 +1035,22 @@ impl<'a> FnChecker<'a> {
                             }
                             if op == "close" {
                                 return (Type::Unit, None);
+                            }
+                        }
+                        if namespace == "FS" {
+                            if op == "read_file" || op == "read_file_in" {
+                                return (Type::String, None);
+                            }
+                            if op == "write_file" || op == "file_exists" || op == "delete_file" {
+                                return (Type::Bool, None);
+                            }
+                            if op == "file_size" {
+                                return (Type::I64, None);
+                            }
+                        }
+                        if namespace == "Process" {
+                            if op == "spawn" {
+                                return (Type::I64, None);
                             }
                         }
                         if (namespace == "Foreign" || namespace == "ForeignCall") && (op == "call" || op == "blocking") {

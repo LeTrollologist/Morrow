@@ -1,0 +1,25 @@
+// Tungsten Standard Library - Process Orchestration Module (std::process)
+
+pub struct Command {
+    program: String,
+    args: String,
+}
+
+pub fn command_new(program: String) -> Command {
+    Command {
+        program: program,
+        args: "",
+    }
+}
+
+pub fn command_arg(cmd: &mut Command, arg: String) {
+    cmd.args = arg;
+}
+
+pub fn command_status(cmd: &Command) -> i64 yields [Process] {
+    Process::spawn(cmd.program, cmd.args)
+}
+
+pub fn process_exec(cmd: String, args: String) -> i64 yields [Process] {
+    Process::spawn(cmd, args)
+}
