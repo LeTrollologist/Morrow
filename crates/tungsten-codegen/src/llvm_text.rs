@@ -67,7 +67,44 @@ impl<'a> LlvmTextEmitter<'a> {
         header.push_str("declare ptr @malloc(i64)\n");
         header.push_str("declare ptr @realloc(ptr, i64)\n");
         header.push_str("declare void @free(ptr)\n");
-        header.push_str("declare void @Sleep(i32)\n\n");
+        header.push_str("declare void @Sleep(i32)\n");
+        header.push_str("declare i32 @WSAStartup(i16, ptr)\n");
+        header.push_str("declare i64 @socket(i32, i32, i32)\n");
+        header.push_str("declare i32 @bind(i64, ptr, i32)\n");
+        header.push_str("declare i32 @listen(i64, i32)\n");
+        header.push_str("declare i64 @accept(i64, ptr, ptr)\n");
+        header.push_str("declare i32 @recv(i64, ptr, i32, i32)\n");
+        header.push_str("declare i32 @send(i64, ptr, i32, i32)\n");
+        header.push_str("declare i32 @closesocket(i64)\n");
+        header.push_str("declare i32 @setsockopt(i64, i32, i32, ptr, i32)\n");
+        header.push_str("declare i64 @strlen(ptr)\n");
+        header.push_str("declare ptr @CreateThread(ptr, i64, ptr, ptr, i32, ptr)\n");
+        header.push_str("declare i32 @CloseHandle(ptr)\n");
+        header.push_str("declare ptr @CreateSemaphoreA(ptr, i32, i32, ptr)\n");
+        header.push_str("declare ptr @CreateMutexA(ptr, i32, ptr)\n");
+        header.push_str("declare i32 @WaitForSingleObject(ptr, i32)\n");
+        header.push_str("declare i32 @ReleaseSemaphore(ptr, i32, ptr)\n");
+        header.push_str("declare i32 @ReleaseMutex(ptr)\n\n");
+
+        // Dynamic C declarations from extern_blocks
+        let mut declared_c_fns: std::collections::HashSet<String> = [
+            "printf", "putchar", "exit", "malloc", "realloc", "free", "Sleep",
+            "WSAStartup", "socket", "bind", "listen", "accept", "recv", "send",
+            "closesocket", "setsockopt", "strlen", "CreateThread", "CloseHandle",
+            "CreateSemaphoreA", "CreateMutexA", "WaitForSingleObject",
+            "ReleaseSemaphore", "ReleaseMutex"
+        ].iter().map(|s| s.to_string()).collect();
+
+        for block in &self.module.extern_blocks {
+            for f in &block.fns {
+                if declared_c_fns.insert(f.name.clone()) {
+                    let ret_str = type_expr_to_llvm_str(&f.ret, true);
+                    let param_strs: Vec<String> = f.params.iter().map(|(_, pty)| type_expr_to_llvm_str(pty, false)).collect();
+                    header.push_str(&format!("declare {} @{}({})\n", ret_str, f.name, param_strs.join(", ")));
+                }
+            }
+        }
+        header.push('\n');
 
         // Format strings
         header.push_str("; Global Format Strings\n");
@@ -159,12 +196,258 @@ impl<'a> LlvmTextEmitter<'a> {
         header.push_str("done:\n    ret void\n}\n\n");
 
         header.push_str("define void @tungsten_trace_effect(ptr %eff, i64 %elen, ptr %op, i64 %olen) {\n    ret void\n}\n\n");
-        header.push_str("define i64 @tungsten_fiber_spawn(ptr %fn_ptr, i64 %a1, i64 %a2) {\n    ret i64 1\n}\n\n");
+        header.push_str("define i32 @tungsten_thread_thunk(ptr %param) {\n");
+        header.push_str("    %fn_slot = getelementptr inbounds i8, ptr %param, i64 0\n");
+        header.push_str("    %fn_ptr = load ptr, ptr %fn_slot\n");
+        header.push_str("    %a1_slot = getelementptr inbounds i8, ptr %param, i64 8\n");
+        header.push_str("    %a1 = load i64, ptr %a1_slot\n");
+        header.push_str("    %a2_slot = getelementptr inbounds i8, ptr %param, i64 16\n");
+        header.push_str("    %a2 = load i64, ptr %a2_slot\n");
+        header.push_str("    call void %fn_ptr(i64 %a1, i64 %a2)\n");
+        header.push_str("    call void @free(ptr %param)\n");
+        header.push_str("    ret i32 0\n}\n\n");
+        header.push_str("define i64 @tungsten_fiber_spawn(ptr %fn_ptr, i64 %a1, i64 %a2) {\n");
+        header.push_str("    %ctx = call ptr @malloc(i64 24)\n");
+        header.push_str("    %fn_slot = getelementptr inbounds i8, ptr %ctx, i64 0\n");
+        header.push_str("    store ptr %fn_ptr, ptr %fn_slot\n");
+        header.push_str("    %a1_slot = getelementptr inbounds i8, ptr %ctx, i64 8\n");
+        header.push_str("    store i64 %a1, ptr %a1_slot\n");
+        header.push_str("    %a2_slot = getelementptr inbounds i8, ptr %ctx, i64 16\n");
+        header.push_str("    store i64 %a2, ptr %a2_slot\n");
+        header.push_str("    %th = call ptr @CreateThread(ptr null, i64 0, ptr @tungsten_thread_thunk, ptr %ctx, i32 0, ptr null)\n");
+        header.push_str("    %is_null = icmp eq ptr %th, null\n");
+        header.push_str("    br i1 %is_null, label %spawn_done, label %close_th\n");
+        header.push_str("close_th:\n");
+        header.push_str("    call i32 @CloseHandle(ptr %th)\n");
+        header.push_str("    br label %spawn_done\n");
+        header.push_str("spawn_done:\n");
+        header.push_str("    ret i64 1\n}\n\n");
         header.push_str("define void @tungsten_fiber_yield() {\n    call void @Sleep(i32 0)\n    ret void\n}\n\n");
         header.push_str("define void @tungsten_fiber_sleep(i64 %ms) {\n    %trunc = trunc i64 %ms to i32\n    call void @Sleep(i32 %trunc)\n    ret void\n}\n\n");
-        header.push_str("define i64 @tungsten_channel_new() {\n    ret i64 1\n}\n\n");
-        header.push_str("define void @tungsten_channel_send(i64 %cid, i64 %val) {\n    ret void\n}\n\n");
-        header.push_str("define i64 @tungsten_channel_recv(i64 %cid) {\n    ret i64 0\n}\n\n");
+        header.push_str("define ptr @tungsten_nursery_enter() {\n    %nur = call ptr @malloc(i64 16)\n    store i64 0, ptr %nur\n    ret ptr %nur\n}\n\n");
+        header.push_str("define i32 @tungsten_nursery_thread_thunk(ptr %param) {\n");
+        header.push_str("    %fn_slot = getelementptr inbounds i8, ptr %param, i64 0\n");
+        header.push_str("    %fn_ptr = load ptr, ptr %fn_slot\n");
+        header.push_str("    %a1_slot = getelementptr inbounds i8, ptr %param, i64 8\n");
+        header.push_str("    %a1 = load i64, ptr %a1_slot\n");
+        header.push_str("    %a2_slot = getelementptr inbounds i8, ptr %param, i64 16\n");
+        header.push_str("    %a2 = load i64, ptr %a2_slot\n");
+        header.push_str("    %nur_slot = getelementptr inbounds i8, ptr %param, i64 24\n");
+        header.push_str("    %nursery = load ptr, ptr %nur_slot\n");
+        header.push_str("    call void %fn_ptr(i64 %a1, i64 %a2)\n");
+        header.push_str("    %old = atomicrmw sub ptr %nursery, i64 1 seq_cst, align 8\n");
+        header.push_str("    call void @free(ptr %param)\n");
+        header.push_str("    ret i32 0\n}\n\n");
+        header.push_str("define i64 @tungsten_nursery_spawn(ptr %nursery, ptr %fn_ptr, i64 %a1, i64 %a2) {\n");
+        header.push_str("    %old = atomicrmw add ptr %nursery, i64 1 seq_cst, align 8\n");
+        header.push_str("    %ctx = call ptr @malloc(i64 32)\n");
+        header.push_str("    %fn_slot = getelementptr inbounds i8, ptr %ctx, i64 0\n");
+        header.push_str("    store ptr %fn_ptr, ptr %fn_slot\n");
+        header.push_str("    %a1_slot = getelementptr inbounds i8, ptr %ctx, i64 8\n");
+        header.push_str("    store i64 %a1, ptr %a1_slot\n");
+        header.push_str("    %a2_slot = getelementptr inbounds i8, ptr %ctx, i64 16\n");
+        header.push_str("    store i64 %a2, ptr %a2_slot\n");
+        header.push_str("    %nur_slot = getelementptr inbounds i8, ptr %ctx, i64 24\n");
+        header.push_str("    store ptr %nursery, ptr %nur_slot\n");
+        header.push_str("    %th = call ptr @CreateThread(ptr null, i64 0, ptr @tungsten_nursery_thread_thunk, ptr %ctx, i32 0, ptr null)\n");
+        header.push_str("    %is_null = icmp eq ptr %th, null\n");
+        header.push_str("    br i1 %is_null, label %spawn_done, label %close_th\n");
+        header.push_str("close_th:\n");
+        header.push_str("    call i32 @CloseHandle(ptr %th)\n");
+        header.push_str("    br label %spawn_done\n");
+        header.push_str("spawn_done:\n");
+        header.push_str("    ret i64 1\n}\n\n");
+        header.push_str("define void @tungsten_nursery_wait_all(ptr %nursery) {\nentry:\n");
+        header.push_str("    %is_null = icmp eq ptr %nursery, null\n");
+        header.push_str("    br i1 %is_null, label %done, label %poll_loop\n");
+        header.push_str("poll_loop:\n");
+        header.push_str("    %cnt = load atomic i64, ptr %nursery acquire, align 8\n");
+        header.push_str("    %is_zero = icmp eq i64 %cnt, 0\n");
+        header.push_str("    br i1 %is_zero, label %free_nur, label %yield_sleep\n");
+        header.push_str("yield_sleep:\n");
+        header.push_str("    call void @Sleep(i32 0)\n");
+        header.push_str("    br label %poll_loop\n");
+        header.push_str("free_nur:\n");
+        header.push_str("    call void @free(ptr %nursery)\n");
+        header.push_str("    br label %done\n");
+        header.push_str("done:\n    ret void\n}\n\n");
+
+        header.push_str("define i64 @tungsten_channel_bounded(i64 %cap) {\n");
+        header.push_str("    %ch = call ptr @malloc(i64 64)\n");
+        header.push_str("    %buf_sz = mul i64 %cap, 8\n");
+        header.push_str("    %buf = call ptr @malloc(i64 %buf_sz)\n");
+        header.push_str("    store ptr %buf, ptr %ch\n");
+        header.push_str("    %head_ptr = getelementptr inbounds i8, ptr %ch, i64 8\n");
+        header.push_str("    store i64 0, ptr %head_ptr\n");
+        header.push_str("    %tail_ptr = getelementptr inbounds i8, ptr %ch, i64 16\n");
+        header.push_str("    store i64 0, ptr %tail_ptr\n");
+        header.push_str("    %cnt_ptr = getelementptr inbounds i8, ptr %ch, i64 24\n");
+        header.push_str("    store i64 0, ptr %cnt_ptr\n");
+        header.push_str("    %cap_ptr = getelementptr inbounds i8, ptr %ch, i64 32\n");
+        header.push_str("    store i64 %cap, ptr %cap_ptr\n");
+        header.push_str("    %cap32 = trunc i64 %cap to i32\n");
+        header.push_str("    %sem_items = call ptr @CreateSemaphoreA(ptr null, i32 0, i32 %cap32, ptr null)\n");
+        header.push_str("    %items_ptr = getelementptr inbounds i8, ptr %ch, i64 40\n");
+        header.push_str("    store ptr %sem_items, ptr %items_ptr\n");
+        header.push_str("    %sem_slots = call ptr @CreateSemaphoreA(ptr null, i32 %cap32, i32 %cap32, ptr null)\n");
+        header.push_str("    %slots_ptr = getelementptr inbounds i8, ptr %ch, i64 48\n");
+        header.push_str("    store ptr %sem_slots, ptr %slots_ptr\n");
+        header.push_str("    %mtx = call ptr @CreateMutexA(ptr null, i32 0, ptr null)\n");
+        header.push_str("    %mtx_ptr = getelementptr inbounds i8, ptr %ch, i64 56\n");
+        header.push_str("    store ptr %mtx, ptr %mtx_ptr\n");
+        header.push_str("    %res = ptrtoint ptr %ch to i64\n");
+        header.push_str("    ret i64 %res\n}\n\n");
+
+        header.push_str("define i64 @tungsten_channel_new() {\n    %res = call i64 @tungsten_channel_bounded(i64 1024)\n    ret i64 %res\n}\n\n");
+
+        header.push_str("define void @tungsten_channel_send(i64 %cid, i64 %val) {\n");
+        header.push_str("    %ch = inttoptr i64 %cid to ptr\n");
+        header.push_str("    %slots_ptr = getelementptr inbounds i8, ptr %ch, i64 48\n");
+        header.push_str("    %sem_slots = load ptr, ptr %slots_ptr\n");
+        header.push_str("    call i32 @WaitForSingleObject(ptr %sem_slots, i32 -1)\n");
+        header.push_str("    %mtx_ptr = getelementptr inbounds i8, ptr %ch, i64 56\n");
+        header.push_str("    %mtx = load ptr, ptr %mtx_ptr\n");
+        header.push_str("    call i32 @WaitForSingleObject(ptr %mtx, i32 -1)\n");
+        header.push_str("    %buf = load ptr, ptr %ch\n");
+        header.push_str("    %tail_ptr = getelementptr inbounds i8, ptr %ch, i64 16\n");
+        header.push_str("    %tail = load i64, ptr %tail_ptr\n");
+        header.push_str("    %slot_ptr = getelementptr inbounds i64, ptr %buf, i64 %tail\n");
+        header.push_str("    store i64 %val, ptr %slot_ptr\n");
+        header.push_str("    %cap_ptr = getelementptr inbounds i8, ptr %ch, i64 32\n");
+        header.push_str("    %cap = load i64, ptr %cap_ptr\n");
+        header.push_str("    %next_tail = add i64 %tail, 1\n");
+        header.push_str("    %rem_tail = urem i64 %next_tail, %cap\n");
+        header.push_str("    store i64 %rem_tail, ptr %tail_ptr\n");
+        header.push_str("    %cnt_ptr = getelementptr inbounds i8, ptr %ch, i64 24\n");
+        header.push_str("    %cnt = load i64, ptr %cnt_ptr\n");
+        header.push_str("    %next_cnt = add i64 %cnt, 1\n");
+        header.push_str("    store i64 %next_cnt, ptr %cnt_ptr\n");
+        header.push_str("    call i32 @ReleaseMutex(ptr %mtx)\n");
+        header.push_str("    %items_ptr = getelementptr inbounds i8, ptr %ch, i64 40\n");
+        header.push_str("    %sem_items = load ptr, ptr %items_ptr\n");
+        header.push_str("    call i32 @ReleaseSemaphore(ptr %sem_items, i32 1, ptr null)\n");
+        header.push_str("    ret void\n}\n\n");
+
+        header.push_str("define i64 @tungsten_channel_recv(i64 %cid) {\n");
+        header.push_str("    %ch = inttoptr i64 %cid to ptr\n");
+        header.push_str("    %items_ptr = getelementptr inbounds i8, ptr %ch, i64 40\n");
+        header.push_str("    %sem_items = load ptr, ptr %items_ptr\n");
+        header.push_str("    call i32 @WaitForSingleObject(ptr %sem_items, i32 -1)\n");
+        header.push_str("    %mtx_ptr = getelementptr inbounds i8, ptr %ch, i64 56\n");
+        header.push_str("    %mtx = load ptr, ptr %mtx_ptr\n");
+        header.push_str("    call i32 @WaitForSingleObject(ptr %mtx, i32 -1)\n");
+        header.push_str("    %buf = load ptr, ptr %ch\n");
+        header.push_str("    %head_ptr = getelementptr inbounds i8, ptr %ch, i64 8\n");
+        header.push_str("    %head = load i64, ptr %head_ptr\n");
+        header.push_str("    %slot_ptr = getelementptr inbounds i64, ptr %buf, i64 %head\n");
+        header.push_str("    %val = load i64, ptr %slot_ptr\n");
+        header.push_str("    %cap_ptr = getelementptr inbounds i8, ptr %ch, i64 32\n");
+        header.push_str("    %cap = load i64, ptr %cap_ptr\n");
+        header.push_str("    %next_head = add i64 %head, 1\n");
+        header.push_str("    %rem_head = urem i64 %next_head, %cap\n");
+        header.push_str("    store i64 %rem_head, ptr %head_ptr\n");
+        header.push_str("    %cnt_ptr = getelementptr inbounds i8, ptr %ch, i64 24\n");
+        header.push_str("    %cnt = load i64, ptr %cnt_ptr\n");
+        header.push_str("    %next_cnt = sub i64 %cnt, 1\n");
+        header.push_str("    store i64 %next_cnt, ptr %cnt_ptr\n");
+        header.push_str("    call i32 @ReleaseMutex(ptr %mtx)\n");
+        header.push_str("    %slots_ptr = getelementptr inbounds i8, ptr %ch, i64 48\n");
+        header.push_str("    %sem_slots = load ptr, ptr %slots_ptr\n");
+        header.push_str("    call i32 @ReleaseSemaphore(ptr %sem_slots, i32 1, ptr null)\n");
+        header.push_str("    ret i64 %val\n}\n\n");
+
+        header.push_str("define i64 @tungsten_net_listen(i64 %port) {\n");
+        header.push_str("    %wsa_buf = alloca [400 x i8]\n");
+        header.push_str("    call i32 @WSAStartup(i16 514, ptr %wsa_buf)\n");
+        header.push_str("    %sock = call i64 @socket(i32 2, i32 1, i32 6)\n");
+        header.push_str("    %opt_val = alloca i32\n");
+        header.push_str("    store i32 1, ptr %opt_val\n");
+        header.push_str("    call i32 @setsockopt(i64 %sock, i32 65535, i32 4, ptr %opt_val, i32 4)\n");
+        header.push_str("    %addr = alloca [16 x i8]\n");
+        header.push_str("    store i16 2, ptr %addr\n");
+        header.push_str("    %p_lo = and i64 %port, 255\n");
+        header.push_str("    %p_sh = shl i64 %p_lo, 8\n");
+        header.push_str("    %p_hi = lshr i64 %port, 8\n");
+        header.push_str("    %p_hi_m = and i64 %p_hi, 255\n");
+        header.push_str("    %net_port = or i64 %p_sh, %p_hi_m\n");
+        header.push_str("    %net_port16 = trunc i64 %net_port to i16\n");
+        header.push_str("    %port_ptr = getelementptr inbounds i8, ptr %addr, i64 2\n");
+        header.push_str("    store i16 %net_port16, ptr %port_ptr\n");
+        header.push_str("    %addr_ptr = getelementptr inbounds i8, ptr %addr, i64 4\n");
+        header.push_str("    store i32 0, ptr %addr_ptr\n");
+        header.push_str("    %zero_ptr = getelementptr inbounds i8, ptr %addr, i64 8\n");
+        header.push_str("    store i64 0, ptr %zero_ptr\n");
+        header.push_str("    call i32 @bind(i64 %sock, ptr %addr, i32 16)\n");
+        header.push_str("    call i32 @listen(i64 %sock, i32 128)\n");
+        header.push_str("    ret i64 %sock\n}\n\n");
+
+        header.push_str("define i64 @tungsten_net_accept(i64 %listener) {\n");
+        header.push_str("    %conn = call i64 @accept(i64 %listener, ptr null, ptr null)\n");
+        header.push_str("    ret i64 %conn\n}\n\n");
+
+        header.push_str("define i64 @tungsten_net_connect(ptr %host, i64 %port) {\n    ret i64 0\n}\n\n");
+
+        header.push_str("define ptr @tungsten_net_read(i64 %conn, i64 %max_len) {\n");
+        header.push_str("    %buf_sz = add i64 %max_len, 1\n");
+        header.push_str("    %buf = call ptr @malloc(i64 %buf_sz)\n");
+        header.push_str("    %trunc_len = trunc i64 %max_len to i32\n");
+        header.push_str("    %n = call i32 @recv(i64 %conn, ptr %buf, i32 %trunc_len, i32 0)\n");
+        header.push_str("    %n_is_neg = icmp slt i32 %n, 0\n");
+        header.push_str("    %n_bytes = select i1 %n_is_neg, i32 0, i32 %n\n");
+        header.push_str("    %n_i64 = sext i32 %n_bytes to i64\n");
+        header.push_str("    %term_ptr = getelementptr inbounds i8, ptr %buf, i64 %n_i64\n");
+        header.push_str("    store i8 0, ptr %term_ptr\n");
+        header.push_str("    ret ptr %buf\n}\n\n");
+
+        header.push_str("define i64 @tungsten_net_write(i64 %conn, ptr %data, i64 %len) {\n");
+        header.push_str("    %str_len = call i64 @strlen(ptr %data)\n");
+        header.push_str("    %trunc_len = trunc i64 %str_len to i32\n");
+        header.push_str("    %res = call i32 @send(i64 %conn, ptr %data, i32 %trunc_len, i32 0)\n");
+        header.push_str("    %res_i64 = sext i32 %res to i64\n");
+        header.push_str("    ret i64 %res_i64\n}\n\n");
+
+        header.push_str("define void @tungsten_net_close(i64 %conn) {\n");
+        header.push_str("    call i32 @closesocket(i64 %conn)\n");
+        header.push_str("    ret void\n}\n\n");
+
+        header.push_str("define i32 @tungsten_foreign_call_thunk(ptr %ctx) {\n");
+        header.push_str("    %fn_slot = getelementptr inbounds i8, ptr %ctx, i64 0\n");
+        header.push_str("    %fn_ptr = load ptr, ptr %fn_slot\n");
+        header.push_str("    %a1_slot = getelementptr inbounds i8, ptr %ctx, i64 8\n");
+        header.push_str("    %a1 = load i64, ptr %a1_slot\n");
+        header.push_str("    %res = call i64 %fn_ptr(i64 %a1)\n");
+        header.push_str("    %res_slot = getelementptr inbounds i8, ptr %ctx, i64 16\n");
+        header.push_str("    store i64 %res, ptr %res_slot\n");
+        header.push_str("    %sem_slot = getelementptr inbounds i8, ptr %ctx, i64 24\n");
+        header.push_str("    %sem = load ptr, ptr %sem_slot\n");
+        header.push_str("    call i32 @ReleaseSemaphore(ptr %sem, i32 1, ptr null)\n");
+        header.push_str("    ret i32 0\n}\n\n");
+
+        header.push_str("define i64 @tungsten_foreign_call_offload(ptr %fn_ptr, i64 %a1) {\n");
+        header.push_str("    %sem = call ptr @CreateSemaphoreA(ptr null, i32 0, i32 1, ptr null)\n");
+        header.push_str("    %ctx = call ptr @malloc(i64 32)\n");
+        header.push_str("    %fn_slot = getelementptr inbounds i8, ptr %ctx, i64 0\n");
+        header.push_str("    store ptr %fn_ptr, ptr %fn_slot\n");
+        header.push_str("    %a1_slot = getelementptr inbounds i8, ptr %ctx, i64 8\n");
+        header.push_str("    store i64 %a1, ptr %a1_slot\n");
+        header.push_str("    %sem_slot = getelementptr inbounds i8, ptr %ctx, i64 24\n");
+        header.push_str("    store ptr %sem, ptr %sem_slot\n");
+        header.push_str("    %th = call ptr @CreateThread(ptr null, i64 0, ptr @tungsten_foreign_call_thunk, ptr %ctx, i32 0, ptr null)\n");
+        header.push_str("    br label %poll\n");
+        header.push_str("poll:\n");
+        header.push_str("    %w = call i32 @WaitForSingleObject(ptr %sem, i32 0)\n");
+        header.push_str("    %done = icmp eq i32 %w, 0\n");
+        header.push_str("    br i1 %done, label %finish, label %yield_poll\n");
+        header.push_str("yield_poll:\n");
+        header.push_str("    call void @Sleep(i32 0)\n");
+        header.push_str("    br label %poll\n");
+        header.push_str("finish:\n");
+        header.push_str("    call i32 @CloseHandle(ptr %th)\n");
+        header.push_str("    call i32 @CloseHandle(ptr %sem)\n");
+        header.push_str("    %res_slot = getelementptr inbounds i8, ptr %ctx, i64 16\n");
+        header.push_str("    %res = load i64, ptr %res_slot\n");
+        header.push_str("    call void @free(ptr %ctx)\n");
+        header.push_str("    ret i64 %res\n}\n\n");
 
         // Emit interned string constants
         header.push_str("; User String Literals\n");
@@ -222,13 +505,22 @@ impl<'a> LlvmTextEmitter<'a> {
             Instruction::SetField { val, .. } => {
                 self.collect_strings_from_op(val);
             }
+            Instruction::ExternCall { args, .. } => {
+                for a in args {
+                    self.collect_strings_from_op(a);
+                }
+            }
+            Instruction::Store { ptr, value, .. } => {
+                self.collect_strings_from_op(ptr);
+                self.collect_strings_from_op(value);
+            }
             _ => {}
         }
     }
 
     fn collect_strings_from_rvalue(&mut self, rv: &RValue) {
         match rv {
-            RValue::Use(op) | RValue::Cast { operand: op, .. } | RValue::Ref { operand: op, .. } => {
+            RValue::Use(op) | RValue::Cast { operand: op, .. } | RValue::Ref { operand: op, .. } | RValue::Deref(op) | RValue::AddrOf(op) => {
                 self.collect_strings_from_op(op);
             }
             RValue::BinaryOp(_, l, r) => {
@@ -251,6 +543,32 @@ impl<'a> LlvmTextEmitter<'a> {
                 if let Some(a) = arena {
                     self.collect_strings_from_op(a);
                 }
+            }
+            RValue::EnumInit { payload, arena, .. } => {
+                for p in payload {
+                    self.collect_strings_from_op(p);
+                }
+                if let Some(a) = arena {
+                    self.collect_strings_from_op(a);
+                }
+            }
+            RValue::EnumTag(target) => {
+                self.collect_strings_from_op(target);
+            }
+            RValue::EnumPayload { target, .. } => {
+                self.collect_strings_from_op(target);
+            }
+            RValue::ArrayInit { elements, arena, .. } => {
+                for e in elements {
+                    self.collect_strings_from_op(e);
+                }
+                if let Some(a) = arena {
+                    self.collect_strings_from_op(a);
+                }
+            }
+            RValue::ArrayIndex { target, index, .. } => {
+                self.collect_strings_from_op(target);
+                self.collect_strings_from_op(index);
             }
         }
     }
@@ -297,12 +615,30 @@ impl<'a> LlvmTextEmitter<'a> {
             Instruction::RegionExit { arena, .. } => {
                 self.collect_vars_from_op(arena, vars);
             }
+            Instruction::NurseryEnter { dest, .. } => {
+                vars.insert(dest.clone(), "ptr".to_string());
+            }
+            Instruction::NurseryExit { nursery, .. } => {
+                self.collect_vars_from_op(nursery, vars);
+            }
+            Instruction::ExternCall { dest, args, ty, .. } => {
+                if let Some(d) = dest {
+                    vars.insert(d.clone(), type_to_llvm(ty));
+                }
+                for a in args {
+                    self.collect_vars_from_op(a, vars);
+                }
+            }
+            Instruction::Store { ptr, value, .. } => {
+                self.collect_vars_from_op(ptr, vars);
+                self.collect_vars_from_op(value, vars);
+            }
         }
     }
 
     fn collect_vars_from_rvalue(&self, rv: &RValue, vars: &mut HashMap<Var, String>) {
         match rv {
-            RValue::Use(op) | RValue::Cast { operand: op, .. } | RValue::Ref { operand: op, .. } => {
+            RValue::Use(op) | RValue::Cast { operand: op, .. } | RValue::Ref { operand: op, .. } | RValue::Deref(op) | RValue::AddrOf(op) => {
                 self.collect_vars_from_op(op, vars);
             }
             RValue::BinaryOp(_, l, r) => {
@@ -325,6 +661,32 @@ impl<'a> LlvmTextEmitter<'a> {
                 if let Some(a) = arena {
                     self.collect_vars_from_op(a, vars);
                 }
+            }
+            RValue::EnumInit { payload, arena, .. } => {
+                for p in payload {
+                    self.collect_vars_from_op(p, vars);
+                }
+                if let Some(a) = arena {
+                    self.collect_vars_from_op(a, vars);
+                }
+            }
+            RValue::EnumTag(target) => {
+                self.collect_vars_from_op(target, vars);
+            }
+            RValue::EnumPayload { target, .. } => {
+                self.collect_vars_from_op(target, vars);
+            }
+            RValue::ArrayInit { elements, arena, .. } => {
+                for e in elements {
+                    self.collect_vars_from_op(e, vars);
+                }
+                if let Some(a) = arena {
+                    self.collect_vars_from_op(a, vars);
+                }
+            }
+            RValue::ArrayIndex { target, index, .. } => {
+                self.collect_vars_from_op(target, vars);
+                self.collect_vars_from_op(index, vars);
             }
         }
     }
@@ -463,7 +825,7 @@ impl<'a> LlvmTextEmitter<'a> {
 
                 self.out.push_str(&format!("cont_{}:\n", id));
             }
-            Instruction::PerformEffect { effect, op, args, dest, .. } => {
+            Instruction::PerformEffect { effect, op, args, dest, ty, .. } => {
                 if effect == "IO" && op == "print" {
                     if let Some(first_arg) = args.first() {
                         let arg_val = self.emit_operand(first_arg);
@@ -498,8 +860,12 @@ impl<'a> LlvmTextEmitter<'a> {
                 } else if effect == "Async" {
                     if op == "spawn" {
                         let fn_arg = args.first().map(|a| self.emit_operand(a)).unwrap_or_else(|| "null".to_string());
-                        let a1 = args.get(1).map(|a| self.emit_operand(a)).unwrap_or_else(|| "0".to_string());
-                        let a2 = args.get(2).map(|a| self.emit_operand(a)).unwrap_or_else(|| "0".to_string());
+                        let a1_val = args.get(1).map(|a| self.emit_operand(a)).unwrap_or_else(|| "0".to_string());
+                        let a1_ty = args.get(1).map(|a| self.get_operand_llvm_type(a)).unwrap_or_else(|| "i64".to_string());
+                        let a1 = self.coerce_val(&a1_val, &a1_ty, "i64");
+                        let a2_val = args.get(2).map(|a| self.emit_operand(a)).unwrap_or_else(|| "0".to_string());
+                        let a2_ty = args.get(2).map(|a| self.get_operand_llvm_type(a)).unwrap_or_else(|| "i64".to_string());
+                        let a2 = self.coerce_val(&a2_val, &a2_ty, "i64");
                         let res_temp = self.next_temp();
                         self.out.push_str(&format!("    {} = call i64 @tungsten_fiber_spawn(ptr {}, i64 {}, i64 {})\n", res_temp, fn_arg, a1, a2));
                         if let Some(d) = dest {
@@ -509,7 +875,9 @@ impl<'a> LlvmTextEmitter<'a> {
                     } else if op == "yield_now" {
                         self.out.push_str("    call void @tungsten_fiber_yield()\n");
                     } else if op == "sleep" {
-                        let ms = args.first().map(|a| self.emit_operand(a)).unwrap_or_else(|| "0".to_string());
+                        let ms_val = args.first().map(|a| self.emit_operand(a)).unwrap_or_else(|| "0".to_string());
+                        let ms_ty = args.first().map(|a| self.get_operand_llvm_type(a)).unwrap_or_else(|| "i64".to_string());
+                        let ms = self.coerce_val(&ms_val, &ms_ty, "i64");
                         self.out.push_str(&format!("    call void @tungsten_fiber_sleep(i64 {})\n", ms));
                     }
                 } else if effect == "Channel" {
@@ -520,18 +888,136 @@ impl<'a> LlvmTextEmitter<'a> {
                             let slot = var_to_slot_name(d);
                             self.out.push_str(&format!("    store i64 {}, ptr {}\n", res_temp, slot));
                         }
+                    } else if op == "bounded" && !args.is_empty() {
+                        let cap_val = self.emit_operand(&args[0]);
+                        let cap_ty = self.get_operand_llvm_type(&args[0]);
+                        let cap = self.coerce_val(&cap_val, &cap_ty, "i64");
+                        let res_temp = self.next_temp();
+                        self.out.push_str(&format!("    {} = call i64 @tungsten_channel_bounded(i64 {})\n", res_temp, cap));
+                        if let Some(d) = dest {
+                            let slot = var_to_slot_name(d);
+                            self.out.push_str(&format!("    store i64 {}, ptr {}\n", res_temp, slot));
+                        }
                     } else if op == "send" && args.len() >= 2 {
-                        let cid = self.emit_operand(&args[0]);
-                        let val = self.emit_operand(&args[1]);
+                        let cid_val = self.emit_operand(&args[0]);
+                        let cid_ty = self.get_operand_llvm_type(&args[0]);
+                        let cid = self.coerce_val(&cid_val, &cid_ty, "i64");
+                        let val_op = self.emit_operand(&args[1]);
+                        let val_ty = self.get_operand_llvm_type(&args[1]);
+                        let val = self.coerce_val(&val_op, &val_ty, "i64");
                         self.out.push_str(&format!("    call void @tungsten_channel_send(i64 {}, i64 {})\n", cid, val));
                     } else if op == "recv" && !args.is_empty() {
-                        let cid = self.emit_operand(&args[0]);
+                        let cid_val = self.emit_operand(&args[0]);
+                        let cid_ty = self.get_operand_llvm_type(&args[0]);
+                        let cid = self.coerce_val(&cid_val, &cid_ty, "i64");
                         let res_temp = self.next_temp();
                         self.out.push_str(&format!("    {} = call i64 @tungsten_channel_recv(i64 {})\n", res_temp, cid));
                         if let Some(d) = dest {
                             let slot = var_to_slot_name(d);
                             self.out.push_str(&format!("    store i64 {}, ptr {}\n", res_temp, slot));
                         }
+                    }
+                } else if effect == "Nursery" {
+                    if op == "spawn" && !args.is_empty() {
+                        let nur_v = self.emit_operand(&args[0]);
+                        let nur_ty = self.get_operand_llvm_type(&args[0]);
+                        let nur_ptr = if nur_ty == "ptr" { nur_v } else {
+                            let t = self.next_temp();
+                            self.out.push_str(&format!("    {} = inttoptr {} {} to ptr\n", t, nur_ty, nur_v));
+                            t
+                        };
+                        let fn_arg = args.get(1).map(|a| self.emit_operand(a)).unwrap_or_else(|| "null".to_string());
+                        let a1_val = args.get(2).map(|a| self.emit_operand(a)).unwrap_or_else(|| "0".to_string());
+                        let a1_ty = args.get(2).map(|a| self.get_operand_llvm_type(a)).unwrap_or_else(|| "i64".to_string());
+                        let a1 = self.coerce_val(&a1_val, &a1_ty, "i64");
+                        let a2_val = args.get(3).map(|a| self.emit_operand(a)).unwrap_or_else(|| "0".to_string());
+                        let a2_ty = args.get(3).map(|a| self.get_operand_llvm_type(a)).unwrap_or_else(|| "i64".to_string());
+                        let a2 = self.coerce_val(&a2_val, &a2_ty, "i64");
+                        let res_temp = self.next_temp();
+                        self.out.push_str(&format!("    {} = call i64 @tungsten_nursery_spawn(ptr {}, ptr {}, i64 {}, i64 {})\n", res_temp, nur_ptr, fn_arg, a1, a2));
+                        if let Some(d) = dest {
+                            let slot = var_to_slot_name(d);
+                            self.out.push_str(&format!("    store i64 {}, ptr {}\n", res_temp, slot));
+                        }
+                    }
+                } else if effect == "Net" {
+                    if op == "listen" {
+                        let port_val = args.first().map(|a| self.emit_operand(a)).unwrap_or_else(|| "8080".to_string());
+                        let port_ty = args.first().map(|a| self.get_operand_llvm_type(a)).unwrap_or_else(|| "i64".to_string());
+                        let port_i64 = self.coerce_val(&port_val, &port_ty, "i64");
+                        let res_temp = self.next_temp();
+                        self.out.push_str(&format!("    {} = call i64 @tungsten_net_listen(i64 {})\n", res_temp, port_i64));
+                        if let Some(d) = dest {
+                            let slot = var_to_slot_name(d);
+                            self.out.push_str(&format!("    store i64 {}, ptr {}\n", res_temp, slot));
+                        }
+                    } else if op == "accept" {
+                        let sock_val = args.first().map(|a| self.emit_operand(a)).unwrap_or_else(|| "0".to_string());
+                        let sock_ty = args.first().map(|a| self.get_operand_llvm_type(a)).unwrap_or_else(|| "i64".to_string());
+                        let sock_i64 = self.coerce_val(&sock_val, &sock_ty, "i64");
+                        let res_temp = self.next_temp();
+                        self.out.push_str(&format!("    {} = call i64 @tungsten_net_accept(i64 {})\n", res_temp, sock_i64));
+                        if let Some(d) = dest {
+                            let slot = var_to_slot_name(d);
+                            self.out.push_str(&format!("    store i64 {}, ptr {}\n", res_temp, slot));
+                        }
+                    } else if op == "connect" {
+                        let host_val = args.first().map(|a| self.emit_operand(a)).unwrap_or_else(|| "null".to_string());
+                        let host_ty = args.first().map(|a| self.get_operand_llvm_type(a)).unwrap_or_else(|| "ptr".to_string());
+                        let host_ptr = self.coerce_val(&host_val, &host_ty, "ptr");
+                        let port_val = args.get(1).map(|a| self.emit_operand(a)).unwrap_or_else(|| "8080".to_string());
+                        let port_ty = args.get(1).map(|a| self.get_operand_llvm_type(a)).unwrap_or_else(|| "i64".to_string());
+                        let port_i64 = self.coerce_val(&port_val, &port_ty, "i64");
+                        let res_temp = self.next_temp();
+                        self.out.push_str(&format!("    {} = call i64 @tungsten_net_connect(ptr {}, i64 {})\n", res_temp, host_ptr, port_i64));
+                        if let Some(d) = dest {
+                            let slot = var_to_slot_name(d);
+                            self.out.push_str(&format!("    store i64 {}, ptr {}\n", res_temp, slot));
+                        }
+                    } else if op == "read" {
+                        let conn_val = args.first().map(|a| self.emit_operand(a)).unwrap_or_else(|| "0".to_string());
+                        let conn_ty = args.first().map(|a| self.get_operand_llvm_type(a)).unwrap_or_else(|| "i64".to_string());
+                        let conn_i64 = self.coerce_val(&conn_val, &conn_ty, "i64");
+                        let max_len = args.get(1).map(|a| self.emit_operand(a)).unwrap_or_else(|| "4096".to_string());
+                        let len_ty = args.get(1).map(|a| self.get_operand_llvm_type(a)).unwrap_or_else(|| "i64".to_string());
+                        let len_i64 = self.coerce_val(&max_len, &len_ty, "i64");
+                        let res_temp = self.next_temp();
+                        self.out.push_str(&format!("    {} = call ptr @tungsten_net_read(i64 {}, i64 {})\n", res_temp, conn_i64, len_i64));
+                        if let Some(d) = dest {
+                            let slot = var_to_slot_name(d);
+                            self.out.push_str(&format!("    store ptr {}, ptr {}\n", res_temp, slot));
+                        }
+                    } else if op == "write" {
+                        let conn_val = args.first().map(|a| self.emit_operand(a)).unwrap_or_else(|| "0".to_string());
+                        let conn_ty = args.first().map(|a| self.get_operand_llvm_type(a)).unwrap_or_else(|| "i64".to_string());
+                        let conn_i64 = self.coerce_val(&conn_val, &conn_ty, "i64");
+                        let data_val = args.get(1).map(|a| self.emit_operand(a)).unwrap_or_else(|| "null".to_string());
+                        let data_ty = args.get(1).map(|a| self.get_operand_llvm_type(a)).unwrap_or_else(|| "ptr".to_string());
+                        let data_ptr = self.coerce_val(&data_val, &data_ty, "ptr");
+                        let res_temp = self.next_temp();
+                        self.out.push_str(&format!("    {} = call i64 @tungsten_net_write(i64 {}, ptr {}, i64 4096)\n", res_temp, conn_i64, data_ptr));
+                        if let Some(d) = dest {
+                            let slot = var_to_slot_name(d);
+                            self.out.push_str(&format!("    store i64 {}, ptr {}\n", res_temp, slot));
+                        }
+                    } else if op == "close" {
+                        let conn_val = args.first().map(|a| self.emit_operand(a)).unwrap_or_else(|| "0".to_string());
+                        let conn_ty = args.first().map(|a| self.get_operand_llvm_type(a)).unwrap_or_else(|| "i64".to_string());
+                        let conn_i64 = self.coerce_val(&conn_val, &conn_ty, "i64");
+                        self.out.push_str(&format!("    call void @tungsten_net_close(i64 {})\n", conn_i64));
+                    }
+                } else if (effect == "Foreign" || effect == "ForeignCall") && (op == "call" || op == "blocking") {
+                    let fn_arg = args.first().map(|a| self.emit_operand(a)).unwrap_or_else(|| "null".to_string());
+                    let a1_val = args.get(1).map(|a| self.emit_operand(a)).unwrap_or_else(|| "0".to_string());
+                    let a1_ty = args.get(1).map(|a| self.get_operand_llvm_type(a)).unwrap_or_else(|| "i64".to_string());
+                    let a1 = self.coerce_val(&a1_val, &a1_ty, "i64");
+                    let res_temp = self.next_temp();
+                    self.out.push_str(&format!("    {} = call i64 @tungsten_foreign_call_offload(ptr {}, i64 {})\n", res_temp, fn_arg, a1));
+                    if let Some(d) = dest {
+                        let slot = var_to_slot_name(d);
+                        let target_ty = self.var_types.get(d).cloned().unwrap_or_else(|| type_to_llvm(ty));
+                        let coerced = self.coerce_val(&res_temp, "i64", &target_ty);
+                        self.out.push_str(&format!("    store {} {}, ptr {}\n", target_ty, coerced, slot));
                     }
                 }
             }
@@ -607,6 +1093,53 @@ impl<'a> LlvmTextEmitter<'a> {
                     t
                 };
                 self.out.push_str(&format!("    call void @tungsten_region_exit(ptr {})\n", arena_ptr));
+            }
+            Instruction::NurseryEnter { dest, .. } => {
+                let nur_temp = self.next_temp();
+                self.out.push_str(&format!("    {} = call ptr @tungsten_nursery_enter()\n", nur_temp));
+                let slot = var_to_slot_name(dest);
+                self.out.push_str(&format!("    store ptr {}, ptr {}\n", nur_temp, slot));
+            }
+            Instruction::NurseryExit { nursery, .. } => {
+                let nur_val = self.emit_operand(nursery);
+                let nur_ty = self.get_operand_llvm_type(nursery);
+                let nur_ptr = if nur_ty == "ptr" {
+                    nur_val
+                } else {
+                    let t = self.next_temp();
+                    self.out.push_str(&format!("    {} = inttoptr {} {} to ptr\n", t, nur_ty, nur_val));
+                    t
+                };
+                self.out.push_str(&format!("    call void @tungsten_nursery_wait_all(ptr {})\n", nur_ptr));
+            }
+            Instruction::ExternCall { dest, func, args, ty, .. } => {
+                let mut arg_strs = Vec::new();
+                for a in args {
+                    let val = self.emit_operand(a);
+                    let arg_ty = self.get_operand_llvm_type(a);
+                    arg_strs.push(format!("{} {}", arg_ty, val));
+                }
+                let ret_llvm_ty = type_to_llvm_ret(ty);
+                if ret_llvm_ty == "void" {
+                    self.out.push_str(&format!("    call void @{}({})\n", func, arg_strs.join(", ")));
+                } else {
+                    let res_temp = self.next_temp();
+                    self.out.push_str(&format!("    {} = call {} @{}({})\n", res_temp, ret_llvm_ty, func, arg_strs.join(", ")));
+                    if let Some(d) = dest {
+                        let slot = var_to_slot_name(d);
+                        let target_ty = self.var_types.get(d).cloned().unwrap_or_else(|| type_to_llvm(ty));
+                        let coerced = self.coerce_val(&res_temp, &ret_llvm_ty, &target_ty);
+                        self.out.push_str(&format!("    store {} {}, ptr {}\n", target_ty, coerced, slot));
+                    }
+                }
+            }
+            Instruction::Store { ptr, value, .. } => {
+                let ptr_val = self.emit_operand(ptr);
+                let ptr_ty = self.get_operand_llvm_type(ptr);
+                let ptr_coerced = self.coerce_val(&ptr_val, &ptr_ty, "ptr");
+                let val = self.emit_operand(value);
+                let val_ty = self.get_operand_llvm_type(value);
+                self.out.push_str(&format!("    store {} {}, ptr {}\n", val_ty, val, ptr_coerced));
             }
         }
     }
@@ -745,7 +1278,25 @@ impl<'a> LlvmTextEmitter<'a> {
                 let target_v = self.emit_operand(target);
                 let target_ty = self.get_operand_llvm_type(target);
                 let target_i64 = self.coerce_val(&target_v, &target_ty, "i64");
-                if method == "saturating_add" && args.len() == 1 {
+                if method == "spawn" {
+                    let nur_ptr = if target_ty == "ptr" {
+                        target_v
+                    } else {
+                        let t = self.next_temp();
+                        self.out.push_str(&format!("    {} = inttoptr {} {} to ptr\n", t, target_ty, target_v));
+                        t
+                    };
+                    let fn_arg = args.first().map(|a| self.emit_operand(a)).unwrap_or_else(|| "null".to_string());
+                    let a1_val = args.get(1).map(|a| self.emit_operand(a)).unwrap_or_else(|| "0".to_string());
+                    let a1_ty = args.get(1).map(|a| self.get_operand_llvm_type(a)).unwrap_or_else(|| "i64".to_string());
+                    let a1 = self.coerce_val(&a1_val, &a1_ty, "i64");
+                    let a2_val = args.get(2).map(|a| self.emit_operand(a)).unwrap_or_else(|| "0".to_string());
+                    let a2_ty = args.get(2).map(|a| self.get_operand_llvm_type(a)).unwrap_or_else(|| "i64".to_string());
+                    let a2 = self.coerce_val(&a2_val, &a2_ty, "i64");
+                    let res_temp = self.next_temp();
+                    self.out.push_str(&format!("    {} = call i64 @tungsten_nursery_spawn(ptr {}, ptr {}, i64 {}, i64 {})\n", res_temp, nur_ptr, fn_arg, a1, a2));
+                    (res_temp, "i64".to_string())
+                } else if method == "saturating_add" && args.len() == 1 {
                     let delta_v = self.emit_operand(&args[0]);
                     let delta_ty = self.get_operand_llvm_type(&args[0]);
                     let delta_i64 = self.coerce_val(&delta_v, &delta_ty, "i64");
@@ -808,7 +1359,182 @@ impl<'a> LlvmTextEmitter<'a> {
                 (coerced, to_ty)
             }
             RValue::Ref { operand, .. } => {
-                (self.emit_operand(operand), "ptr".to_string())
+                match operand {
+                    Operand::Var(v, _) => {
+                        let slot = var_to_slot_name(v);
+                        (slot, "ptr".to_string())
+                    }
+                    Operand::Constant(TirConstant::Str(s)) => {
+                        let idx = self.intern_string(s);
+                        (format!("@str_{}", idx), "ptr".to_string())
+                    }
+                    _ => {
+                        let val = self.emit_operand(operand);
+                        let val_ty = self.get_operand_llvm_type(operand);
+                        let t_slot = self.next_temp();
+                        self.out.push_str(&format!("    {} = alloca {}\n", t_slot, val_ty));
+                        self.out.push_str(&format!("    store {} {}, ptr {}\n", val_ty, val, t_slot));
+                        (t_slot, "ptr".to_string())
+                    }
+                }
+            }
+            RValue::EnumInit { tag, payload, arena, .. } => {
+                let size = 8 + payload.len() * 8;
+                let ptr_temp = self.next_temp();
+                if let Some(a_op) = arena {
+                    let a_val = self.emit_operand(a_op);
+                    let a_ty = self.get_operand_llvm_type(a_op);
+                    let a_ptr = if a_ty == "ptr" {
+                        a_val
+                    } else {
+                        let t = self.next_temp();
+                        self.out.push_str(&format!("    {} = inttoptr {} {} to ptr\n", t, a_ty, a_val));
+                        t
+                    };
+                    self.out.push_str(&format!("    {} = call ptr @tungsten_region_alloc(ptr {}, i64 {}, i64 8)\n", ptr_temp, a_ptr, size));
+                } else {
+                    self.out.push_str(&format!("    {} = call ptr @tungsten_alloc(i64 {}, i64 8)\n", ptr_temp, size));
+                }
+
+                // Store tag at offset 0
+                let tag_gep = self.next_temp();
+                self.out.push_str(&format!("    {} = getelementptr inbounds i8, ptr {}, i64 0\n", tag_gep, ptr_temp));
+                self.out.push_str(&format!("    store i64 {}, ptr {}\n", tag, tag_gep));
+
+                // Store payload elements at offset 8, 16, ...
+                for (idx, p_op) in payload.iter().enumerate() {
+                    let p_val = self.emit_operand(p_op);
+                    let p_ty = self.get_operand_llvm_type(p_op);
+                    let p_i64 = self.coerce_val(&p_val, &p_ty, "i64");
+                    let p_gep = self.next_temp();
+                    self.out.push_str(&format!("    {} = getelementptr inbounds i8, ptr {}, i64 {}\n", p_gep, ptr_temp, 8 + idx * 8));
+                    self.out.push_str(&format!("    store i64 {}, ptr {}\n", p_i64, p_gep));
+                }
+
+                (ptr_temp, "ptr".to_string())
+            }
+            RValue::EnumTag(target) => {
+                let target_v = self.emit_operand(target);
+                let target_ty = self.get_operand_llvm_type(target);
+                let target_ptr = self.coerce_val(&target_v, &target_ty, "ptr");
+                let tag_val = self.next_temp();
+                self.out.push_str(&format!("    {} = load i64, ptr {}\n", tag_val, target_ptr));
+                (tag_val, "i64".to_string())
+            }
+            RValue::EnumPayload { target, index } => {
+                let target_v = self.emit_operand(target);
+                let target_ty = self.get_operand_llvm_type(target);
+                let target_ptr = self.coerce_val(&target_v, &target_ty, "ptr");
+                let gep = self.next_temp();
+                let loaded = self.next_temp();
+                self.out.push_str(&format!("    {} = getelementptr inbounds i8, ptr {}, i64 {}\n", gep, target_ptr, 8 + index * 8));
+                self.out.push_str(&format!("    {} = load i64, ptr {}\n", loaded, gep));
+                (loaded, "i64".to_string())
+            }
+            RValue::ArrayInit { elements, elem_stride, arena } => {
+                let stride = (*elem_stride).max(1);
+                let size = (elements.len() * stride).max(8);
+                let ptr_temp = self.next_temp();
+                if let Some(a_op) = arena {
+                    let a_val = self.emit_operand(a_op);
+                    let a_ty = self.get_operand_llvm_type(a_op);
+                    let a_ptr = if a_ty == "ptr" {
+                        a_val
+                    } else {
+                        let t = self.next_temp();
+                        self.out.push_str(&format!("    {} = inttoptr {} {} to ptr\n", t, a_ty, a_val));
+                        t
+                    };
+                    self.out.push_str(&format!("    {} = call ptr @tungsten_region_alloc(ptr {}, i64 {}, i64 8)\n", ptr_temp, a_ptr, size));
+                } else {
+                    self.out.push_str(&format!("    {} = call ptr @tungsten_alloc(i64 {}, i64 8)\n", ptr_temp, size));
+                }
+
+                let elem_llvm_ty = match stride {
+                    1 => "i8",
+                    2 => "i16",
+                    4 => "i32",
+                    _ => "i64",
+                };
+
+                for (idx, e_op) in elements.iter().enumerate() {
+                    let e_val = self.emit_operand(e_op);
+                    let e_ty = self.get_operand_llvm_type(e_op);
+                    let coerced = self.coerce_val(&e_val, &e_ty, elem_llvm_ty);
+                    let gep = self.next_temp();
+                    self.out.push_str(&format!("    {} = getelementptr inbounds i8, ptr {}, i64 {}\n", gep, ptr_temp, idx * stride));
+                    self.out.push_str(&format!("    store {} {}, ptr {}\n", elem_llvm_ty, coerced, gep));
+                }
+
+                (ptr_temp, "ptr".to_string())
+            }
+            RValue::ArrayIndex { target, index, stride } => {
+                let target_v = self.emit_operand(target);
+                let target_ty = self.get_operand_llvm_type(target);
+                let target_ptr = self.coerce_val(&target_v, &target_ty, "ptr");
+
+                let idx_v = self.emit_operand(index);
+                let idx_ty = self.get_operand_llvm_type(index);
+                let idx_i64 = self.coerce_val(&idx_v, &idx_ty, "i64");
+
+                let s = (*stride).max(1);
+                let offset_val = if s == 1 {
+                    idx_i64
+                } else {
+                    let mul_t = self.next_temp();
+                    self.out.push_str(&format!("    {} = mul i64 {}, {}\n", mul_t, idx_i64, s));
+                    mul_t
+                };
+
+                let gep = self.next_temp();
+                self.out.push_str(&format!("    {} = getelementptr inbounds i8, ptr {}, i64 {}\n", gep, target_ptr, offset_val));
+
+                let elem_llvm_ty = match s {
+                    1 => "i8",
+                    2 => "i16",
+                    4 => "i32",
+                    _ => "i64",
+                };
+
+                let loaded = self.next_temp();
+                self.out.push_str(&format!("    {} = load {}, ptr {}\n", loaded, elem_llvm_ty, gep));
+
+                if s < 8 {
+                    let ext = self.next_temp();
+                    self.out.push_str(&format!("    {} = zext {} {} to i64\n", ext, elem_llvm_ty, loaded));
+                    (ext, "i64".to_string())
+                } else {
+                    (loaded, "i64".to_string())
+                }
+            }
+            RValue::Deref(op) => {
+                let ptr_val = self.emit_operand(op);
+                let ptr_ty = self.get_operand_llvm_type(op);
+                let ptr_coerced = self.coerce_val(&ptr_val, &ptr_ty, "ptr");
+                let target_llvm_ty = type_to_llvm(_ty);
+                let loaded = self.next_temp();
+                self.out.push_str(&format!("    {} = load {}, ptr {}\n", loaded, target_llvm_ty, ptr_coerced));
+                (loaded, target_llvm_ty)
+            }
+            RValue::AddrOf(op) => {
+                match op {
+                    Operand::Var(v, _) => {
+                        let slot = var_to_slot_name(v);
+                        (slot, "ptr".to_string())
+                    }
+                    Operand::Constant(TirConstant::Str(s)) => {
+                        let idx = self.intern_string(s);
+                        (format!("@str_{}", idx), "ptr".to_string())
+                    }
+                    _ => {
+                        let val = self.emit_operand(op);
+                        let val_ty = self.get_operand_llvm_type(op);
+                        let t_slot = self.next_temp();
+                        self.out.push_str(&format!("    {} = alloca {}\n", t_slot, val_ty));
+                        self.out.push_str(&format!("    store {} {}, ptr {}\n", val_ty, val, t_slot));
+                        (t_slot, "ptr".to_string())
+                    }
+                }
             }
         }
     }
@@ -823,6 +1549,15 @@ impl<'a> LlvmTextEmitter<'a> {
                 format!("@str_{}", idx)
             }
             Operand::Var(v, ty) => {
+                if let Var::Named(name) = v {
+                    let clean = name.trim_start_matches('_');
+                    if self.module.functions.iter().any(|f| f.name == clean) {
+                        return format!("@{}", clean);
+                    }
+                    if self.module.extern_blocks.iter().any(|b| b.fns.iter().any(|f| f.name == clean)) {
+                        return format!("@{}", clean);
+                    }
+                }
                 let slot = var_to_slot_name(v);
                 let load_temp = self.next_temp();
                 let ty_str = self.var_types.get(v).cloned().unwrap_or_else(|| type_to_llvm(ty));
@@ -835,6 +1570,15 @@ impl<'a> LlvmTextEmitter<'a> {
     fn get_operand_llvm_type(&self, op: &Operand) -> String {
         match op {
             Operand::Var(v, ty) => {
+                if let Var::Named(name) = v {
+                    let clean = name.trim_start_matches('_');
+                    if self.module.functions.iter().any(|f| f.name == clean) {
+                        return "ptr".to_string();
+                    }
+                    if self.module.extern_blocks.iter().any(|b| b.fns.iter().any(|f| f.name == clean)) {
+                        return "ptr".to_string();
+                    }
+                }
                 self.var_types.get(v).cloned().unwrap_or_else(|| type_to_llvm(ty))
             }
             Operand::Constant(TirConstant::Str(_)) => "ptr".to_string(),
@@ -852,8 +1596,12 @@ impl<'a> LlvmTextEmitter<'a> {
                     self.out.push_str(&format!("    ret i32 {}\n", coerced));
                 } else {
                     let ty_str = type_to_llvm_ret(ret_ty);
-                    let coerced = self.coerce_val(&val, &from_ty, &ty_str);
-                    self.out.push_str(&format!("    ret {} {}\n", ty_str, coerced));
+                    if ty_str == "void" {
+                        self.out.push_str("    ret void\n");
+                    } else {
+                        let coerced = self.coerce_val(&val, &from_ty, &ty_str);
+                        self.out.push_str(&format!("    ret {} {}\n", ty_str, coerced));
+                    }
                 }
             }
             Terminator::Return(None) => {
@@ -868,9 +1616,15 @@ impl<'a> LlvmTextEmitter<'a> {
             }
             Terminator::BranchCond { cond, then_block, else_block } => {
                 let cond_v = self.emit_operand(cond);
-                let trunc_cond = self.next_temp();
-                self.out.push_str(&format!("    {} = trunc i64 {} to i1\n", trunc_cond, cond_v));
-                self.out.push_str(&format!("    br i1 {}, label %bb{}, label %bb{}\n", trunc_cond, then_block.0, else_block.0));
+                let cond_ty = self.get_operand_llvm_type(cond);
+                let cond_i1 = if cond_ty == "i1" {
+                    cond_v
+                } else {
+                    let cmp_temp = self.next_temp();
+                    self.out.push_str(&format!("    {} = icmp ne {} {}, 0\n", cmp_temp, cond_ty, cond_v));
+                    cmp_temp
+                };
+                self.out.push_str(&format!("    br i1 {}, label %bb{}, label %bb{}\n", cond_i1, then_block.0, else_block.0));
             }
             Terminator::HandleEffect { body_entry, .. } => {
                 self.out.push_str(&format!("    br label %bb{}\n", body_entry.0));
@@ -917,7 +1671,7 @@ fn type_to_llvm(ty: &Type) -> String {
         Type::U16 => "i16".to_string(),
         Type::U32 => "i32".to_string(),
         Type::I64 | Type::U64 | Type::Usize => "i64".to_string(),
-        Type::String | Type::Ref { .. } | Type::Struct(_) | Type::Instantiated { .. } | Type::Fn { .. } => {
+        Type::String | Type::Ref { .. } | Type::Ptr { .. } | Type::Struct(_) | Type::Instantiated { .. } | Type::Fn { .. } | Type::Enum(_) | Type::Array { .. } => {
             "ptr".to_string()
         }
         Type::Refined { base, .. } | Type::Relational { base, .. } => type_to_llvm(base),
@@ -929,6 +1683,26 @@ fn type_to_llvm_ret(ty: &Type) -> String {
     match ty {
         Type::Unit => "void".to_string(),
         _ => type_to_llvm(ty),
+    }
+}
+
+fn type_expr_to_llvm_str(te: &tungsten_syntax::ast::TypeExpr, is_ret: bool) -> String {
+    use tungsten_syntax::ast::TypeExpr;
+    match te {
+        TypeExpr::Unit(_) => if is_ret { "void".to_string() } else { "i64".to_string() },
+        TypeExpr::Ptr { .. } | TypeExpr::Ref { .. } => "ptr".to_string(),
+        TypeExpr::Named(name, _) => {
+            match name.as_str() {
+                "u8" | "i8" | "bool" => "i8".to_string(),
+                "u16" | "i16" => "i16".to_string(),
+                "u32" | "i32" => "i32".to_string(),
+                "u64" | "i64" | "usize" | "isize" => "i64".to_string(),
+                "void" | "()" => if is_ret { "void".to_string() } else { "i64".to_string() },
+                "String" => "ptr".to_string(),
+                _ => "ptr".to_string(),
+            }
+        }
+        _ => "ptr".to_string(),
     }
 }
 

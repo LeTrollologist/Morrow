@@ -2,11 +2,13 @@ pub mod fiber;
 pub mod scheduler;
 pub mod nursery;
 pub mod channel;
+pub mod net;
 
 pub use fiber::{FiberHandle, FiberId, FiberState, FiberTask};
 pub use scheduler::Scheduler;
 pub use nursery::Nursery;
 pub use channel::Channel;
+pub use net::{SocketRegistry, SocketEntry};
 
 #[cfg(test)]
 mod tests {

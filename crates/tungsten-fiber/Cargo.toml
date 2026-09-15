@@ -7,5 +7,6 @@ license = "MIT OR Apache-2.0"
 description = "M:N work-stealing fiber scheduler and structured concurrency engine for Tungsten"
 
 [dependencies]
+mio = { version = "1.2.3", features = ["net", "os-poll"] }
 thiserror = "1.0"
 

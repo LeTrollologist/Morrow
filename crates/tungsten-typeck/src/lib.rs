@@ -308,5 +308,176 @@ mod tests {
         let res = check(&ast);
         assert!(res.is_ok(), "Effect row polymorphism and unified handlers should succeed: {:?}", res.err());
     }
+
+    #[test]
+    fn test_enum_and_array_typechecking() {
+        let code = r#"
+        pub enum Option<T> {
+            Some(T),
+            None,
+        }
+
+        pub enum Color {
+            Red,
+            Green,
+            Blue,
+        }
+
+        fn color_code(c: Color) -> i64 {
+            match c {
+                Color::Red => 1,
+                Color::Green => 2,
+                Color::Blue => 3,
+            }
+        }
+
+        fn test_arrays() {
+            let bytes: [u8; 4] = [1, 2, 3, 4];
+            let b0 = bytes[0];
+            let opt = Option::Some(b0);
+        }
+        "#;
+
+        let ast = parse(code).expect("syntax parse ok");
+        let res = check(&ast);
+        assert!(res.is_ok(), "Enum and array typechecking should succeed: {:?}", res.err());
+
+        // Verify stride helper: [u8; 4] element stride is 1
+        assert_eq!(types::Type::U8.stride(), 1);
+        assert_eq!(types::Type::I64.stride(), 8);
+    }
+
+    #[test]
+    fn test_match_non_exhaustive_rejection() {
+        let code = r#"
+        pub enum Shape {
+            Circle(i64),
+            Square(i64),
+            Triangle(i64, i64),
+        }
+
+        fn area(s: Shape) -> i64 {
+            match s {
+                Shape::Circle(r) => r * r * 3,
+                Shape::Square(w) => w * w,
+                // Missing Shape::Triangle without _ catch-all!
+            }
+        }
+        "#;
+
+        let ast = parse(code).expect("syntax parse ok");
+        let res = check(&ast);
+        assert!(res.is_err(), "Should reject non-exhaustive match");
+        let errs = res.unwrap_err();
+        assert!(errs.iter().any(|e| e.message.contains("Non-exhaustive match on enum 'Shape': variant 'Triangle' is not covered")));
+    }
+
+    #[test]
+    fn test_nursery_and_structured_concurrency_typecheck() {
+        let code = r#"
+        fn worker(ch: i64, val: i64) yields [Channel] {
+            Channel::send(ch, val);
+        }
+
+        fn main() yields [Async, Channel] {
+            let ch = Channel::bounded(10);
+            nursery n {
+                n.spawn(worker, ch, 100);
+                n.spawn(worker, ch, 200);
+            }
+            let res = Channel::recv(ch);
+        }
+        "#;
+
+        let ast = parse(code).expect("syntax parse ok");
+        let res = check(&ast);
+        assert!(res.is_ok(), "Nursery structured concurrency typechecking should succeed: {:?}", res.err());
+    }
+
+    #[test]
+    fn test_ffi_extern_and_unsafe_typecheck() {
+        let code = r#"
+        extern "C" {
+            fn puts(s: *u8) -> i32;
+            fn strlen(s: *const u8) -> i64;
+        }
+
+        #[repr(C)]
+        struct Point {
+            x: i64,
+            y: i64,
+        }
+
+        fn main() yields [Foreign] {
+            let p = Point { x: 1, y: 2 };
+            unsafe {
+                let ptr: *u8 = &p as *u8;
+                let len: i64 = strlen(ptr);
+                let first: u8 = *ptr;
+                puts(ptr);
+            }
+            let res = Foreign::call(puts, &p as *u8);
+        }
+        "#;
+
+        let ast = parse(code).expect("syntax parse ok");
+        let res = check(&ast);
+        assert!(res.is_ok(), "FFI and unsafe typechecking should succeed: {:?}", res.err());
+    }
+
+    #[test]
+    fn test_ffi_extern_call_outside_unsafe_rejection() {
+        let code = r#"
+        extern "C" {
+            fn puts(s: *u8) -> i32;
+        }
+
+        fn main() {
+            let ptr: *u8 = 0 as *u8;
+            puts(ptr);
+        }
+        "#;
+
+        let ast = parse(code).expect("syntax parse ok");
+        let res = check(&ast);
+        assert!(res.is_err(), "Calling extern function outside unsafe should be rejected");
+        let errs = res.unwrap_err();
+        assert!(errs.iter().any(|e| e.message.contains("is unsafe and must be enclosed in an unsafe")));
+    }
+
+    #[test]
+    fn test_ffi_deref_outside_unsafe_rejection() {
+        let code = r#"
+        fn main() {
+            let ptr: *u8 = 0 as *u8;
+            let val = *ptr;
+        }
+        "#;
+
+        let ast = parse(code).expect("syntax parse ok");
+        let res = check(&ast);
+        assert!(res.is_err(), "Dereferencing pointer outside unsafe should be rejected");
+        let errs = res.unwrap_err();
+        assert!(errs.iter().any(|e| e.message.contains("is unsafe and must be enclosed in an unsafe")));
+    }
+
+    #[test]
+    fn test_ffi_pointer_region_escape_rejection() {
+        let code = r#"
+        fn main() {
+            let p = region r {
+                let x = 42;
+                &x as *u8
+            };
+        }
+        "#;
+
+        let ast = parse(code).expect("syntax parse ok");
+        let res = check(&ast);
+        assert!(res.is_err(), "Raw pointer escaping region should be rejected");
+        let errs = res.unwrap_err();
+        assert!(errs.iter().any(|e| e.message.contains("Pointer escape violation")));
+    }
 }
+
 

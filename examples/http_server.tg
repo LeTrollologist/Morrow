@@ -1,0 +1,40 @@
+enum Method {
+    Get,
+    Other,
+}
+
+fn parse_method(req: String) -> Method {
+    Method::Get
+}
+
+fn handle_connection(conn: i64) yields [Net, IO]{
+    region req {
+        let raw_req = Net::read(conn, 1024);
+        let method = parse_method(raw_req);
+        match method {
+            Method::Get => {
+                let resp = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 31\r\nConnection: close\r\n\r\nHello from Colorless Tungsten!\n";
+                Net::write(conn, resp);
+            }
+            Method::Other => {
+                let resp = "HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                Net::write(conn, resp);
+            }
+        }
+        Net::close(conn);
+    }
+}
+
+fn main() yields [Net, Async, IO] {
+    println!("=== Tungsten Colorless HTTP/1.1 Server ===");
+    println!("Listening on: http://127.0.0.1:18080");
+    println!("Architecture: M:N Fiber Concurrency + Request-Scoped Bump Regions");
+
+    let listener = Net::listen(18080);
+    loop {
+        let conn = Net::accept(listener);
+        if conn > 0 {
+            Async::spawn(handle_connection, conn);
+        }
+    }
+}

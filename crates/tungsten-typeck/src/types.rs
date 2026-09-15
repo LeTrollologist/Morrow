@@ -36,8 +36,17 @@ pub enum Type {
         inner: Box<Type>,
         region: Option<RegionId>,
     },
+    Ptr {
+        is_mut: bool,
+        inner: Box<Type>,
+    },
 
     Struct(String),
+    Enum(String),
+    Array {
+        elem: Box<Type>,
+        len: usize,
+    },
     Instantiated {
         name: String,
         args: Vec<Type>,
@@ -70,6 +79,27 @@ impl Type {
         }
     }
 
+    pub fn stride(&self) -> usize {
+        match self {
+            Type::U8 | Type::Bool => 1,
+            Type::U16 => 2,
+            Type::U32 => 4,
+            Type::U64 | Type::I64 | Type::Usize => 8,
+            Type::String => 8,
+            Type::Unit => 0,
+            Type::Refined { base, .. } => base.stride(),
+            Type::Relational { base, .. } => base.stride(),
+            Type::Ref { .. } => 8,
+            Type::Ptr { .. } => 8,
+            Type::Struct(_) => 8,
+            Type::Enum(_) => 8,
+            Type::Instantiated { .. } => 8,
+            Type::Fn { .. } => 8,
+            Type::GenericParam(_) => 8,
+            Type::Array { elem, len } => elem.stride() * len,
+        }
+    }
+
     pub fn is_compatible_with(&self, other: &Type) -> bool {
         if self == other {
             return true;
@@ -89,6 +119,12 @@ impl Type {
             (Type::Struct(n1), Type::Instantiated { name: n2, .. }) | (Type::Instantiated { name: n1, .. }, Type::Struct(n2)) => {
                 n1 == n2
             }
+            (Type::Enum(n1), Type::Instantiated { name: n2, .. }) | (Type::Instantiated { name: n1, .. }, Type::Enum(n2)) => {
+                n1 == n2
+            }
+            (Type::Array { elem: e1, len: l1 }, Type::Array { elem: e2, len: l2 }) => {
+                l1 == l2 && e1.is_compatible_with(e2)
+            }
             (Type::Ref { is_mut: m1, inner: i1, region: r1 }, Type::Ref { is_mut: m2, inner: i2, region: r2 }) => {
                 let region_compat = match (r1, r2) {
                     (Some(reg1), Some(reg2)) => reg1.0 <= reg2.0, // reg1 is at outer or equal scope, outliving reg2
@@ -96,6 +132,13 @@ impl Type {
                 };
                 (*m1 == *m2 || (!m2 && *m1)) && i1.is_compatible_with(i2) && region_compat
             }
+            (Type::Ptr { is_mut: m1, inner: i1 }, Type::Ptr { is_mut: m2, inner: i2 }) => {
+                (!*m2 || *m1) && (i1.is_compatible_with(i2) || **i1 == Type::U8 || **i2 == Type::U8)
+            }
+            (Type::Ref { is_mut: m1, inner: i1, .. }, Type::Ptr { is_mut: m2, inner: i2 }) => {
+                (!*m2 || *m1) && (i1.is_compatible_with(i2) || **i2 == Type::U8)
+            }
+            (Type::String, Type::Ptr { is_mut: false, inner }) if **inner == Type::U8 => true,
             (Type::Fn { params: p1, return_type: r1, yields_effects: e1 }, Type::Fn { params: p2, return_type: r2, yields_effects: e2 }) => {
                 if p1.len() != p2.len() {
                     return false;
@@ -150,8 +193,14 @@ impl fmt::Display for Type {
                     write!(f, "&{}{}", m_str, inner)
                 }
             }
+            Type::Ptr { is_mut, inner } => {
+                let m_str = if *is_mut { "mut " } else { "" };
+                write!(f, "*{}{}", m_str, inner)
+            }
 
             Type::Struct(name) => write!(f, "{}", name),
+            Type::Enum(name) => write!(f, "{}", name),
+            Type::Array { elem, len } => write!(f, "[{}; {}]", elem, len),
             Type::Instantiated { name, args } => {
                 let arg_strs: Vec<String> = args.iter().map(|a| a.to_string()).collect();
                 write!(f, "{}<{}>", name, arg_strs.join(", "))

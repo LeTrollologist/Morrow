@@ -3,6 +3,7 @@ use std::fs;
 use std::path::Path;
 use std::process;
 
+mod bindgen;
 mod lockfile;
 mod manifest;
 mod package;
@@ -69,6 +70,14 @@ fn main() {
         "lock" => {
             run_lock();
         }
+        "bindgen" => {
+            if args.len() < 3 {
+                eprintln!("Error: 'forge bindgen' requires a path to a C header file (.h)");
+                eprintln!("Usage: forge bindgen <header.h> [--out <output.tg>]");
+                process::exit(1);
+            }
+            bindgen::run_bindgen(&args[2..]);
+        }
         "version" | "--version" | "-V" => {
             println!("forge 0.2.0 (tungsten-lang 2026)");
         }
@@ -99,6 +108,7 @@ SUBCOMMANDS:
     lock                                  Resolve dependencies and update Forge.lock
     fmt [--check] <file.tg>               Format Tungsten source code according to canonical style
     tir [--opt] <file.tg>                 Compile and print Tungsten Intermediate Representation (TIR)
+    bindgen <header.h> [--out file.tg]    Generate safe Tungsten C-ABI bindings from C header
     lsp                                   Start the Tungsten Language Server (JSON-RPC 2.0 over stdio)
     version                               Display version information
     help                                  Display this help message
@@ -242,6 +252,22 @@ fn run_file(args: &[String]) {
             }
         };
         tungsten_tir::optimize(&mut tir_module);
+
+        if !tir_module.extern_blocks.is_empty() {
+            match tungsten_codegen::compile_and_run_llvm(&tir_module) {
+                Ok((code, stdout)) => {
+                    print!("{}", stdout);
+                    if code != 0 {
+                        process::exit(code);
+                    }
+                }
+                Err(err) => {
+                    eprintln!("\n[LLVM Execution Error]: {}", err);
+                    process::exit(1);
+                }
+            }
+            return;
+        }
 
         match tungsten_codegen::compile_and_run(&tir_module) {
             Ok(_) => {}

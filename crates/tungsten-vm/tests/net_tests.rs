@@ -38,7 +38,7 @@ fn test_socket_registry_connect_and_echo() {
     let reg_c = reg_client.clone();
     let client = thread::spawn(move || {
         let conn = reg_c.connect("127.0.0.1", port).expect("connect");
-        reg_c.write(conn, "PING").expect("write PING");
+        reg_c.write(conn, b"PING").expect("write PING");
         let reply = reg_c.read(conn, 1024).expect("read reply");
         reg_c.close(conn);
         reply
@@ -47,7 +47,7 @@ fn test_socket_registry_connect_and_echo() {
     // Server: accept, echo
     let conn_s = reg_server.accept(listener_id).expect("accept");
     let data = reg_server.read(conn_s, 1024).expect("read from client");
-    reg_server.write(conn_s, &data).expect("echo back");
+    reg_server.write(conn_s, data.as_bytes()).expect("echo back");
     reg_server.close(conn_s);
     reg_server.close(listener_id);
 
@@ -69,7 +69,7 @@ fn test_socket_registry_close_removes_handle() {
 fn test_socket_registry_write_to_listener_is_error() {
     let reg = SocketRegistry::new();
     let listener_id = reg.listen(0).expect("listen");
-    let result = reg.write(listener_id, "hello");
+    let result = reg.write(listener_id, b"hello");
     assert!(result.is_err(), "writing to a listener handle should be an error");
     reg.close(listener_id);
 }

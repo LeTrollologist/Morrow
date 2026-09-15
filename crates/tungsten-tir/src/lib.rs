@@ -134,4 +134,61 @@ mod tests {
         assert!(printed.contains("perform IO::print"));
         assert!(printed.contains("resume"));
     }
+
+    #[test]
+    fn test_enums_and_arrays_lowering() {
+        let code = r#"
+        pub enum Option<T> {
+            Some(T),
+            None,
+        }
+
+        fn check_opt(val: i64) -> i64 {
+            let opt = Option::Some(val);
+            let res = match opt {
+                Option::Some(x) => x + 1,
+                Option::None => 0,
+            };
+            res
+        }
+
+        fn check_arr() -> u8 {
+            let arr: [u8; 4] = [10, 20, 30, 40];
+            arr[2]
+        }
+        "#;
+        let ast = tungsten_syntax::parse(code).unwrap();
+        let module = compile(&ast).unwrap();
+        assert_eq!(module.enums.len(), 1);
+        let printed = print(&module);
+        assert!(printed.contains("enum_tag"));
+        assert!(printed.contains("enum_payload"));
+        assert!(printed.contains("Option::Some#0"));
+        assert!(printed.contains("stride 1"));
+    }
+
+    #[test]
+    fn test_ffi_lowering() {
+        let code = r#"
+        extern "C" {
+            fn puts(s: *u8) -> i32;
+        }
+
+        fn main() {
+            unsafe {
+                let msg: *u8 = 0 as *u8;
+                let c: u8 = *msg;
+                *msg = 65 as u8;
+                puts(msg);
+            }
+        }
+        "#;
+        let ast = tungsten_syntax::parse(code).unwrap();
+        let module = compile(&ast).unwrap();
+        assert_eq!(module.extern_blocks.len(), 1);
+        let printed = print(&module);
+        assert!(printed.contains("extern_call puts"));
+        assert!(printed.contains("store"));
+    }
 }
+

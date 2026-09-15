@@ -39,6 +39,13 @@ pub enum TokenKind {
     Resume,
     Import,
     Pub,
+    Enum,
+    Match,
+    Loop,
+    Nursery,
+    Underscore, // _
+    Unsafe,
+    Extern,
 
 
     // Identifiers & Literals
@@ -80,6 +87,7 @@ pub enum TokenKind {
     PipePipe,    // ||
     DotDotEq,    // ..=
     DotDot,      // ..
+    Hash,        // # (for attributes: #[repr(C)])
 
     Eof,
 }

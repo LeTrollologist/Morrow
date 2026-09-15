@@ -304,6 +304,68 @@ pub extern "C" fn tungsten_channel_recv(cid: u64) -> i64 {
     }
 }
 
+static SOCKETS: std::sync::OnceLock<tungsten_fiber::SocketRegistry> = std::sync::OnceLock::new();
+
+pub fn get_sockets() -> &'static tungsten_fiber::SocketRegistry {
+    SOCKETS.get_or_init(|| tungsten_fiber::SocketRegistry::new())
+}
+
+#[no_mangle]
+pub extern "C" fn tungsten_net_listen(port: u64) -> u64 {
+    get_sockets().listen(port as u16).unwrap_or(0)
+}
+
+#[no_mangle]
+pub extern "C" fn tungsten_net_accept(listener: u64) -> u64 {
+    get_sockets().accept(listener).unwrap_or(0)
+}
+
+#[no_mangle]
+pub extern "C" fn tungsten_net_connect(host_ptr: *const u8, host_len: usize, port: u64) -> u64 {
+    let host = if !host_ptr.is_null() && host_len > 0 {
+        let bytes = unsafe { std::slice::from_raw_parts(host_ptr, host_len) };
+        std::str::from_utf8(bytes).unwrap_or("127.0.0.1")
+    } else {
+        "127.0.0.1"
+    };
+    get_sockets().connect(host, port as u16).unwrap_or(0)
+}
+
+#[no_mangle]
+pub extern "C" fn tungsten_net_read(conn: u64, max_len: usize) -> *mut u8 {
+    let data = get_sockets().read(conn, max_len).unwrap_or_default();
+    let bytes = data.as_bytes();
+    let len = bytes.len();
+    unsafe {
+        let ptr = tungsten_alloc(len + 1, 8);
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, len);
+        *ptr.add(len) = 0;
+        ptr
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn tungsten_net_write(conn: u64, data_ptr: *const u8, mut len: usize) -> i64 {
+    if data_ptr.is_null() {
+        return 0;
+    }
+    unsafe {
+        for i in 0..len {
+            if *data_ptr.add(i) == 0 {
+                len = i;
+                break;
+            }
+        }
+        let bytes = std::slice::from_raw_parts(data_ptr, len);
+        get_sockets().write(conn, bytes).unwrap_or(0) as i64
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn tungsten_net_close(conn: u64) {
+    get_sockets().close(conn);
+}
+
 thread_local! {
     static THREAD_EFFECT_TRACES: std::cell::RefCell<Vec<String>> = std::cell::RefCell::new(Vec::new());
 }

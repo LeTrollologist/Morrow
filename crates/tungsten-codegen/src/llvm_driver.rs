@@ -124,6 +124,7 @@ pub fn compile_llvm_aot(
         .arg("-lmsvcrt")
         .arg("-lkernel32")
         .arg("-luser32")
+        .arg("-lws2_32")
         .arg("-lgcc");
 
     let lld_res = lld_cmd.output().map_err(|e| format!("Failed to run rust-lld: {}", e))?;

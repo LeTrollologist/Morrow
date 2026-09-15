@@ -1,4 +1,4 @@
-﻿use std::collections::HashMap;
+use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
@@ -12,6 +12,13 @@ pub enum Value {
         name: String,
         fields: HashMap<String, Value>,
     },
+    Enum {
+        name: String,
+        variant: String,
+        tag: usize,
+        payload: Vec<Value>,
+    },
+    Array(Vec<Value>),
     Ref(Arc<Mutex<Value>>),
     Fn(String),
 }
@@ -75,6 +82,18 @@ impl fmt::Display for Value {
                     .collect();
                 write!(f, "{} {{ {} }}", name, field_strs.join(", "))
             }
+            Value::Enum { variant, payload, .. } => {
+                if payload.is_empty() {
+                    write!(f, "{}", variant)
+                } else {
+                    let p_strs: Vec<String> = payload.iter().map(|p| p.to_string()).collect();
+                    write!(f, "{}({})", variant, p_strs.join(", "))
+                }
+            }
+            Value::Array(elems) => {
+                let e_strs: Vec<String> = elems.iter().map(|e| e.to_string()).collect();
+                write!(f, "[{}]", e_strs.join(", "))
+            }
             Value::Ref(r) => write!(f, "&{}", r.lock().unwrap()),
             Value::Fn(name) => write!(f, "<fn {}>", name),
         }
@@ -94,6 +113,10 @@ impl PartialEq for Value {
             (Value::Struct { name: n1, fields: f1 }, Value::Struct { name: n2, fields: f2 }) => {
                 n1 == n2 && f1 == f2
             }
+            (Value::Enum { name: n1, variant: v1, payload: p1, .. }, Value::Enum { name: n2, variant: v2, payload: p2, .. }) => {
+                n1 == n2 && v1 == v2 && p1 == p2
+            }
+            (Value::Array(a1), Value::Array(a2)) => a1 == a2,
             _ => false,
         }
     }

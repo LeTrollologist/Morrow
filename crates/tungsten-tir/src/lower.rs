@@ -20,6 +20,8 @@ struct TirLowerer {
     var_intervals: HashMap<String, Interval>,
     arena_stack: Vec<Operand>,
     next_region_id: usize,
+    nursery_stack: Vec<Operand>,
+    next_nursery_id: usize,
     scopes: Vec<HashMap<String, (Var, Type)>>,
     next_var_version: usize,
     continuation_stack: Vec<BlockId>,
@@ -36,6 +38,8 @@ impl TirLowerer {
             var_intervals: HashMap::new(),
             arena_stack: Vec::new(),
             next_region_id: 1,
+            nursery_stack: Vec::new(),
+            next_nursery_id: 1,
             scopes: Vec::new(),
             next_var_version: 0,
             continuation_stack: Vec::new(),
@@ -108,7 +112,9 @@ impl TirLowerer {
 
     fn lower(&mut self, program: &Program) -> Result<TirModule, String> {
         let mut structs = Vec::new();
+        let mut enums = Vec::new();
         let mut effects = Vec::new();
+        let mut extern_blocks = Vec::new();
         let mut functions = Vec::new();
 
         // 1. Collect type aliases and structs into type_checker
@@ -117,7 +123,9 @@ impl TirLowerer {
         for item in &program.items {
             match item {
                 Item::Struct(s) => structs.push(s.clone()),
+                Item::Enum(en) => enums.push(en.clone()),
                 Item::Effect(e) => effects.push(e.clone()),
+                Item::ExternBlock(eb) => extern_blocks.push(eb.clone()),
                 _ => {}
             }
         }
@@ -133,7 +141,9 @@ impl TirLowerer {
         Ok(TirModule {
             functions,
             structs,
+            enums,
             effects,
+            extern_blocks,
         })
     }
 
@@ -251,6 +261,16 @@ impl TirLowerer {
                     init_op.get_type()
                 };
 
+                if let Type::Array { elem: ref arr_elem, .. } = resolved_ty {
+                    let expected_stride = arr_elem.stride();
+                    if let Some(inst) = self.cur_block().instructions.last_mut() {
+                        if let Instruction::Assign { rvalue: RValue::ArrayInit { ref mut elem_stride, .. }, ref mut ty, .. } = inst {
+                            *elem_stride = if expected_stride == 0 { 8 } else { expected_stride };
+                            *ty = resolved_ty.clone();
+                        }
+                    }
+                }
+
                 // Check if target type has a refinement interval
                 if let Type::Refined { interval, name: ref ref_name, .. } = &resolved_ty {
                     let type_name = ref_name.clone().unwrap_or_else(|| "Refined".into());
@@ -310,6 +330,14 @@ impl TirLowerer {
                                 span: *span,
                             });
                         }
+                    }
+                    ExprKind::Deref(ptr_expr) => {
+                        let ptr_op = self.lower_expr(ptr_expr);
+                        self.emit(Instruction::Store {
+                            ptr: ptr_op,
+                            value: val_op,
+                            span: *span,
+                        });
                     }
                     _ => {}
                 }
@@ -408,14 +436,50 @@ impl TirLowerer {
                 res_op
             }
             ExprKind::PathCall { path, args } => {
-                let arg_ops = args.iter().map(|a| self.lower_expr(a)).collect();
+                let arg_ops: Vec<Operand> = args.iter().map(|a| self.lower_expr(a)).collect();
                 if path.len() == 2 {
+                    if let Some(en) = self.type_checker.enums.get(&path[0]).cloned() {
+                        if let Some((tag, _)) = en.variants.iter().enumerate().find(|(_, v)| v.name == path[1]) {
+                            let enum_ty = if !en.type_params.is_empty() {
+                                let arg_tys: Vec<Type> = arg_ops.iter().map(|a: &Operand| a.get_type()).collect();
+                                Type::Instantiated { name: path[0].clone(), args: arg_tys }
+                            } else {
+                                Type::Enum(path[0].clone())
+                            };
+                            let (dest, res_op) = self.alloc_temp(enum_ty.clone());
+                            let arena = self.arena_stack.last().cloned();
+                            self.emit(Instruction::Assign {
+                                dest,
+                                rvalue: RValue::EnumInit {
+                                    enum_name: path[0].clone(),
+                                    variant: path[1].clone(),
+                                    tag,
+                                    payload: arg_ops,
+                                    arena,
+                                },
+                                ty: enum_ty,
+                                span: expr.span,
+                            });
+                            return res_op;
+                        }
+                    }
+
                     let effect = path[0].clone();
                     let op = path[1].clone();
                     let ty = if effect == "IO" && op == "print" {
                         Type::Unit
                     } else if effect == "Random" {
                         Type::I64
+                    } else if effect == "Foreign" || effect == "ForeignCall" {
+                        if let Some(first_arg) = args.first() {
+                            if let ExprKind::Ident(ref fname) = first_arg.kind {
+                                self.type_checker.extern_fns.get(fname).map(|s| s.return_type.clone()).unwrap_or(Type::I64)
+                            } else {
+                                Type::I64
+                            }
+                        } else {
+                            Type::I64
+                        }
                     } else {
                         Type::Unit
                     };
@@ -440,6 +504,20 @@ impl TirLowerer {
                     ExprKind::Ident(name) => Some(name.as_str()),
                     _ => None,
                 };
+                if let Some(name) = callee_name {
+                    if self.type_checker.extern_fns.contains_key(name) {
+                        let ret_ty = self.type_checker.extern_fns.get(name).map(|s| s.return_type.clone()).unwrap_or(Type::Unit);
+                        let (dest, res_op) = self.alloc_temp(ret_ty.clone());
+                        self.emit(Instruction::ExternCall {
+                            dest: Some(dest),
+                            func: name.to_string(),
+                            args: arg_ops,
+                            ty: ret_ty,
+                            span: expr.span,
+                        });
+                        return res_op;
+                    }
+                }
                 let ret_ty = if let Some(name) = callee_name {
                     self.type_checker
                         .functions
@@ -667,6 +745,20 @@ impl TirLowerer {
             ExprKind::Block(inner_block) => {
                 self.lower_block(inner_block).unwrap_or(Operand::Constant(TirConstant::Unit))
             }
+            ExprKind::Loop(body) => {
+                let loop_header = self.new_block(Some("loop_header"));
+                let loop_exit = self.new_block(Some("loop_exit"));
+                self.terminate(Terminator::Branch(loop_header));
+
+                self.set_current_block(loop_header);
+                self.lower_block(body);
+                if !self.is_current_terminated() {
+                    self.terminate(Terminator::Branch(loop_header));
+                }
+
+                self.set_current_block(loop_exit);
+                Operand::Constant(TirConstant::Unit)
+            }
             ExprKind::Region { body, .. } => {
                 let region_id = self.next_region_id;
                 self.next_region_id += 1;
@@ -685,8 +777,290 @@ impl TirLowerer {
                 });
                 res
             }
+            ExprKind::Nursery { name, body } => {
+                let nursery_id = self.next_nursery_id;
+                self.next_nursery_id += 1;
+                let (nursery_dest, nursery_op) = self.alloc_temp(Type::Struct("Nursery".into()));
+                self.emit(Instruction::NurseryEnter {
+                    dest: nursery_dest,
+                    nursery_id,
+                    span: expr.span,
+                });
+                self.push_scope();
+                if let Some(n) = name {
+                    let var = self.define_scoped_var(n, Type::Struct("Nursery".into()));
+                    self.emit(Instruction::Assign {
+                        dest: var,
+                        rvalue: RValue::Use(nursery_op.clone()),
+                        ty: Type::Struct("Nursery".into()),
+                        span: expr.span,
+                    });
+                }
+                self.nursery_stack.push(nursery_op.clone());
+                let res = self.lower_block(body).unwrap_or(Operand::Constant(TirConstant::Unit));
+                self.nursery_stack.pop();
+                self.pop_scope();
+                self.emit(Instruction::NurseryExit {
+                    nursery: nursery_op,
+                    span: expr.span,
+                });
+                res
+            }
+            ExprKind::Path(path) => {
+                if path.len() == 2 {
+                    if let Some(en) = self.type_checker.enums.get(&path[0]).cloned() {
+                        if let Some((tag, _)) = en.variants.iter().enumerate().find(|(_, v)| v.name == path[1]) {
+                            let enum_ty = Type::Enum(path[0].clone());
+                            let (dest, res_op) = self.alloc_temp(enum_ty.clone());
+                            let arena = self.arena_stack.last().cloned();
+                            self.emit(Instruction::Assign {
+                                dest,
+                                rvalue: RValue::EnumInit {
+                                    enum_name: path[0].clone(),
+                                    variant: path[1].clone(),
+                                    tag,
+                                    payload: Vec::new(),
+                                    arena,
+                                },
+                                ty: enum_ty,
+                                span: expr.span,
+                            });
+                            return res_op;
+                        }
+                    }
+                }
+                Operand::Constant(TirConstant::Unit)
+            }
+            ExprKind::Array(elements) => {
+                let elem_ops: Vec<Operand> = elements.iter().map(|e| self.lower_expr(e)).collect();
+                let (elem_ty, elem_stride) = if let Some(first) = elem_ops.first() {
+                    let ty = first.get_type();
+                    let s = ty.stride();
+                    (ty, if s == 0 { 8 } else { s })
+                } else {
+                    (Type::Unit, 8)
+                };
+                let arr_ty = Type::Array {
+                    elem: Box::new(elem_ty),
+                    len: elem_ops.len(),
+                };
+                let (dest, res_op) = self.alloc_temp(arr_ty.clone());
+                let arena = self.arena_stack.last().cloned();
+                self.emit(Instruction::Assign {
+                    dest,
+                    rvalue: RValue::ArrayInit {
+                        elements: elem_ops,
+                        elem_stride,
+                        arena,
+                    },
+                    ty: arr_ty,
+                    span: expr.span,
+                });
+                res_op
+            }
+            ExprKind::Index { target, index } => {
+                let t_op = self.lower_expr(target);
+                let i_op = self.lower_expr(index);
+                let (elem_ty, stride) = match t_op.get_type() {
+                    Type::Array { elem, .. } => {
+                        let s = elem.stride();
+                        (*elem, if s == 0 { 8 } else { s })
+                    }
+                    Type::Ref { inner, .. } => match *inner {
+                        Type::Array { elem, .. } => {
+                            let s = elem.stride();
+                            (*elem, if s == 0 { 8 } else { s })
+                        }
+                        _ => (Type::I64, 8),
+                    },
+                    _ => (Type::I64, 8),
+                };
+                let (dest, res_op) = self.alloc_temp(elem_ty.clone());
+                self.emit(Instruction::Assign {
+                    dest,
+                    rvalue: RValue::ArrayIndex {
+                        target: t_op,
+                        index: i_op,
+                        stride,
+                    },
+                    ty: elem_ty,
+                    span: expr.span,
+                });
+                res_op
+            }
+            ExprKind::Match { expr: scrutinee, arms } => {
+                let scrut_op = self.lower_expr(scrutinee);
+                let (res_var, res_op) = self.alloc_temp(Type::I64);
+                let merge_bb = self.new_block(Some("match_merge"));
+
+                for (arm_idx, arm) in arms.iter().enumerate() {
+                    match &arm.pattern {
+                        Pattern::Wildcard(_) => {
+                            let arm_bb = self.new_block(Some(&format!("match_arm_{}", arm_idx)));
+                            self.terminate(Terminator::Branch(arm_bb));
+                            self.set_current_block(arm_bb);
+                            let arm_val = self.lower_expr(&arm.body);
+                            self.emit(Instruction::Assign {
+                                dest: res_var.clone(),
+                                rvalue: RValue::Use(arm_val),
+                                ty: Type::I64,
+                                span: arm.span,
+                            });
+                            self.terminate(Terminator::Branch(merge_bb));
+                            break;
+                        }
+                        Pattern::Variable(name, _) => {
+                            let arm_bb = self.new_block(Some(&format!("match_arm_{}", arm_idx)));
+                            self.terminate(Terminator::Branch(arm_bb));
+                            self.set_current_block(arm_bb);
+                            self.push_scope();
+                            let v_dest = self.define_scoped_var(name, scrut_op.get_type());
+                            self.emit(Instruction::Assign {
+                                dest: v_dest,
+                                rvalue: RValue::Use(scrut_op.clone()),
+                                ty: scrut_op.get_type(),
+                                span: arm.span,
+                            });
+                            let arm_val = self.lower_expr(&arm.body);
+                            self.pop_scope();
+                            self.emit(Instruction::Assign {
+                                dest: res_var.clone(),
+                                rvalue: RValue::Use(arm_val),
+                                ty: Type::I64,
+                                span: arm.span,
+                            });
+                            self.terminate(Terminator::Branch(merge_bb));
+                            break;
+                        }
+                        Pattern::Variant { enum_name, variant_name, subpatterns, span: _ } => {
+                            let tag = if let Some(ref en_name) = enum_name {
+                                self.type_checker.enums.get(en_name)
+                                    .and_then(|en| en.variants.iter().position(|v| &v.name == variant_name))
+                                    .unwrap_or(0)
+                            } else {
+                                match scrut_op.get_type() {
+                                    Type::Enum(ref en_name) | Type::Instantiated { name: ref en_name, .. } => {
+                                        self.type_checker.enums.get(en_name)
+                                            .and_then(|en| en.variants.iter().position(|v| &v.name == variant_name))
+                                            .unwrap_or(0)
+                                    }
+                                    _ => {
+                                        self.type_checker.enums.values()
+                                            .find_map(|en| en.variants.iter().position(|v| &v.name == variant_name))
+                                            .unwrap_or(0)
+                                    }
+                                }
+                            };
+
+                            let (tag_dest, tag_op) = self.alloc_temp(Type::I64);
+                            self.emit(Instruction::Assign {
+                                dest: tag_dest,
+                                rvalue: RValue::EnumTag(scrut_op.clone()),
+                                ty: Type::I64,
+                                span: arm.span,
+                            });
+                            let (cmp_dest, cmp_op) = self.alloc_temp(Type::Bool);
+                            self.emit(Instruction::Assign {
+                                dest: cmp_dest,
+                                rvalue: RValue::BinaryOp(
+                                    BinOp::Eq,
+                                    tag_op,
+                                    Operand::Constant(TirConstant::Int(tag as i64)),
+                                ),
+                                ty: Type::Bool,
+                                span: arm.span,
+                            });
+
+                            let arm_bb = self.new_block(Some(&format!("arm_{}", variant_name)));
+                            let next_bb = self.new_block(Some(&format!("arm_next_{}", arm_idx)));
+                            self.terminate(Terminator::BranchCond {
+                                cond: cmp_op,
+                                then_block: arm_bb,
+                                else_block: next_bb,
+                            });
+
+                            self.set_current_block(arm_bb);
+                            self.push_scope();
+                            for (sp_idx, sp) in subpatterns.iter().enumerate() {
+                                if let Pattern::Variable(ref var_name, _) = sp {
+                                    let (payload_dest, payload_op) = self.alloc_temp(Type::I64);
+                                    self.emit(Instruction::Assign {
+                                        dest: payload_dest,
+                                        rvalue: RValue::EnumPayload {
+                                            target: scrut_op.clone(),
+                                            index: sp_idx,
+                                        },
+                                        ty: Type::I64,
+                                        span: arm.span,
+                                    });
+                                    let var_dest = self.define_scoped_var(var_name, Type::I64);
+                                    self.emit(Instruction::Assign {
+                                        dest: var_dest,
+                                        rvalue: RValue::Use(payload_op),
+                                        ty: Type::I64,
+                                        span: arm.span,
+                                    });
+                                }
+                            }
+                            let arm_val = self.lower_expr(&arm.body);
+                            self.pop_scope();
+                            self.emit(Instruction::Assign {
+                                dest: res_var.clone(),
+                                rvalue: RValue::Use(arm_val),
+                                ty: Type::I64,
+                                span: arm.span,
+                            });
+                            self.terminate(Terminator::Branch(merge_bb));
+
+                            self.set_current_block(next_bb);
+                        }
+                        _ => {}
+                    }
+                }
+
+                if !self.is_current_terminated() {
+                    self.terminate(Terminator::Branch(merge_bb));
+                }
+
+                self.set_current_block(merge_bb);
+                res_op
+            }
             ExprKind::Try(inner) | ExprKind::EffectCall(inner) | ExprKind::Await(inner) => {
                 self.lower_expr(inner)
+            }
+            ExprKind::Unsafe { body } => {
+                self.lower_block(body).unwrap_or(Operand::Constant(TirConstant::Unit))
+            }
+            ExprKind::Deref(inner) => {
+                let inner_op = self.lower_expr(inner);
+                let ty = match inner_op.get_type() {
+                    Type::Ptr { inner, .. } => *inner,
+                    Type::Ref { inner, .. } => *inner,
+                    _ => Type::I64,
+                };
+                let (dest, res_op) = self.alloc_temp(ty.clone());
+                self.emit(Instruction::Assign {
+                    dest,
+                    rvalue: RValue::Deref(inner_op),
+                    ty,
+                    span: expr.span,
+                });
+                res_op
+            }
+            ExprKind::AddrOf { mutable, expr: inner } => {
+                let inner_op = self.lower_expr(inner);
+                let ty = Type::Ptr {
+                    is_mut: *mutable,
+                    inner: Box::new(inner_op.get_type()),
+                };
+                let (dest, res_op) = self.alloc_temp(ty.clone());
+                self.emit(Instruction::Assign {
+                    dest,
+                    rvalue: RValue::AddrOf(inner_op),
+                    ty,
+                    span: expr.span,
+                });
+                res_op
             }
         }
     }

@@ -25,6 +25,12 @@ pub struct RuntimeFuncs {
     pub region_alloc: FuncId,
     pub region_exit: FuncId,
     pub trace_effect: FuncId,
+    pub net_listen: FuncId,
+    pub net_accept: FuncId,
+    pub net_connect: FuncId,
+    pub net_read: FuncId,
+    pub net_write: FuncId,
+    pub net_close: FuncId,
 }
 
 
@@ -52,22 +58,74 @@ impl FunctionCompiler {
 
         let entry_cl_block = *block_map.get(&tir_func.entry_block).unwrap();
         builder.append_block_params_for_function_params(entry_cl_block);
-        builder.switch_to_block(entry_cl_block);
 
-        let mut val_map: HashMap<Var, Value> = HashMap::new();
+        let mut var_map: HashMap<Var, Variable> = HashMap::new();
 
-        // Bind function parameters to values
-        let entry_params = builder.block_params(entry_cl_block).to_vec();
-        for (i, p) in tir_func.params.iter().enumerate() {
-            if i < entry_params.len() {
-                val_map.insert(Var::Named(p.name.clone()), entry_params[i]);
+        let register_var = |v: &Var, var_map: &mut HashMap<Var, Variable>, builder: &mut FunctionBuilder| {
+            if !var_map.contains_key(v) {
+                let var = builder.declare_var(types::I64);
+                var_map.insert(v.clone(), var);
+            }
+        };
+
+        for p in &tir_func.params {
+            register_var(&Var::Named(p.name.clone()), &mut var_map, &mut builder);
+        }
+
+        for b in &tir_func.blocks {
+            for inst in &b.instructions {
+                match inst {
+                    Instruction::Assign { dest, .. } => register_var(dest, &mut var_map, &mut builder),
+                    Instruction::Call { dest: Some(dest), .. } => register_var(dest, &mut var_map, &mut builder),
+                    Instruction::PerformEffect { dest: Some(dest), .. } => register_var(dest, &mut var_map, &mut builder),
+                    Instruction::SetField { base, .. } => register_var(base, &mut var_map, &mut builder),
+                    Instruction::RegionEnter { dest, .. } => register_var(dest, &mut var_map, &mut builder),
+                    Instruction::NurseryEnter { dest, .. } => register_var(dest, &mut var_map, &mut builder),
+                    _ => {}
+                }
             }
         }
 
+        let define_dest = |builder: &mut FunctionBuilder, var_map: &HashMap<Var, Variable>, dest: &Var, val: Value| {
+            if let Some(var) = var_map.get(dest) {
+                let val_i64 = Self::coerce_to_type(builder, val, types::I64);
+                builder.def_var(*var, val_i64);
+            }
+        };
+
+        let mut ordered_blocks = Vec::new();
+        if let Some(entry_idx) = tir_func.blocks.iter().position(|b| b.id == tir_func.entry_block) {
+            ordered_blocks.push(&tir_func.blocks[entry_idx]);
+            for (idx, b) in tir_func.blocks.iter().enumerate() {
+                if idx != entry_idx {
+                    ordered_blocks.push(b);
+                }
+            }
+        } else {
+            ordered_blocks.extend(tir_func.blocks.iter());
+        }
+
         // 2. Compile each block
-        for tir_block in &tir_func.blocks {
+        for tir_block in ordered_blocks {
             let cl_block = *block_map.get(&tir_block.id).unwrap();
             builder.switch_to_block(cl_block);
+
+            if tir_block.id == tir_func.entry_block {
+                let zero = builder.ins().iconst(types::I64, 0);
+                for (_, var) in &var_map {
+                    builder.def_var(*var, zero);
+                }
+
+                let entry_params = builder.block_params(cl_block).to_vec();
+                for (i, p) in tir_func.params.iter().enumerate() {
+                    if i < entry_params.len() {
+                        if let Some(var) = var_map.get(&Var::Named(p.name.clone())) {
+                            let p_val = Self::coerce_to_type(&mut builder, entry_params[i], types::I64);
+                            builder.def_var(*var, p_val);
+                        }
+                    }
+                }
+            }
 
             for inst in &tir_block.instructions {
                 match inst {
@@ -77,18 +135,18 @@ impl FunctionCompiler {
                             ty,
                             &mut builder,
                             module,
-                            &val_map,
+                            &var_map,
                             runtime,
                             func_ids,
                             ptr_type,
                             tir_module,
                         )?;
                         if let Some(v) = res_val {
-                            val_map.insert(dest.clone(), v);
+                            define_dest(&mut builder, &var_map, dest, v);
                         }
                     }
                     Instruction::AssertRefinement { operand, interval, .. } => {
-                        let val = Self::lower_operand(operand, &mut builder, module, &val_map, func_ids, ptr_type)?;
+                        let val = Self::lower_operand(operand, &mut builder, module, &var_map, func_ids, ptr_type)?;
                         let val_i64 = Self::coerce_to_type(&mut builder, val, types::I64);
                         
                         let min_v = builder.ins().iconst(types::I64, interval.min);
@@ -122,7 +180,7 @@ impl FunctionCompiler {
 
                         if effect == "IO" && op == "print" {
                             if let Some(first_arg) = args.first() {
-                                Self::emit_print_call(first_arg, &mut builder, module, &val_map, runtime, ptr_type, true)?;
+                                Self::emit_print_call(first_arg, &mut builder, module, &var_map, runtime, ptr_type, true)?;
                             }
                         } else if (effect == "Db" && op == "query") || (effect == "PostgresPool" && op == "execute") {
                             // Allocate Record struct: { name: "PlayerOne", hp: 80, id: 42 }
@@ -135,7 +193,7 @@ impl FunctionCompiler {
                             let name_str = Self::create_string_constant("PlayerOne", &mut builder, module, ptr_type)?;
                             let hp_v = builder.ins().iconst(types::I64, 80);
                             let id_v = if let Some(arg) = args.get(1).or_else(|| args.first()) {
-                                Self::lower_operand(arg, &mut builder, module, &val_map, func_ids, ptr_type)?
+                                Self::lower_operand(arg, &mut builder, module, &var_map, func_ids, ptr_type)?
                             } else {
                                 builder.ins().iconst(types::I64, 42)
                             };
@@ -146,20 +204,20 @@ impl FunctionCompiler {
                             builder.ins().store(MemFlagsData::new(), id_v, record_ptr, 16);
 
                             if let Some(d) = dest {
-                                val_map.insert(d.clone(), record_ptr);
+                                define_dest(&mut builder, &var_map, d, record_ptr);
                             }
                             continue;
                         } else if effect == "Async" {
                             if op == "spawn" {
                                 let func_arg = args.first().cloned().unwrap_or(Operand::Constant(TirConstant::Int(0)));
-                                let func_v = Self::lower_operand(&func_arg, &mut builder, module, &val_map, func_ids, ptr_type)?;
+                                let func_v = Self::lower_operand(&func_arg, &mut builder, module, &var_map, func_ids, ptr_type)?;
                                 let arg1_v = if let Some(a1) = args.get(1) {
-                                    Self::lower_operand(a1, &mut builder, module, &val_map, func_ids, ptr_type)?
+                                    Self::lower_operand(a1, &mut builder, module, &var_map, func_ids, ptr_type)?
                                 } else {
                                     builder.ins().iconst(types::I64, 0)
                                 };
                                 let arg2_v = if let Some(a2) = args.get(2) {
-                                    Self::lower_operand(a2, &mut builder, module, &val_map, func_ids, ptr_type)?
+                                    Self::lower_operand(a2, &mut builder, module, &var_map, func_ids, ptr_type)?
                                 } else {
                                     builder.ins().iconst(types::I64, 0)
                                 };
@@ -171,7 +229,7 @@ impl FunctionCompiler {
                                 let call_inst = builder.ins().call(spawn_ref, &[func_v, arg1_i64, arg2_i64]);
                                 let handle_v = builder.inst_results(call_inst)[0];
                                 if let Some(d) = dest {
-                                    val_map.insert(d.clone(), handle_v);
+                                    define_dest(&mut builder, &var_map, d, handle_v);
                                 }
                                 continue;
                             } else if op == "yield_now" {
@@ -179,7 +237,7 @@ impl FunctionCompiler {
                                 builder.ins().call(yield_ref, &[]);
                             } else if op == "sleep" {
                                 let ms_v = if let Some(a) = args.first() {
-                                    Self::lower_operand(a, &mut builder, module, &val_map, func_ids, ptr_type)?
+                                    Self::lower_operand(a, &mut builder, module, &var_map, func_ids, ptr_type)?
                                 } else {
                                     builder.ins().iconst(types::I64, 0)
                                 };
@@ -193,102 +251,151 @@ impl FunctionCompiler {
                                 let call_inst = builder.ins().call(new_ref, &[]);
                                 let cid_v = builder.inst_results(call_inst)[0];
                                 if let Some(d) = dest {
-                                    val_map.insert(d.clone(), cid_v);
+                                    define_dest(&mut builder, &var_map, d, cid_v);
                                 }
                                 continue;
                             } else if op == "send" && args.len() >= 2 {
-                                let cid_v = Self::lower_operand(&args[0], &mut builder, module, &val_map, func_ids, ptr_type)?;
+                                let cid_v = Self::lower_operand(&args[0], &mut builder, module, &var_map, func_ids, ptr_type)?;
                                 let cid_i64 = Self::coerce_to_type(&mut builder, cid_v, types::I64);
-                                let val_v = Self::lower_operand(&args[1], &mut builder, module, &val_map, func_ids, ptr_type)?;
+                                let val_v = Self::lower_operand(&args[1], &mut builder, module, &var_map, func_ids, ptr_type)?;
                                 let val_i64 = Self::coerce_to_type(&mut builder, val_v, types::I64);
 
                                 let send_ref = module.declare_func_in_func(runtime.channel_send, &mut builder.func);
                                 builder.ins().call(send_ref, &[cid_i64, val_i64]);
                             } else if op == "recv" && !args.is_empty() {
-                                let cid_v = Self::lower_operand(&args[0], &mut builder, module, &val_map, func_ids, ptr_type)?;
+                                let cid_v = Self::lower_operand(&args[0], &mut builder, module, &var_map, func_ids, ptr_type)?;
                                 let cid_i64 = Self::coerce_to_type(&mut builder, cid_v, types::I64);
 
                                 let recv_ref = module.declare_func_in_func(runtime.channel_recv, &mut builder.func);
                                 let call_inst = builder.ins().call(recv_ref, &[cid_i64]);
                                 let res_v = builder.inst_results(call_inst)[0];
                                 if let Some(d) = dest {
-                                    val_map.insert(d.clone(), res_v);
+                                    define_dest(&mut builder, &var_map, d, res_v);
                                 }
                                 continue;
                             }
                         } else if effect == "Net" {
                             if op == "listen" {
                                 let port_v = if let Some(a) = args.first() {
-                                    Self::lower_operand(a, &mut builder, module, &val_map, func_ids, ptr_type)?
+                                    Self::lower_operand(a, &mut builder, module, &var_map, func_ids, ptr_type)?
                                 } else {
                                     builder.ins().iconst(types::I64, 8080)
                                 };
                                 let port_i64 = Self::coerce_to_type(&mut builder, port_v, types::I64);
-                                let base_sock = builder.ins().iconst(types::I64, 1000);
-                                let sock_v = builder.ins().iadd(base_sock, port_i64);
+                                let listen_ref = module.declare_func_in_func(runtime.net_listen, &mut builder.func);
+                                let call_inst = builder.ins().call(listen_ref, &[port_i64]);
+                                let sock_v = builder.inst_results(call_inst)[0];
                                 if let Some(d) = dest {
-                                    val_map.insert(d.clone(), sock_v);
+                                    define_dest(&mut builder, &var_map, d, sock_v);
                                 }
                                 continue;
                             } else if op == "accept" {
                                 let sock_v = if let Some(a) = args.first() {
-                                    Self::lower_operand(a, &mut builder, module, &val_map, func_ids, ptr_type)?
+                                    Self::lower_operand(a, &mut builder, module, &var_map, func_ids, ptr_type)?
                                 } else {
-                                    builder.ins().iconst(types::I64, 1)
+                                    builder.ins().iconst(types::I64, 0)
                                 };
                                 let sock_i64 = Self::coerce_to_type(&mut builder, sock_v, types::I64);
-                                let ten = builder.ins().iconst(types::I64, 10);
-                                let one = builder.ins().iconst(types::I64, 1);
-                                let mul = builder.ins().imul(sock_i64, ten);
-                                let conn_v = builder.ins().iadd(mul, one);
+                                let accept_ref = module.declare_func_in_func(runtime.net_accept, &mut builder.func);
+                                let call_inst = builder.ins().call(accept_ref, &[sock_i64]);
+                                let conn_v = builder.inst_results(call_inst)[0];
                                 if let Some(d) = dest {
-                                    val_map.insert(d.clone(), conn_v);
+                                    define_dest(&mut builder, &var_map, d, conn_v);
                                 }
                                 continue;
                             } else if op == "connect" {
-                                let port_v = if let Some(a) = args.get(1).or_else(|| args.first()) {
-                                    Self::lower_operand(a, &mut builder, module, &val_map, func_ids, ptr_type)?
+                                let host_v = if let Some(a) = args.first() {
+                                    Self::lower_operand(a, &mut builder, module, &var_map, func_ids, ptr_type)?
+                                } else {
+                                    builder.ins().iconst(ptr_type, 0)
+                                };
+                                let port_v = if let Some(a) = args.get(1) {
+                                    Self::lower_operand(a, &mut builder, module, &var_map, func_ids, ptr_type)?
                                 } else {
                                     builder.ins().iconst(types::I64, 8080)
                                 };
+                                let host_ptr = Self::coerce_to_type(&mut builder, host_v, ptr_type);
+                                let host_len = builder.ins().iconst(ptr_type, 4096);
                                 let port_i64 = Self::coerce_to_type(&mut builder, port_v, types::I64);
-                                let base_conn = builder.ins().iconst(types::I64, 2000);
-                                let conn_v = builder.ins().iadd(base_conn, port_i64);
+                                let connect_ref = module.declare_func_in_func(runtime.net_connect, &mut builder.func);
+                                let call_inst = builder.ins().call(connect_ref, &[host_ptr, host_len, port_i64]);
+                                let conn_v = builder.inst_results(call_inst)[0];
                                 if let Some(d) = dest {
-                                    val_map.insert(d.clone(), conn_v);
+                                    define_dest(&mut builder, &var_map, d, conn_v);
                                 }
                                 continue;
                             } else if op == "read" {
-                                let resp_str = Self::create_string_constant("HTTP/1.1 200 OK\r\nContent-Length: 14\r\n\r\nHello Tungsten", &mut builder, module, ptr_type)?;
+                                let conn_v = if let Some(a) = args.first() {
+                                    Self::lower_operand(a, &mut builder, module, &var_map, func_ids, ptr_type)?
+                                } else {
+                                    builder.ins().iconst(types::I64, 0)
+                                };
+                                let conn_i64 = Self::coerce_to_type(&mut builder, conn_v, types::I64);
+                                let max_len = if let Some(a) = args.get(1) {
+                                    Self::lower_operand(a, &mut builder, module, &var_map, func_ids, ptr_type)?
+                                } else {
+                                    builder.ins().iconst(ptr_type, 4096)
+                                };
+                                let max_len_ptr = Self::coerce_to_type(&mut builder, max_len, ptr_type);
+                                let read_ref = module.declare_func_in_func(runtime.net_read, &mut builder.func);
+                                let call_inst = builder.ins().call(read_ref, &[conn_i64, max_len_ptr]);
+                                let str_ptr = builder.inst_results(call_inst)[0];
                                 if let Some(d) = dest {
-                                    val_map.insert(d.clone(), resp_str);
+                                    define_dest(&mut builder, &var_map, d, str_ptr);
                                 }
                                 continue;
                             } else if op == "write" {
-                                let write_len = builder.ins().iconst(types::I64, 14);
+                                let conn_v = if let Some(a) = args.first() {
+                                    Self::lower_operand(a, &mut builder, module, &var_map, func_ids, ptr_type)?
+                                } else {
+                                    builder.ins().iconst(types::I64, 0)
+                                };
+                                let data_v = if let Some(a) = args.get(1) {
+                                    Self::lower_operand(a, &mut builder, module, &var_map, func_ids, ptr_type)?
+                                } else {
+                                    builder.ins().iconst(ptr_type, 0)
+                                };
+                                let conn_i64 = Self::coerce_to_type(&mut builder, conn_v, types::I64);
+                                let data_ptr = Self::coerce_to_type(&mut builder, data_v, ptr_type);
+                                let len_ptr = builder.ins().iconst(ptr_type, 4096);
+                                let write_ref = module.declare_func_in_func(runtime.net_write, &mut builder.func);
+                                let call_inst = builder.ins().call(write_ref, &[conn_i64, data_ptr, len_ptr]);
+                                let n_written = builder.inst_results(call_inst)[0];
                                 if let Some(d) = dest {
-                                    val_map.insert(d.clone(), write_len);
+                                    define_dest(&mut builder, &var_map, d, n_written);
                                 }
                                 continue;
                             } else if op == "close" {
-                                // No-op cleanup
+                                let conn_v = if let Some(a) = args.first() {
+                                    Self::lower_operand(a, &mut builder, module, &var_map, func_ids, ptr_type)?
+                                } else {
+                                    builder.ins().iconst(types::I64, 0)
+                                };
+                                let conn_i64 = Self::coerce_to_type(&mut builder, conn_v, types::I64);
+                                let close_ref = module.declare_func_in_func(runtime.net_close, &mut builder.func);
+                                builder.ins().call(close_ref, &[conn_i64]);
+                                continue;
                             }
                         }
                         if let Some(d) = dest {
                             let dummy = builder.ins().iconst(types::I64, 0);
-
-                            val_map.insert(d.clone(), dummy);
+                            define_dest(&mut builder, &var_map, d, dummy);
                         }
                     }
                     Instruction::Call { dest, func, args, .. } => {
-                        let res = Self::compile_call(func, args, dest, &mut builder, module, &val_map, runtime, func_ids, ptr_type)?;
+                        let res = Self::compile_call(func, args, dest, &mut builder, module, &var_map, runtime, func_ids, ptr_type)?;
                         if let (Some(d), Some(v)) = (dest, res) {
-                            val_map.insert(d.clone(), v);
+                            define_dest(&mut builder, &var_map, d, v);
                         }
                     }
                     Instruction::SetField { base, field, val, .. } => {
-                        let base_ptr = val_map.get(base).copied().unwrap_or_else(|| builder.ins().iconst(ptr_type, 0));
-                        let val_to_store = Self::lower_operand(val, &mut builder, module, &val_map, func_ids, ptr_type)?;
+                        let base_val = if let Some(var) = var_map.get(base) {
+                            builder.use_var(*var)
+                        } else {
+                            builder.ins().iconst(ptr_type, 0)
+                        };
+                        let base_ptr = Self::coerce_to_type(&mut builder, base_val, ptr_type);
+                        let val_to_store = Self::lower_operand(val, &mut builder, module, &var_map, func_ids, ptr_type)?;
                         let val_to_store = Self::coerce_to_type(&mut builder, val_to_store, types::I64);
                         let offset = Self::calculate_field_offset(field, tir_module);
                         builder.ins().store(MemFlagsData::new(), val_to_store, base_ptr, offset as i32);
@@ -297,12 +404,25 @@ impl FunctionCompiler {
                         let enter_ref = module.declare_func_in_func(runtime.region_enter, &mut builder.func);
                         let call_inst = builder.ins().call(enter_ref, &[]);
                         let arena_ptr = builder.inst_results(call_inst)[0];
-                        val_map.insert(dest.clone(), arena_ptr);
+                        define_dest(&mut builder, &var_map, dest, arena_ptr);
                     }
                     Instruction::RegionExit { arena, .. } => {
-                        let arena_ptr = Self::lower_operand(arena, &mut builder, module, &val_map, func_ids, ptr_type)?;
+                        let arena_ptr = Self::lower_operand(arena, &mut builder, module, &var_map, func_ids, ptr_type)?;
                         let exit_ref = module.declare_func_in_func(runtime.region_exit, &mut builder.func);
                         builder.ins().call(exit_ref, &[arena_ptr]);
+                    }
+                    Instruction::NurseryEnter { dest, .. } => {
+                        let zero = builder.ins().iconst(types::I64, 0);
+                        define_dest(&mut builder, &var_map, dest, zero);
+                    }
+                    Instruction::NurseryExit { .. } => {}
+                    Instruction::ExternCall { func, .. } => {
+                        return Err(format!("Extern call to '{}' requires native LLVM compilation ('forge build')", func));
+                    }
+                    Instruction::Store { ptr, value, .. } => {
+                        let ptr_val = Self::lower_operand(ptr, &mut builder, module, &var_map, func_ids, ptr_type)?;
+                        let val = Self::lower_operand(value, &mut builder, module, &var_map, func_ids, ptr_type)?;
+                        builder.ins().store(MemFlagsData::new(), val, ptr_val, 0);
                     }
                 }
             }
@@ -314,7 +434,7 @@ impl FunctionCompiler {
                         if builder.func.signature.returns.is_empty() {
                             builder.ins().return_(&[]);
                         } else {
-                            let v = Self::lower_operand(op, &mut builder, module, &val_map, func_ids, ptr_type)?;
+                            let v = Self::lower_operand(op, &mut builder, module, &var_map, func_ids, ptr_type)?;
                             let ret_ty = builder.func.signature.returns[0].value_type;
                             let ret_v = Self::coerce_to_type(&mut builder, v, ret_ty);
                             builder.ins().return_(&[ret_v]);
@@ -334,10 +454,13 @@ impl FunctionCompiler {
                         builder.ins().jump(target_bb, &[]);
                     }
                     Terminator::BranchCond { cond, then_block, else_block } => {
-                        let cond_v = Self::lower_operand(cond, &mut builder, module, &val_map, func_ids, ptr_type)?;
+                        let cond_v = Self::lower_operand(cond, &mut builder, module, &var_map, func_ids, ptr_type)?;
+                        let cond_i8 = Self::coerce_to_type(&mut builder, cond_v, types::I8);
+                        let zero_i8 = builder.ins().iconst(types::I8, 0);
+                        let cond_b = builder.ins().icmp(IntCC::NotEqual, cond_i8, zero_i8);
                         let then_bb = *block_map.get(then_block).unwrap();
                         let else_bb = *block_map.get(else_block).unwrap();
-                        builder.ins().brif(cond_v, then_bb, &[], else_bb, &[]);
+                        builder.ins().brif(cond_b, then_bb, &[], else_bb, &[]);
                     }
                     Terminator::HandleEffect { body_entry, .. } => {
                         let body_bb = *block_map.get(body_entry).unwrap();
@@ -364,7 +487,7 @@ impl FunctionCompiler {
         _ty: &Type,
         builder: &mut FunctionBuilder,
         module: &mut JITModule,
-        val_map: &HashMap<Var, Value>,
+        var_map: &HashMap<Var, Variable>,
         runtime: &RuntimeFuncs,
         func_ids: &HashMap<String, FuncId>,
         ptr_type: types::Type,
@@ -372,12 +495,12 @@ impl FunctionCompiler {
     ) -> Result<Option<Value>, String> {
         match rv {
             RValue::Use(op) => {
-                let v = Self::lower_operand(op, builder, module, val_map, func_ids, ptr_type)?;
+                let v = Self::lower_operand(op, builder, module, var_map, func_ids, ptr_type)?;
                 Ok(Some(v))
             }
             RValue::BinaryOp(op, left, right) => {
-                let lv = Self::lower_operand(left, builder, module, val_map, func_ids, ptr_type)?;
-                let rv = Self::lower_operand(right, builder, module, val_map, func_ids, ptr_type)?;
+                let lv = Self::lower_operand(left, builder, module, var_map, func_ids, ptr_type)?;
+                let rv = Self::lower_operand(right, builder, module, var_map, func_ids, ptr_type)?;
                 let (lv, rv) = Self::coerce_to_same_type(builder, lv, rv);
                 let res = match op {
                     BinOp::Add => builder.ins().iadd(lv, rv),
@@ -396,9 +519,9 @@ impl FunctionCompiler {
                 Ok(Some(res))
             }
             RValue::MethodCall { target, method, args } => {
-                let target_v = Self::lower_operand(target, builder, module, val_map, func_ids, ptr_type)?;
+                let target_v = Self::lower_operand(target, builder, module, var_map, func_ids, ptr_type)?;
                 if method == "saturating_add" && args.len() == 1 {
-                    let delta_v = Self::lower_operand(&args[0], builder, module, val_map, func_ids, ptr_type)?;
+                    let delta_v = Self::lower_operand(&args[0], builder, module, var_map, func_ids, ptr_type)?;
                     let (target_v, delta_v) = Self::coerce_to_same_type(builder, target_v, delta_v);
                     let sum = builder.ins().iadd(target_v, delta_v);
                     let val_ty = builder.func.dfg.value_type(target_v);
@@ -415,7 +538,7 @@ impl FunctionCompiler {
                 let size_v = builder.ins().iconst(ptr_type, size as i64);
                 let align_v = builder.ins().iconst(ptr_type, 8);
                 let struct_ptr = if let Some(arena_op) = arena {
-                    let arena_ptr = Self::lower_operand(arena_op, builder, module, val_map, func_ids, ptr_type)?;
+                    let arena_ptr = Self::lower_operand(arena_op, builder, module, var_map, func_ids, ptr_type)?;
                     let alloc_ref = module.declare_func_in_func(runtime.region_alloc, &mut builder.func);
                     let call_inst = builder.ins().call(alloc_ref, &[arena_ptr, size_v, align_v]);
                     builder.inst_results(call_inst)[0]
@@ -426,7 +549,7 @@ impl FunctionCompiler {
                 };
 
                 for (idx, (_, f_op)) in fields.iter().enumerate() {
-                    let f_val = Self::lower_operand(f_op, builder, module, val_map, func_ids, ptr_type)?;
+                    let f_val = Self::lower_operand(f_op, builder, module, var_map, func_ids, ptr_type)?;
                     let f_val = Self::coerce_to_type(builder, f_val, types::I64);
                     let offset = (idx * 8) as i32;
                     builder.ins().store(MemFlagsData::new(), f_val, struct_ptr, offset);
@@ -435,17 +558,121 @@ impl FunctionCompiler {
                 Ok(Some(struct_ptr))
             }
             RValue::FieldAccess { target, field } => {
-                let target_v = Self::lower_operand(target, builder, module, val_map, func_ids, ptr_type)?;
+                let target_v = Self::lower_operand(target, builder, module, var_map, func_ids, ptr_type)?;
                 let offset = Self::calculate_field_offset(field, tir_module);
                 let loaded = builder.ins().load(types::I64, MemFlagsData::new(), target_v, offset as i32);
                 Ok(Some(loaded))
             }
             RValue::Cast { operand, .. } => {
-                let v = Self::lower_operand(operand, builder, module, val_map, func_ids, ptr_type)?;
+                let v = Self::lower_operand(operand, builder, module, var_map, func_ids, ptr_type)?;
                 Ok(Some(v))
             }
             RValue::Ref { operand, .. } => {
-                let v = Self::lower_operand(operand, builder, module, val_map, func_ids, ptr_type)?;
+                let v = Self::lower_operand(operand, builder, module, var_map, func_ids, ptr_type)?;
+                Ok(Some(v))
+            }
+            RValue::EnumInit { tag, payload, arena, .. } => {
+                let size = 8 + payload.len() * 8;
+                let size_v = builder.ins().iconst(ptr_type, size as i64);
+                let align_v = builder.ins().iconst(ptr_type, 8);
+                let enum_ptr = if let Some(arena_op) = arena {
+                    let arena_ptr = Self::lower_operand(arena_op, builder, module, var_map, func_ids, ptr_type)?;
+                    let alloc_ref = module.declare_func_in_func(runtime.region_alloc, &mut builder.func);
+                    let call_inst = builder.ins().call(alloc_ref, &[arena_ptr, size_v, align_v]);
+                    builder.inst_results(call_inst)[0]
+                } else {
+                    let alloc_ref = module.declare_func_in_func(runtime.alloc, &mut builder.func);
+                    let call_inst = builder.ins().call(alloc_ref, &[size_v, align_v]);
+                    builder.inst_results(call_inst)[0]
+                };
+
+                let tag_v = builder.ins().iconst(types::I64, *tag as i64);
+                builder.ins().store(MemFlagsData::new(), tag_v, enum_ptr, 0);
+
+                for (idx, p_op) in payload.iter().enumerate() {
+                    let p_val = Self::lower_operand(p_op, builder, module, var_map, func_ids, ptr_type)?;
+                    let p_val = Self::coerce_to_type(builder, p_val, types::I64);
+                    let offset = (8 + idx * 8) as i32;
+                    builder.ins().store(MemFlagsData::new(), p_val, enum_ptr, offset);
+                }
+
+                Ok(Some(enum_ptr))
+            }
+            RValue::EnumTag(target) => {
+                let target_v = Self::lower_operand(target, builder, module, var_map, func_ids, ptr_type)?;
+                let loaded = builder.ins().load(types::I64, MemFlagsData::new(), target_v, 0);
+                Ok(Some(loaded))
+            }
+            RValue::EnumPayload { target, index } => {
+                let target_v = Self::lower_operand(target, builder, module, var_map, func_ids, ptr_type)?;
+                let offset = (8 + index * 8) as i32;
+                let loaded = builder.ins().load(types::I64, MemFlagsData::new(), target_v, offset);
+                Ok(Some(loaded))
+            }
+            RValue::ArrayInit { elements, elem_stride, arena } => {
+                let stride = (*elem_stride).max(1);
+                let size = (elements.len() * stride).max(8);
+                let size_v = builder.ins().iconst(ptr_type, size as i64);
+                let align_v = builder.ins().iconst(ptr_type, 8);
+                let arr_ptr = if let Some(arena_op) = arena {
+                    let arena_ptr = Self::lower_operand(arena_op, builder, module, var_map, func_ids, ptr_type)?;
+                    let alloc_ref = module.declare_func_in_func(runtime.region_alloc, &mut builder.func);
+                    let call_inst = builder.ins().call(alloc_ref, &[arena_ptr, size_v, align_v]);
+                    builder.inst_results(call_inst)[0]
+                } else {
+                    let alloc_ref = module.declare_func_in_func(runtime.alloc, &mut builder.func);
+                    let call_inst = builder.ins().call(alloc_ref, &[size_v, align_v]);
+                    builder.inst_results(call_inst)[0]
+                };
+
+                let cl_ty = match stride {
+                    1 => types::I8,
+                    2 => types::I16,
+                    4 => types::I32,
+                    _ => types::I64,
+                };
+
+                for (idx, e_op) in elements.iter().enumerate() {
+                    let e_val = Self::lower_operand(e_op, builder, module, var_map, func_ids, ptr_type)?;
+                    let e_val = Self::coerce_to_type(builder, e_val, cl_ty);
+                    let offset = (idx * stride) as i32;
+                    builder.ins().store(MemFlagsData::new(), e_val, arr_ptr, offset);
+                }
+
+                Ok(Some(arr_ptr))
+            }
+            RValue::ArrayIndex { target, index, stride } => {
+                let target_v = Self::lower_operand(target, builder, module, var_map, func_ids, ptr_type)?;
+                let idx_v = Self::lower_operand(index, builder, module, var_map, func_ids, ptr_type)?;
+                let idx_v = Self::coerce_to_type(builder, idx_v, ptr_type);
+
+                let s = (*stride).max(1);
+                let cl_ty = match s {
+                    1 => types::I8,
+                    2 => types::I16,
+                    4 => types::I32,
+                    _ => types::I64,
+                };
+
+                let offset_v = if s == 1 {
+                    idx_v
+                } else {
+                    let s_v = builder.ins().iconst(ptr_type, s as i64);
+                    builder.ins().imul(idx_v, s_v)
+                };
+
+                let elem_ptr = builder.ins().iadd(target_v, offset_v);
+                let loaded = builder.ins().load(cl_ty, MemFlagsData::new(), elem_ptr, 0);
+                let loaded_i64 = Self::coerce_to_type(builder, loaded, types::I64);
+                Ok(Some(loaded_i64))
+            }
+            RValue::Deref(operand) => {
+                let ptr_val = Self::lower_operand(operand, builder, module, var_map, func_ids, ptr_type)?;
+                let loaded = builder.ins().load(types::I64, MemFlagsData::new(), ptr_val, 0);
+                Ok(Some(loaded))
+            }
+            RValue::AddrOf(operand) => {
+                let v = Self::lower_operand(operand, builder, module, var_map, func_ids, ptr_type)?;
                 Ok(Some(v))
             }
         }
@@ -457,7 +684,7 @@ impl FunctionCompiler {
         _dest: &Option<Var>,
         builder: &mut FunctionBuilder,
         module: &mut JITModule,
-        val_map: &HashMap<Var, Value>,
+        var_map: &HashMap<Var, Variable>,
         runtime: &RuntimeFuncs,
         func_ids: &HashMap<String, FuncId>,
         ptr_type: types::Type,
@@ -468,7 +695,7 @@ impl FunctionCompiler {
         };
 
         if func_name == "@println" {
-            Self::emit_macro_println(args, builder, module, val_map, runtime, ptr_type)?;
+            Self::emit_macro_println(args, builder, module, var_map, runtime, ptr_type)?;
             return Ok(None);
         }
 
@@ -478,7 +705,7 @@ impl FunctionCompiler {
             let func_ref = module.declare_func_in_func(*target_id, &mut builder.func);
             let mut arg_vals = Vec::new();
             for a in args {
-                arg_vals.push(Self::lower_operand(a, builder, module, val_map, func_ids, ptr_type)?);
+                arg_vals.push(Self::lower_operand(a, builder, module, var_map, func_ids, ptr_type)?);
             }
 
             let sig_ref = builder.func.dfg.ext_funcs[func_ref].signature;
@@ -499,10 +726,11 @@ impl FunctionCompiler {
                 return Ok(Some(results[0]));
             }
         } else if let Operand::Var(v, _) = func {
-            if let Some(callee_val) = val_map.get(v).copied() {
+            if let Some(var) = var_map.get(v) {
+                let callee_val = builder.use_var(*var);
                 let mut arg_vals = Vec::new();
                 for a in args {
-                    arg_vals.push(Self::lower_operand(a, builder, module, val_map, func_ids, ptr_type)?);
+                    arg_vals.push(Self::lower_operand(a, builder, module, var_map, func_ids, ptr_type)?);
                 }
 
                 let call_conv = module.target_config().default_call_conv;
@@ -530,7 +758,7 @@ impl FunctionCompiler {
         args: &[Operand],
         builder: &mut FunctionBuilder,
         module: &mut JITModule,
-        val_map: &HashMap<Var, Value>,
+        var_map: &HashMap<Var, Variable>,
         runtime: &RuntimeFuncs,
         ptr_type: types::Type,
     ) -> Result<(), String> {
@@ -566,7 +794,7 @@ impl FunctionCompiler {
                 if i < parts.len() - 1 && arg_idx < args.len() {
                     let arg_op = &args[arg_idx];
                     arg_idx += 1;
-                    Self::emit_print_call(arg_op, builder, module, val_map, runtime, ptr_type, false)?;
+                    Self::emit_print_call(arg_op, builder, module, var_map, runtime, ptr_type, false)?;
                 }
             }
 
@@ -577,7 +805,7 @@ impl FunctionCompiler {
             builder.ins().call(print_ref, &[newline_ptr, len_v]);
         } else {
             for a in args {
-                Self::emit_print_call(a, builder, module, val_map, runtime, ptr_type, false)?;
+                Self::emit_print_call(a, builder, module, var_map, runtime, ptr_type, false)?;
             }
         }
 
@@ -588,7 +816,7 @@ impl FunctionCompiler {
         operand: &Operand,
         builder: &mut FunctionBuilder,
         module: &mut JITModule,
-        val_map: &HashMap<Var, Value>,
+        var_map: &HashMap<Var, Variable>,
         runtime: &RuntimeFuncs,
         ptr_type: types::Type,
         is_io: bool,
@@ -607,7 +835,11 @@ impl FunctionCompiler {
                 builder.ins().call(print_ref, &[n_v]);
             }
             Operand::Var(v, ty) => {
-                let val = val_map.get(v).copied().unwrap_or_else(|| builder.ins().iconst(types::I64, 0));
+                let val = if let Some(var) = var_map.get(v) {
+                    builder.use_var(*var)
+                } else {
+                    builder.ins().iconst(types::I64, 0)
+                };
                 if ty == &Type::String {
                     let len_v = builder.ins().iconst(ptr_type, 4096);
                     let func_id = if is_io { runtime.io_print } else { runtime.print_str };
@@ -655,7 +887,7 @@ impl FunctionCompiler {
         operand: &Operand,
         builder: &mut FunctionBuilder,
         module: &mut JITModule,
-        val_map: &HashMap<Var, Value>,
+        var_map: &HashMap<Var, Variable>,
         func_ids: &HashMap<String, FuncId>,
         ptr_type: types::Type,
     ) -> Result<Value, String> {
@@ -669,8 +901,8 @@ impl FunctionCompiler {
                 Self::create_string_constant(s, builder, module, ptr_type)
             }
             Operand::Var(v, _) => {
-                if let Some(val) = val_map.get(v) {
-                    Ok(*val)
+                if let Some(var) = var_map.get(v) {
+                    Ok(builder.use_var(*var))
                 } else if let Var::Named(name) = v {
                     let clean = name.trim_start_matches('_');
                     if let Some(target_id) = func_ids.get(clean) {

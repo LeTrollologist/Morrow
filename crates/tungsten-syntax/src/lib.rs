@@ -108,6 +108,28 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_and_format_nursery() {
+        let code = r#"
+        fn worker(ch: i64, val: i64) yields [Channel] {
+            Channel::send(ch, val);
+        }
+
+        fn main() yields [Async, Channel] {
+            let ch = Channel::new();
+            nursery n {
+                n.spawn(worker, ch, 10);
+                n.spawn(worker, ch, 20);
+            }
+        }
+        "#;
+        let program = parse(code).expect("parse nursery code ok");
+        assert_eq!(program.items.len(), 2);
+        let formatted1 = format_source(code).expect("format nursery ok");
+        let formatted2 = format_source(&formatted1).expect("format nursery idempotent ok");
+        assert_eq!(formatted1, formatted2);
+    }
+
+    #[test]
     fn test_parse_and_format_imports() {
         let code = r#"
         import math;
@@ -136,5 +158,85 @@ mod tests {
         let formatted2 = format_source(&formatted1).expect("format imports idempotent ok");
         assert_eq!(formatted1, formatted2);
     }
+
+    #[test]
+    fn test_parse_and_format_enums_and_arrays() {
+        let code = r#"
+        pub enum Option<T> {
+            Some(T),
+            None,
+        }
+
+        pub enum Command {
+            Quit,
+            Move(i64, i64),
+        }
+
+        fn process(cmd: Command) -> i64 {
+            let res = match cmd {
+                Command::Quit => 0,
+                Command::Move(x, y) => x + y,
+                _ => 99,
+            };
+            res
+        }
+
+        fn main() {
+            let arr: [i64; 3] = [10, 20, 30];
+            let first = arr[0];
+            let opt = Option::Some(first);
+        }
+        "#;
+        let program = parse(code).expect("parse enums and arrays ok");
+        assert_eq!(program.items.len(), 4);
+        let formatted1 = format_source(code).expect("format enums and arrays ok");
+        let formatted2 = format_source(&formatted1).expect("format idempotent ok");
+        assert_eq!(formatted1, formatted2);
+    }
+
+    #[test]
+    fn test_parse_and_format_ffi_and_unsafe() {
+        let code = r#"
+        extern "C" {
+            fn puts(str: *u8) -> i32;
+            fn strlen(str: *const u8) -> i64;
+        }
+
+        #[repr(C)]
+        struct Point {
+            x: i64,
+            y: i64,
+        }
+
+        fn main() {
+            let p = Point { x: 10, y: 20 };
+            unsafe {
+                let ptr: *u8 = &p as *u8;
+                let val: u8 = *ptr;
+                puts(ptr);
+            }
+        }
+        "#;
+        let program = parse(code).expect("parse ffi code ok");
+        assert_eq!(program.items.len(), 3);
+        if let ast::Item::ExternBlock(ref eb) = program.items[0] {
+            assert_eq!(eb.abi, "C");
+            assert_eq!(eb.fns.len(), 2);
+            assert_eq!(eb.fns[0].name, "puts");
+            assert_eq!(eb.fns[1].name, "strlen");
+        } else {
+            panic!("Expected ExternBlock item");
+        }
+        if let ast::Item::Struct(ref st) = program.items[1] {
+            assert!(st.repr_c);
+            assert_eq!(st.name, "Point");
+        } else {
+            panic!("Expected Struct with repr_c");
+        }
+        let formatted1 = format_source(code).expect("format ffi ok");
+        let formatted2 = format_source(&formatted1).expect("format ffi idempotent ok");
+        assert_eq!(formatted1, formatted2);
+    }
 }
+
 

@@ -71,6 +71,24 @@ fn substitute_rvalue_operands(rv: &mut RValue, const_map: &HashMap<Var, TirConst
         }
         RValue::Ref { operand, .. } => substitute_operand(operand, const_map),
         RValue::Cast { operand, .. } => substitute_operand(operand, const_map),
+        RValue::EnumInit { payload, .. } => {
+            for op in payload {
+                substitute_operand(op, const_map);
+            }
+        }
+        RValue::EnumTag(op) => substitute_operand(op, const_map),
+        RValue::EnumPayload { target, .. } => substitute_operand(target, const_map),
+        RValue::ArrayInit { elements, .. } => {
+            for op in elements {
+                substitute_operand(op, const_map);
+            }
+        }
+        RValue::ArrayIndex { target, index, .. } => {
+            substitute_operand(target, const_map);
+            substitute_operand(index, const_map);
+        }
+        RValue::Deref(op) => substitute_operand(op, const_map),
+        RValue::AddrOf(op) => substitute_operand(op, const_map),
     }
 }
 

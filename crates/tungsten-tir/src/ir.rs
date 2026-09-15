@@ -99,6 +99,30 @@ pub enum RValue {
         operand: Operand,
         target_ty: Type,
     },
+    EnumInit {
+        enum_name: String,
+        variant: String,
+        tag: usize,
+        payload: Vec<Operand>,
+        arena: Option<Operand>,
+    },
+    EnumTag(Operand),
+    EnumPayload {
+        target: Operand,
+        index: usize,
+    },
+    ArrayInit {
+        elements: Vec<Operand>,
+        elem_stride: usize,
+        arena: Option<Operand>,
+    },
+    ArrayIndex {
+        target: Operand,
+        index: Operand,
+        stride: usize,
+    },
+    Deref(Operand),
+    AddrOf(Operand),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -130,6 +154,18 @@ pub enum Instruction {
         ty: Type,
         span: Span,
     },
+    ExternCall {
+        dest: Option<Var>,
+        func: String,
+        args: Vec<Operand>,
+        ty: Type,
+        span: Span,
+    },
+    Store {
+        ptr: Operand,
+        value: Operand,
+        span: Span,
+    },
     SetField {
         base: Var,
         field: String,
@@ -143,6 +179,15 @@ pub enum Instruction {
     },
     RegionExit {
         arena: Operand,
+        span: Span,
+    },
+    NurseryEnter {
+        dest: Var,
+        nursery_id: usize,
+        span: Span,
+    },
+    NurseryExit {
+        nursery: Operand,
         span: Span,
     },
 }
@@ -219,5 +264,7 @@ pub struct TirFunction {
 pub struct TirModule {
     pub functions: Vec<TirFunction>,
     pub structs: Vec<tungsten_syntax::ast::StructDecl>,
+    pub enums: Vec<tungsten_syntax::ast::EnumDecl>,
     pub effects: Vec<tungsten_syntax::ast::EffectDecl>,
+    pub extern_blocks: Vec<tungsten_syntax::ast::ExternBlock>,
 }

@@ -10,7 +10,7 @@ pub fn to_cranelift_type(ty: &Type, ptr_type: types::Type) -> Option<types::Type
         Type::Bool => Some(types::I8),
         Type::Refined { base, .. } => to_cranelift_type(base, ptr_type),
         Type::Relational { base, .. } => to_cranelift_type(base, ptr_type),
-        Type::String | Type::Ref { .. } | Type::Struct(_) | Type::Instantiated { .. } => {
+        Type::String | Type::Ref { .. } | Type::Ptr { .. } | Type::Struct(_) | Type::Instantiated { .. } | Type::Enum(_) | Type::Array { .. } => {
             Some(ptr_type)
         }
         Type::Fn { .. } => Some(ptr_type),

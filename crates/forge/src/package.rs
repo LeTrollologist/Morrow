@@ -169,7 +169,9 @@ pub fn compile_package_ast(
                 Item::Struct(s) => Some(s.name.clone()),
                 Item::Fn(f) => Some(f.name.clone()),
                 Item::Effect(e) => Some(e.name.clone()),
+                Item::Enum(e) => Some(e.name.clone()),
                 Item::Import(_) => None,
+                Item::ExternBlock(_) => None,
             }).collect();
 
             let mut std_items = Vec::new();
@@ -183,12 +185,16 @@ pub fn compile_package_ast(
                                 Item::Struct(s) => Some(&s.name),
                                 Item::Fn(f) => Some(&f.name),
                                 Item::Effect(e) => Some(&e.name),
+                                Item::Enum(e) => Some(&e.name),
                                 Item::Import(_) => None,
+                                Item::ExternBlock(_) => None,
                             };
                             if let Some(name) = name_opt {
                                 if !existing_names.contains(name) {
                                     std_items.push(item);
                                 }
+                            } else if matches!(item, Item::ExternBlock(_)) {
+                                std_items.push(item);
                             }
                         }
                     }
@@ -313,7 +319,18 @@ fn load_and_process_module(
                     exports.mangled_names.insert(e.name.clone(), format!("{}{}", pfx, e.name));
                 }
             }
+            Item::Enum(e) => {
+                if e.is_pub {
+                    exports.public_items.insert(e.name.clone());
+                } else {
+                    exports.private_items.insert(e.name.clone());
+                }
+                if let Some(ref pfx) = dep_mangle_prefix {
+                    exports.mangled_names.insert(e.name.clone(), format!("{}{}", pfx, e.name));
+                }
+            }
             Item::Import(_) => {}
+            Item::ExternBlock(_) => {}
         }
     }
 
@@ -559,7 +576,16 @@ fn mangle_item_decl(item: &mut Item, prefix: &str) {
                 mangle_type_expr(&mut op.return_type, prefix);
             }
         }
+        Item::Enum(e) => {
+            e.name = format!("{}{}", prefix, e.name);
+            for v in &mut e.variants {
+                for p in &mut v.payload {
+                    mangle_type_expr(p, prefix);
+                }
+            }
+        }
         Item::Import(_) => {}
+        Item::ExternBlock(_) => {}
     }
 }
 
@@ -591,11 +617,17 @@ fn mangle_type_expr(ty: &mut TypeExpr, prefix: &str) {
         TypeExpr::Ref { inner, .. } => {
             mangle_type_expr(inner, prefix);
         }
+        TypeExpr::Ptr { inner, .. } => {
+            mangle_type_expr(inner, prefix);
+        }
         TypeExpr::Fn { params, return_type, .. } => {
             for p in params {
                 mangle_type_expr(p, prefix);
             }
             mangle_type_expr(return_type, prefix);
+        }
+        TypeExpr::Array { elem, .. } => {
+            mangle_type_expr(elem, prefix);
         }
         TypeExpr::Unit(_) => {}
     }
@@ -694,6 +726,33 @@ fn mangle_expr(expr: &mut Expr, prefix: &str) {
                 }
             }
         }
+        ExprKind::Array(elements) => {
+            for e in elements {
+                mangle_expr(e, prefix);
+            }
+        }
+        ExprKind::Index { target, index } => {
+            mangle_expr(target, prefix);
+            mangle_expr(index, prefix);
+        }
+        ExprKind::Match { expr, arms } => {
+            mangle_expr(expr, prefix);
+            for arm in arms {
+                mangle_expr(&mut arm.body, prefix);
+            }
+        }
+        ExprKind::Nursery { body, .. } => {
+            mangle_block(body, prefix);
+        }
+        ExprKind::Unsafe { body } => {
+            mangle_block(body, prefix);
+        }
+        ExprKind::Deref(inner) => {
+            mangle_expr(inner, prefix);
+        }
+        ExprKind::AddrOf { expr: inner, .. } => {
+            mangle_expr(inner, prefix);
+        }
         _ => {}
     }
 }
@@ -725,7 +784,15 @@ fn rewrite_item_references(item: &mut Item, rewrites: &HashMap<String, String>) 
                 rewrite_type_expr(&mut op.return_type, rewrites)?;
             }
         }
+        Item::Enum(e) => {
+            for v in &mut e.variants {
+                for p in &mut v.payload {
+                    rewrite_type_expr(p, rewrites)?;
+                }
+            }
+        }
         Item::Import(_) => {}
+        Item::ExternBlock(_) => {}
     }
     Ok(())
 }
@@ -770,11 +837,17 @@ fn rewrite_type_expr(ty: &mut TypeExpr, rewrites: &HashMap<String, String>) -> R
         TypeExpr::Ref { inner, .. } => {
             rewrite_type_expr(inner, rewrites)?;
         }
+        TypeExpr::Ptr { inner, .. } => {
+            rewrite_type_expr(inner, rewrites)?;
+        }
         TypeExpr::Fn { params, return_type, .. } => {
             for p in params {
                 rewrite_type_expr(p, rewrites)?;
             }
             rewrite_type_expr(return_type, rewrites)?;
+        }
+        TypeExpr::Array { elem, .. } => {
+            rewrite_type_expr(elem, rewrites)?;
         }
         TypeExpr::Unit(_) => {}
     }
@@ -904,6 +977,33 @@ fn rewrite_expr(expr: &mut Expr, rewrites: &HashMap<String, String>) -> Result<(
                     rewrite_expr(&mut arm.body, rewrites)?;
                 }
             }
+        }
+        ExprKind::Array(elements) => {
+            for e in elements {
+                rewrite_expr(e, rewrites)?;
+            }
+        }
+        ExprKind::Index { target, index } => {
+            rewrite_expr(target, rewrites)?;
+            rewrite_expr(index, rewrites)?;
+        }
+        ExprKind::Match { expr, arms } => {
+            rewrite_expr(expr, rewrites)?;
+            for arm in arms {
+                rewrite_expr(&mut arm.body, rewrites)?;
+            }
+        }
+        ExprKind::Nursery { body, .. } => {
+            rewrite_block(body, rewrites)?;
+        }
+        ExprKind::Unsafe { body } => {
+            rewrite_block(body, rewrites)?;
+        }
+        ExprKind::Deref(inner) => {
+            rewrite_expr(inner, rewrites)?;
+        }
+        ExprKind::AddrOf { expr: inner, .. } => {
+            rewrite_expr(inner, rewrites)?;
         }
         _ => {}
     }

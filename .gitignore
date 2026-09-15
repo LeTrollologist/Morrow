@@ -1,4 +1,6 @@
-/target
+target/
+**/target/
+benchmarks/test.txt
 **/*.rs.bk
 *.log
 .DS_Store

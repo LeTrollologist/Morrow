@@ -24,9 +24,11 @@ pub struct TypeChecker {
     pub types: HashMap<String, Type>,
     pub structs: HashMap<String, HashMap<String, Type>>,
     pub generic_structs: HashMap<String, StructDecl>,
+    pub enums: HashMap<String, EnumDecl>,
     pub effect_decls: HashMap<String, EffectDecl>,
     pub functions: HashMap<String, FnSig>,
     pub generic_functions: HashMap<String, FnDecl>,
+    pub extern_fns: HashMap<String, FnSig>,
     pub known_effects: HashSet<String>,
     pub errors: Vec<TypeError>,
 }
@@ -37,6 +39,7 @@ pub struct FnSig {
     pub param_type_exprs: Vec<TypeExpr>,
     pub return_type: Type,
     pub yields_effects: HashSet<String>,
+    pub is_extern: bool,
 }
 
 #[derive(Clone)]
@@ -63,6 +66,7 @@ pub struct FnChecker<'a> {
     errors: Vec<TypeError>,
     region_stack: Vec<RegionId>,
     next_region_id: usize,
+    in_unsafe: bool,
 }
 
 
@@ -72,20 +76,26 @@ impl TypeChecker {
             types: HashMap::new(),
             structs: HashMap::new(),
             generic_structs: HashMap::new(),
+            enums: HashMap::new(),
             effect_decls: HashMap::new(),
             functions: HashMap::new(),
             generic_functions: HashMap::new(),
+            extern_fns: HashMap::new(),
             known_effects: HashSet::new(),
             errors: Vec::new(),
         };
 
         // Primitive types
         tc.types.insert("u8".into(), Type::U8);
+        tc.types.insert("i8".into(), Type::U8);
         tc.types.insert("u16".into(), Type::U16);
+        tc.types.insert("i16".into(), Type::U16);
         tc.types.insert("u32".into(), Type::U32);
+        tc.types.insert("i32".into(), Type::U32);
         tc.types.insert("u64".into(), Type::U64);
         tc.types.insert("i64".into(), Type::I64);
         tc.types.insert("usize".into(), Type::Usize);
+        tc.types.insert("isize".into(), Type::I64);
         tc.types.insert("bool".into(), Type::Bool);
         tc.types.insert("String".into(), Type::String);
 
@@ -102,9 +112,13 @@ impl TypeChecker {
         tc.known_effects.insert("Yield".into());
         tc.known_effects.insert("Async".into());
         tc.known_effects.insert("Channel".into());
+        tc.known_effects.insert("Nursery".into());
+        tc.known_effects.insert("Foreign".into());
+        tc.known_effects.insert("ForeignCall".into());
 
         // Concurrency types
         tc.types.insert("FiberHandle".into(), Type::Struct("FiberHandle".into()));
+        tc.types.insert("Nursery".into(), Type::Struct("Nursery".into()));
 
         // Standard prelude refinement types
         tc.types.insert(
@@ -164,6 +178,8 @@ impl TypeChecker {
                     Ok(ty.clone())
                 } else if self.structs.contains_key(name) || self.generic_structs.contains_key(name) {
                     Ok(Type::Struct(name.clone()))
+                } else if self.enums.contains_key(name) {
+                    Ok(Type::Enum(name.clone()))
                 } else {
                     Err(TypeError::new(format!("Unknown type '{}'", name), *span))
                 }
@@ -189,7 +205,7 @@ impl TypeChecker {
                 for a in args {
                     resolved_args.push(self.resolve_type_expr_with_generics(a, type_params)?);
                 }
-                if self.structs.contains_key(name) || self.generic_structs.contains_key(name) {
+                if self.structs.contains_key(name) || self.generic_structs.contains_key(name) || self.enums.contains_key(name) {
                     Ok(Type::Instantiated {
                         name: name.clone(),
                         args: resolved_args,
@@ -231,7 +247,20 @@ impl TypeChecker {
                     region: None,
                 })
             }
-
+            TypeExpr::Ptr { mutable, inner, .. } => {
+                let inner_ty = self.resolve_type_expr_with_generics(inner, type_params)?;
+                Ok(Type::Ptr {
+                    is_mut: *mutable,
+                    inner: Box::new(inner_ty),
+                })
+            }
+            TypeExpr::Array { elem, len, .. } => {
+                let elem_ty = self.resolve_type_expr_with_generics(elem, type_params)?;
+                Ok(Type::Array {
+                    elem: Box::new(elem_ty),
+                    len: *len,
+                })
+            }
             TypeExpr::Unit(_) => Ok(Type::Unit),
         }
     }
@@ -282,6 +311,14 @@ impl TypeChecker {
             }
         }
 
+        // Pass 2.5: Register Enums
+        for item in &program.items {
+            if let Item::Enum(en) = item {
+                self.enums.insert(en.name.clone(), en.clone());
+                self.types.insert(en.name.clone(), Type::Enum(en.name.clone()));
+            }
+        }
+
         // Pass 3: Register Functions
         for item in &program.items {
             if let Item::Fn(f) = item {
@@ -312,8 +349,36 @@ impl TypeChecker {
                             param_type_exprs,
                             return_type: ret_ty,
                             yields_effects: yields_set,
+                            is_extern: false,
                         },
                     );
+                }
+            }
+        }
+
+        // Pass 3.5: Register Extern Blocks
+        for item in &program.items {
+            if let Item::ExternBlock(eb) = item {
+                for f in &eb.fns {
+                    let mut params = Vec::new();
+                    let mut param_type_exprs = Vec::new();
+                    for (pname, pty) in &f.params {
+                        match self.resolve_type_expr(pty) {
+                            Ok(ty) => params.push((pname.clone(), ty, false)),
+                            Err(e) => self.errors.push(e),
+                        }
+                        param_type_exprs.push(pty.clone());
+                    }
+                    let ret_ty = self.resolve_type_expr(&f.ret).unwrap_or(Type::Unit);
+                    let sig = FnSig {
+                        params,
+                        param_type_exprs,
+                        return_type: ret_ty,
+                        yields_effects: HashSet::new(),
+                        is_extern: true,
+                    };
+                    self.extern_fns.insert(f.name.clone(), sig.clone());
+                    self.functions.insert(f.name.clone(), sig);
                 }
             }
         }
@@ -367,6 +432,7 @@ impl<'a> FnChecker<'a> {
             errors: Vec::new(),
             region_stack: vec![RegionId(1)],
             next_region_id: 2,
+            in_unsafe: false,
         }
     }
 
@@ -619,6 +685,33 @@ impl<'a> FnChecker<'a> {
                     (Type::Unit, false)
                 }
             }
+            ExprKind::Deref(inner) => {
+                if !self.in_unsafe {
+                    self.errors.push(TypeError::new(
+                        "Raw pointer or reference dereference requires an explicit 'unsafe { ... }' block",
+                        expr.span,
+                    ));
+                }
+                let (inner_ty, _) = self.check_expr(inner);
+                match inner_ty {
+                    Type::Ptr { is_mut, inner } => {
+                        if !is_mut {
+                            self.errors.push(TypeError::new("Cannot assign through immutable raw pointer (*const T)", expr.span));
+                        }
+                        (*inner, is_mut)
+                    }
+                    Type::Ref { is_mut, inner, .. } => {
+                        if !is_mut {
+                            self.errors.push(TypeError::new("Cannot assign through immutable reference (&T)", expr.span));
+                        }
+                        (*inner, is_mut)
+                    }
+                    other => {
+                        self.errors.push(TypeError::new(format!("Cannot dereference non-pointer type '{}'", other), expr.span));
+                        (Type::Unit, false)
+                    }
+                }
+            }
             _ => {
                 self.errors.push(TypeError::new("Invalid assignment target", expr.span));
                 (Type::Unit, false)
@@ -754,6 +847,10 @@ impl<'a> FnChecker<'a> {
                     }
                 }
 
+                if method == "spawn" {
+                    return (Type::Struct("FiberHandle".into()), None);
+                }
+
                 (Type::Unit, None)
             }
             ExprKind::PathCall { path, args } => {
@@ -764,6 +861,27 @@ impl<'a> FnChecker<'a> {
                 if path.len() == 2 {
                     let namespace = &path[0];
                     let op = &path[1];
+                    if let Some(en) = self.parent.enums.get(namespace) {
+                        if let Some(v) = en.variants.iter().find(|v| &v.name == op) {
+                            for (a, pty_expr) in args.iter().zip(v.payload.iter()) {
+                                let (aty, _) = self.check_expr(a);
+                                if let Ok(expected_ty) = self.parent.resolve_type_expr_with_generics(pty_expr, &en.type_params) {
+                                    if !aty.is_compatible_with(&expected_ty) {
+                                        self.errors.push(TypeError::new(
+                                            format!("Mismatched argument type for enum variant '{}::{}': expected '{}', got '{}'", namespace, op, expected_ty, aty),
+                                            a.span,
+                                        ));
+                                    }
+                                }
+                            }
+                            if !en.type_params.is_empty() {
+                                let args_tys: Vec<Type> = args.iter().map(|a| self.check_expr(a).0).collect();
+                                return (Type::Instantiated { name: namespace.clone(), args: args_tys }, None);
+                            } else {
+                                return (Type::Enum(namespace.clone()), None);
+                            }
+                        }
+                    }
                     if self.parent.known_effects.contains(namespace) {
                         self.check_effect_permission(namespace, expr.span);
 
@@ -837,14 +955,22 @@ impl<'a> FnChecker<'a> {
                             }
                         }
                         if namespace == "Channel" {
-                            if op == "new" {
+                            if op == "new" || op == "bounded" {
                                 return (Type::I64, None);
                             }
-                            if op == "send" {
+                            if op == "send" || op == "close" {
                                 return (Type::Unit, None);
                             }
                             if op == "recv" {
                                 return (Type::I64, None);
+                            }
+                        }
+                        if namespace == "Nursery" {
+                            if op == "spawn" {
+                                return (Type::Struct("FiberHandle".into()), None);
+                            }
+                            if op == "wait_all" {
+                                return (Type::Unit, None);
                             }
                         }
                         if namespace == "Net" {
@@ -857,6 +983,16 @@ impl<'a> FnChecker<'a> {
                             if op == "close" {
                                 return (Type::Unit, None);
                             }
+                        }
+                        if (namespace == "Foreign" || namespace == "ForeignCall") && (op == "call" || op == "blocking") {
+                            if let Some(first_arg) = args.first() {
+                                if let ExprKind::Ident(ref fname) = first_arg.kind {
+                                    if let Some(sig) = self.parent.functions.get(fname) {
+                                        return (sig.return_type.clone(), None);
+                                    }
+                                }
+                            }
+                            return (Type::I64, None);
                         }
                     } else {
                         let full_path = path.join("::");
@@ -940,6 +1076,13 @@ impl<'a> FnChecker<'a> {
 
                     // 2. Check regular monomorphic function
                     if let Some(sig) = self.parent.functions.get(fname).cloned() {
+                        if sig.is_extern && !self.in_unsafe {
+                            self.errors.push(TypeError::new(
+                                format!("Calling extern function '{}' is unsafe and must be enclosed in an unsafe {{ ... }} block", fname),
+                                expr.span,
+                            ));
+                        }
+
                         // Check effects yielded by callee
                         for eff in &sig.yields_effects {
                             self.check_effect_permission(eff, expr.span);
@@ -1215,6 +1358,10 @@ impl<'a> FnChecker<'a> {
                 }
                 (Type::Unit, None)
             }
+            ExprKind::Loop(b) => {
+                self.check_block(b, &Type::Unit);
+                (Type::Unit, None)
+            }
             ExprKind::Region { name: _, body } => {
                 let reg_id = RegionId(self.next_region_id);
                 self.next_region_id += 1;
@@ -1224,7 +1371,7 @@ impl<'a> FnChecker<'a> {
 
                 self.region_stack.pop();
 
-                // Linear escape analysis: ensure no reference allocated in this region escapes
+                // Linear escape analysis: ensure no reference or raw pointer allocated in this region escapes
                 if let Type::Ref { region: Some(r), .. } = &body_ty {
                     if r.0 >= reg_id.0 {
                         self.errors.push(TypeError::new(
@@ -1236,8 +1383,234 @@ impl<'a> FnChecker<'a> {
                         ));
                     }
                 }
+                if matches!(&body_ty, Type::Ptr { .. }) {
+                    self.errors.push(TypeError::new(
+                        "Pointer escape violation: raw pointer cannot escape enclosing region block".to_string(),
+                        body.span,
+                    ));
+                }
 
                 (body_ty, body_intv)
+            }
+            ExprKind::Nursery { name, body } => {
+                self.push_scope();
+                if let Some(n) = name {
+                    self.define_var(n.clone(), Type::Struct("Nursery".into()), false);
+                }
+                for stmt in &body.stmts {
+                    self.check_stmt(stmt);
+                }
+                let trailing_res = if let Some(ref trailing) = body.trailing_expr {
+                    self.check_expr(trailing)
+                } else {
+                    (Type::Unit, None)
+                };
+                self.pop_scope();
+                if matches!(&trailing_res.0, Type::Ptr { .. }) {
+                    self.errors.push(TypeError::new(
+                        "Pointer escape violation: raw pointer cannot escape enclosing nursery block".to_string(),
+                        body.span,
+                    ));
+                }
+                trailing_res
+            }
+            ExprKind::Path(path) => {
+                if path.len() == 2 {
+                    if let Some(en) = self.parent.enums.get(&path[0]) {
+                        if let Some(_) = en.variants.iter().find(|v| &v.name == &path[1]) {
+                            return (Type::Enum(path[0].clone()), None);
+                        }
+                    }
+                }
+                (Type::Unit, None)
+            }
+            ExprKind::Array(elements) => {
+                if elements.is_empty() {
+                    (Type::Array { elem: Box::new(Type::Unit), len: 0 }, None)
+                } else {
+                    let (first_ty, _) = self.check_expr(&elements[0]);
+                    for (idx, elem) in elements.iter().enumerate().skip(1) {
+                        let (elem_ty, _) = self.check_expr(elem);
+                        if !elem_ty.is_compatible_with(&first_ty) {
+                            self.errors.push(TypeError::new(
+                                format!("Mismatched element type in array literal at index {}: expected '{}', found '{}'", idx, first_ty, elem_ty),
+                                elem.span,
+                            ));
+                        }
+                    }
+                    (Type::Array { elem: Box::new(first_ty), len: elements.len() }, None)
+                }
+            }
+            ExprKind::Index { target, index } => {
+                let (target_ty, _) = self.check_expr(target);
+                let (idx_ty, idx_intv) = self.check_expr(index);
+                if !matches!(idx_ty, Type::I64 | Type::Usize | Type::U32 | Type::U16 | Type::U8) {
+                    self.errors.push(TypeError::new(
+                        format!("Array index must be integer, found '{}'", idx_ty),
+                        index.span,
+                    ));
+                }
+                let inner_target = match &target_ty {
+                    Type::Ref { inner, .. } => inner.as_ref(),
+                    _ => &target_ty,
+                };
+                if let Type::Array { elem, len } = inner_target {
+                    if let Some(intv) = idx_intv {
+                        if intv.min == intv.max && (intv.min < 0 || intv.min >= *len as i64) {
+                            self.errors.push(TypeError::new(
+                                format!("Array index out of bounds: index {} is out of bounds for array of length {}", intv.min, len),
+                                index.span,
+                            ));
+                        }
+                    }
+                    (*elem.clone(), None)
+                } else {
+                    self.errors.push(TypeError::new(
+                        format!("Cannot index into non-array type '{}'", target_ty),
+                        target.span,
+                    ));
+                    (Type::Unit, None)
+                }
+            }
+            ExprKind::Match { expr: scrutinee, arms } => {
+                let (scrut_ty, _) = self.check_expr(scrutinee);
+                let enum_decl = match &scrut_ty {
+                    Type::Enum(name) => self.parent.enums.get(name).cloned(),
+                    Type::Instantiated { name, .. } => self.parent.enums.get(name).cloned(),
+                    _ => None,
+                };
+
+                let mut matched_variants = HashSet::new();
+                let mut has_catch_all = false;
+                let mut arm_return_types = Vec::new();
+
+                for arm in arms {
+                    self.push_scope();
+                    self.check_pattern(&arm.pattern, &scrut_ty, enum_decl.as_ref(), &mut matched_variants, &mut has_catch_all, true);
+                    let (arm_ty, arm_intv) = self.check_expr(&arm.body);
+                    self.pop_scope();
+                    arm_return_types.push((arm_ty, arm_intv, arm.span));
+                }
+
+                // Exhaustiveness check
+                if let Some(en) = &enum_decl {
+                    if !has_catch_all {
+                        for v in &en.variants {
+                            if !matched_variants.contains(&v.name) {
+                                self.errors.push(TypeError::new(
+                                    format!("Non-exhaustive match on enum '{}': variant '{}' is not covered", en.name, v.name),
+                                    expr.span,
+                                ));
+                            }
+                        }
+                    }
+                }
+
+                if let Some((first_ty, first_intv, _)) = arm_return_types.first() {
+                    for (aty, _, aspan) in arm_return_types.iter().skip(1) {
+                        if !aty.is_compatible_with(first_ty) {
+                            self.errors.push(TypeError::new(
+                                format!("Match arm type mismatch: expected '{}', found '{}'", first_ty, aty),
+                                *aspan,
+                            ));
+                        }
+                    }
+                    (first_ty.clone(), *first_intv)
+                } else {
+                    (Type::Unit, None)
+                }
+            }
+            ExprKind::Unsafe { body } => {
+                let prev_unsafe = self.in_unsafe;
+                self.in_unsafe = true;
+                let res = self.check_block(body, &Type::Unit);
+                self.in_unsafe = prev_unsafe;
+                res
+            }
+            ExprKind::Deref(inner) => {
+                if !self.in_unsafe {
+                    self.errors.push(TypeError::new(
+                        "Dereferencing a raw pointer is unsafe and must be enclosed in an unsafe { ... } block",
+                        expr.span,
+                    ));
+                }
+                let (inner_ty, _) = self.check_expr(inner);
+                match inner_ty {
+                    Type::Ptr { inner, .. } => (*inner, None),
+                    Type::Ref { inner, .. } => (*inner, None),
+                    other => {
+                        self.errors.push(TypeError::new(
+                            format!("Cannot dereference non-pointer type '{}'", other),
+                            expr.span,
+                        ));
+                        (Type::Unit, None)
+                    }
+                }
+            }
+            ExprKind::AddrOf { mutable, expr: inner } => {
+                let (inner_ty, _) = self.check_expr(inner);
+                (Type::Ptr { is_mut: *mutable, inner: Box::new(inner_ty) }, None)
+            }
+        }
+    }
+
+    fn check_pattern(
+        &mut self,
+        pat: &Pattern,
+        expected_ty: &Type,
+        enum_decl: Option<&EnumDecl>,
+        matched_variants: &mut HashSet<String>,
+        has_catch_all: &mut bool,
+        is_top_level: bool,
+    ) {
+        match pat {
+            Pattern::Wildcard(_) => {
+                if is_top_level {
+                    *has_catch_all = true;
+                }
+            }
+            Pattern::Variable(name, _) => {
+                if is_top_level {
+                    *has_catch_all = true;
+                }
+                self.define_var(name.clone(), expected_ty.clone(), false);
+            }
+            Pattern::Literal(lit) => {
+                let (lit_ty, _) = self.check_expr(lit);
+                if !lit_ty.is_compatible_with(expected_ty) {
+                    self.errors.push(TypeError::new(
+                        format!("Mismatched literal in pattern: expected '{}', got '{}'", expected_ty, lit_ty),
+                        lit.span,
+                    ));
+                }
+            }
+            Pattern::Variant { enum_name: _, variant_name, subpatterns, span } => {
+                if let Some(en) = enum_decl {
+                    if let Some(v) = en.variants.iter().find(|v| &v.name == variant_name) {
+                        if is_top_level {
+                            matched_variants.insert(variant_name.clone());
+                        }
+                        if subpatterns.len() != v.payload.len() {
+                            self.errors.push(TypeError::new(
+                                format!("Variant '{}' expects {} payload values, but pattern has {}", variant_name, v.payload.len(), subpatterns.len()),
+                                *span,
+                            ));
+                        }
+                        for (sp, pty_expr) in subpatterns.iter().zip(v.payload.iter()) {
+                            let pty = self.parent.resolve_type_expr_with_generics(pty_expr, &en.type_params).unwrap_or(Type::Unit);
+                            self.check_pattern(sp, &pty, None, matched_variants, has_catch_all, false);
+                        }
+                    } else {
+                        self.errors.push(TypeError::new(
+                            format!("Enum '{}' has no variant '{}'", en.name, variant_name),
+                            *span,
+                        ));
+                    }
+                } else {
+                    if is_top_level {
+                        matched_variants.insert(variant_name.clone());
+                    }
+                }
             }
         }
     }
@@ -1296,6 +1669,26 @@ fn check_resume_linearity(expr: &Expr, in_loop: bool, errors: &mut Vec<TypeError
                 0
             };
             cond_res + std::cmp::max(then_res, else_res)
+        }
+        ExprKind::Match { expr, arms } => {
+            let expr_res = check_resume_linearity(expr, in_loop, errors);
+            let mut max_arm = 0;
+            for arm in arms {
+                let arm_res = check_resume_linearity(&arm.body, in_loop, errors);
+                max_arm = std::cmp::max(max_arm, arm_res);
+            }
+            expr_res + max_arm
+        }
+        ExprKind::Loop(b) => {
+            let loop_block_expr = Expr::new(ExprKind::Block(b.clone()), b.span);
+            let count = check_resume_linearity(&loop_block_expr, true, errors);
+            if count > 0 {
+                errors.push(TypeError::new(
+                    "Linearity violation: 'resume' cannot be invoked inside a loop (continuations are single-shot)",
+                    b.span,
+                ));
+            }
+            0
         }
         ExprKind::Binary { left, right, .. } => {
             check_resume_linearity(left, in_loop, errors) + check_resume_linearity(right, in_loop, errors)

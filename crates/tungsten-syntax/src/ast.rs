@@ -10,14 +10,33 @@ pub enum Item {
     Import(ImportDecl),
     TypeAlias(TypeAlias),
     Struct(StructDecl),
+    Enum(EnumDecl),
     Fn(FnDecl),
     Effect(EffectDecl),
+    ExternBlock(ExternBlock),
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ImportDecl {
     pub path: Vec<String>,
     pub alias: Option<String>,
+    pub span: Span,
+}
+
+/// An `extern "C" { ... }` block containing C ABI function declarations.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExternBlock {
+    pub abi: String,             // e.g. "C"
+    pub fns: Vec<ExternFnDecl>,
+    pub span: Span,
+}
+
+/// A single `fn name(params) -> ret` declaration inside an extern block.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExternFnDecl {
+    pub name: String,
+    pub params: Vec<(String, TypeExpr)>,
+    pub ret: TypeExpr,
     pub span: Span,
 }
 
@@ -33,6 +52,7 @@ pub struct TypeAlias {
 pub struct StructDecl {
     pub name: String,
     pub is_pub: bool,
+    pub repr_c: bool,            // true when decorated with #[repr(C)]
     pub type_params: Vec<String>,
     pub fields: Vec<FieldDef>,
     pub span: Span,
@@ -42,6 +62,22 @@ pub struct StructDecl {
 pub struct FieldDef {
     pub name: String,
     pub ty: TypeExpr,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EnumDecl {
+    pub name: String,
+    pub is_pub: bool,
+    pub type_params: Vec<String>,
+    pub variants: Vec<VariantDef>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct VariantDef {
+    pub name: String,
+    pub payload: Vec<TypeExpr>,
     pub span: Span,
 }
 
@@ -107,10 +143,22 @@ pub enum TypeExpr {
         inner: Box<TypeExpr>,
         span: Span,
     },
+    /// Raw C-compatible pointer: `*T` (immutable) or `*mut T` (mutable).
+    /// Only dereferenceable inside `unsafe { ... }` blocks.
+    Ptr {
+        mutable: bool,
+        inner: Box<TypeExpr>,
+        span: Span,
+    },
     Fn {
         params: Vec<TypeExpr>,
         return_type: Box<TypeExpr>,
         yields_effects: Vec<String>,
+        span: Span,
+    },
+    Array {
+        elem: Box<TypeExpr>,
+        len: usize,
         span: Span,
     },
     Unit(Span),
@@ -124,7 +172,9 @@ impl TypeExpr {
             TypeExpr::Refined { span, .. } => *span,
             TypeExpr::Relational { span, .. } => *span,
             TypeExpr::Ref { span, .. } => *span,
+            TypeExpr::Ptr { span, .. } => *span,
             TypeExpr::Fn { span, .. } => *span,
+            TypeExpr::Array { span, .. } => *span,
             TypeExpr::Unit(s) => *s,
         }
     }
@@ -239,7 +289,33 @@ pub enum ExprKind {
         name: Option<String>,
         body: Block,
     },
+    Nursery {
+        name: Option<String>,
+        body: Block,
+    },
+    Loop(Block),
     Resume(Box<Expr>),
+    Match {
+        expr: Box<Expr>,
+        arms: Vec<MatchArm>,
+    },
+    Array(Vec<Expr>),
+    Index {
+        target: Box<Expr>,
+        index: Box<Expr>,
+    },
+    Path(Vec<String>),
+    /// An `unsafe { ... }` block. Required for raw pointer dereferences and extern C calls.
+    Unsafe {
+        body: Block,
+    },
+    /// Unary dereference of a raw pointer: `*ptr`. Only valid inside `unsafe { ... }`.
+    Deref(Box<Expr>),
+    /// Take the raw address of a local variable: `&x` (immutable) or `&mut x` (mutable).
+    AddrOf {
+        mutable: bool,
+        expr: Box<Expr>,
+    },
 }
 
 
@@ -267,6 +343,37 @@ pub struct HandlerClause {
 pub struct HandlerArm {
     pub op_name: String,
     pub params: Vec<String>,
+    pub body: Expr,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Pattern {
+    Wildcard(Span),
+    Literal(Box<Expr>),
+    Variable(String, Span),
+    Variant {
+        enum_name: Option<String>,
+        variant_name: String,
+        subpatterns: Vec<Pattern>,
+        span: Span,
+    },
+}
+
+impl Pattern {
+    pub fn span(&self) -> Span {
+        match self {
+            Pattern::Wildcard(s) => *s,
+            Pattern::Literal(e) => e.span,
+            Pattern::Variable(_, s) => *s,
+            Pattern::Variant { span, .. } => *span,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MatchArm {
+    pub pattern: Pattern,
     pub body: Expr,
     pub span: Span,
 }

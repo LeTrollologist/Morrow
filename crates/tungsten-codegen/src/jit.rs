@@ -189,6 +189,58 @@ impl JitEngine {
             .declare_function("tungsten_trace_effect", Linkage::Import, &sig)
             .map_err(|e| e.to_string())?;
 
+        // net_listen: (port: I64) -> I64
+        let mut sig = module.make_signature();
+        sig.params.push(AbiParam::new(types::I64));
+        sig.returns.push(AbiParam::new(types::I64));
+        let net_listen = module
+            .declare_function("tungsten_net_listen", Linkage::Import, &sig)
+            .map_err(|e| e.to_string())?;
+
+        // net_accept: (listener: I64) -> I64
+        let mut sig = module.make_signature();
+        sig.params.push(AbiParam::new(types::I64));
+        sig.returns.push(AbiParam::new(types::I64));
+        let net_accept = module
+            .declare_function("tungsten_net_accept", Linkage::Import, &sig)
+            .map_err(|e| e.to_string())?;
+
+        // net_connect: (host: ptr, host_len: ptr, port: I64) -> I64
+        let mut sig = module.make_signature();
+        sig.params.push(AbiParam::new(ptr_type));
+        sig.params.push(AbiParam::new(ptr_type));
+        sig.params.push(AbiParam::new(types::I64));
+        sig.returns.push(AbiParam::new(types::I64));
+        let net_connect = module
+            .declare_function("tungsten_net_connect", Linkage::Import, &sig)
+            .map_err(|e| e.to_string())?;
+
+        // net_read: (conn: I64, max_len: ptr) -> ptr
+        let mut sig = module.make_signature();
+        sig.params.push(AbiParam::new(types::I64));
+        sig.params.push(AbiParam::new(ptr_type));
+        sig.returns.push(AbiParam::new(ptr_type));
+        let net_read = module
+            .declare_function("tungsten_net_read", Linkage::Import, &sig)
+            .map_err(|e| e.to_string())?;
+
+        // net_write: (conn: I64, data: ptr, len: ptr) -> I64
+        let mut sig = module.make_signature();
+        sig.params.push(AbiParam::new(types::I64));
+        sig.params.push(AbiParam::new(ptr_type));
+        sig.params.push(AbiParam::new(ptr_type));
+        sig.returns.push(AbiParam::new(types::I64));
+        let net_write = module
+            .declare_function("tungsten_net_write", Linkage::Import, &sig)
+            .map_err(|e| e.to_string())?;
+
+        // net_close: (conn: I64) -> ()
+        let mut sig = module.make_signature();
+        sig.params.push(AbiParam::new(types::I64));
+        let net_close = module
+            .declare_function("tungsten_net_close", Linkage::Import, &sig)
+            .map_err(|e| e.to_string())?;
+
         Ok(RuntimeFuncs {
             print_i64,
             println_i64,
@@ -207,6 +259,12 @@ impl JitEngine {
             region_alloc,
             region_exit,
             trace_effect,
+            net_listen,
+            net_accept,
+            net_connect,
+            net_read,
+            net_write,
+            net_close,
         })
 
     }

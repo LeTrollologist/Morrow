@@ -330,6 +330,131 @@ mod tests {
         assert_eq!(code, 101);
         assert!(stdout.contains("[Tungsten Refinement Panic]"), "Output was: {}", stdout);
     }
+
+    #[test]
+    fn test_jit_enums_and_arrays() {
+        let code = r#"
+        enum Shape {
+            Circle(i64),
+            Rectangle(i64, i64),
+            Point,
+        }
+
+        fn area(s: Shape) -> i64 {
+            match s {
+                Shape::Circle(r) => r * r * 3,
+                Shape::Rectangle(w, h) => w * h,
+                Shape::Point => 0,
+            }
+        }
+
+        fn main() {
+            let s1 = Shape::Circle(10);
+            let s2 = Shape::Rectangle(4, 5);
+            let s3 = Shape::Point;
+
+            let a1 = area(s1);
+            let a2 = area(s2);
+            let a3 = area(s3);
+
+            let arr: [i64; 3] = [a1, a2, a3];
+            let sum = arr[0] + arr[1] + arr[2];
+
+            println!("Areas: {}, {}, {}. Sum: {}", arr[0], arr[1], arr[2], sum);
+        }
+        "#;
+        let ast = parse(code).unwrap();
+        let module = compile(&ast).unwrap();
+        let res = compile_and_run(&module);
+        assert!(res.is_ok());
+    }
+
+    #[test]
+    fn test_llvm_aot_enums_and_arrays() {
+        let code = r#"
+        enum Shape {
+            Circle(i64),
+            Rectangle(i64, i64),
+            Point,
+        }
+
+        fn area(s: Shape) -> i64 {
+            match s {
+                Shape::Circle(r) => r * r * 3,
+                Shape::Rectangle(w, h) => w * h,
+                Shape::Point => 0,
+            }
+        }
+
+        fn main() {
+            let s1 = Shape::Circle(10);
+            let s2 = Shape::Rectangle(4, 5);
+            let s3 = Shape::Point;
+
+            let a1 = area(s1);
+            let a2 = area(s2);
+            let a3 = area(s3);
+
+            let arr: [i64; 3] = [a1, a2, a3];
+            let sum = arr[0] + arr[1] + arr[2];
+
+            println!("Areas: {}, {}, {}. Sum: {}", arr[0], arr[1], arr[2], sum);
+        }
+        "#;
+        let ast = parse(code).unwrap();
+        let module = compile(&ast).unwrap();
+        let (code, stdout) = compile_and_run_llvm(&module).expect("LLVM AOT execution failed");
+        assert_eq!(code, 0);
+        assert!(stdout.contains("Areas: 300, 20, 0. Sum: 320"), "Output was: {}", stdout);
+    }
+
+    #[test]
+    fn test_llvm_aot_byte_array_stride() {
+        let code = r#"
+        fn main() {
+            let bytes: [u8; 4] = [65, 66, 67, 68];
+            let b0 = bytes[0];
+            let b1 = bytes[1];
+            let b2 = bytes[2];
+            let b3 = bytes[3];
+            println!("Bytes: {}, {}, {}, {}", b0, b1, b2, b3);
+        }
+        "#;
+        let ast = parse(code).unwrap();
+        let module = compile(&ast).unwrap();
+        let (code, stdout) = compile_and_run_llvm(&module).expect("LLVM AOT execution failed");
+        assert_eq!(code, 0);
+        assert!(stdout.contains("Bytes: 65, 66, 67, 68"), "Output was: {}", stdout);
+    }
+
+    #[test]
+    fn test_llvm_aot_ffi_extern_and_pointers() {
+        let code = r#"
+        extern "C" {
+            fn strlen(s: *const u8) -> usize;
+            fn puts(s: *const u8) -> i32;
+        }
+
+        fn main() {
+            let msg = "Hello from FFI!";
+            let len = unsafe { strlen(msg) };
+            unsafe { puts(msg); }
+            let mut val: i64 = 42;
+            let ptr: *mut i64 = &val;
+            unsafe {
+                *ptr = 100;
+            }
+            let read_back = unsafe { *ptr };
+            println!("Len: {}, ReadBack: {}", len, read_back);
+        }
+        "#;
+        let ast = parse(code).unwrap();
+        let module = compile(&ast).unwrap();
+        let (code, stdout) = compile_and_run_llvm(&module).expect("LLVM AOT execution failed");
+        assert_eq!(code, 0);
+        assert!(stdout.contains("Hello from FFI!"), "Output was: {}", stdout);
+        assert!(stdout.contains("Len: 15, ReadBack: 100"), "Output was: {}", stdout);
+    }
 }
 
 

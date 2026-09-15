@@ -1,0 +1,45 @@
+// ==========================================================
+// Tungsten v0.9 — FFI & The "Stable Bridge" Demo
+// ==========================================================
+
+#[repr(C)]
+struct NativePoint {
+    x: i32,
+    y: i32,
+}
+
+extern "C" {
+    fn strlen(s: *const u8) -> usize;
+    fn puts(s: *const u8) -> i32;
+}
+
+fn main() yields [Foreign] {
+    let greeting = "Hello from Tungsten v0.9 C-ABI Bridge!";
+
+    // 1. Calling extern "C" functions inside unsafe { ... }
+    let len = unsafe {
+        strlen(greeting)
+    };
+
+    unsafe {
+        puts(greeting);
+    }
+
+    // 2. Raw pointer creation, mutation, and dereference inside unsafe { ... }
+    let mut counter: i64 = 42;
+    let ptr: *mut i64 = &mut counter;
+
+    unsafe {
+        *ptr = 100;
+    }
+
+    let updated = unsafe { *ptr };
+
+    // 3. Foreign algebraic effect call for non-blocking worker offloading
+    let foreign_len = Foreign::call(strlen, greeting);
+
+    println!("Message length: {}", len);
+    println!("Updated counter via raw pointer: {}", updated);
+    println!("Foreign offloaded length: {}", foreign_len);
+    println!("FFI & Stable Bridge operational!");
+}

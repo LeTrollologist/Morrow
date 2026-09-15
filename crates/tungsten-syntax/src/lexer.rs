@@ -135,6 +135,7 @@ impl<'a> Lexer<'a> {
                     }
                 }
                 '?' => { self.advance(); TokenKind::Question }
+                '#' => { self.advance(); TokenKind::Hash }
                 '&' => {
                     self.advance();
                     if self.peek_char() == Some('&') {
@@ -245,6 +246,13 @@ impl<'a> Lexer<'a> {
                         "resume" => TokenKind::Resume,
                         "import" => TokenKind::Import,
                         "pub" => TokenKind::Pub,
+                        "enum" => TokenKind::Enum,
+                        "match" => TokenKind::Match,
+                        "loop" => TokenKind::Loop,
+                        "nursery" => TokenKind::Nursery,
+                        "unsafe" => TokenKind::Unsafe,
+                        "extern" => TokenKind::Extern,
+                        "_" => TokenKind::Underscore,
                         _ => TokenKind::Ident(ident),
                     }
 

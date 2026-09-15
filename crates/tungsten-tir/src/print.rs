@@ -85,6 +85,17 @@ pub fn print_function(func: &TirFunction) -> String {
                         writeln!(out, "    call {}({})", func, args_str).unwrap();
                     }
                 }
+                Instruction::ExternCall { dest, func, args, ty, .. } => {
+                    let args_str = args.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(", ");
+                    if let Some(d) = dest {
+                        writeln!(out, "    {} : {} = extern_call {}({})", d, ty, func, args_str).unwrap();
+                    } else {
+                        writeln!(out, "    extern_call {}({})", func, args_str).unwrap();
+                    }
+                }
+                Instruction::Store { ptr, value, .. } => {
+                    writeln!(out, "    store {} = {}", ptr, value).unwrap();
+                }
                 Instruction::SetField { base, field, val, .. } => {
                     writeln!(out, "    set_field {}.{} = {}", base, field, val).unwrap();
                 }
@@ -93,6 +104,12 @@ pub fn print_function(func: &TirFunction) -> String {
                 }
                 Instruction::RegionExit { arena, .. } => {
                     writeln!(out, "    region_exit({})", arena).unwrap();
+                }
+                Instruction::NurseryEnter { dest, nursery_id, .. } => {
+                    writeln!(out, "    {} = nursery_enter(n{})", dest, nursery_id).unwrap();
+                }
+                Instruction::NurseryExit { nursery, .. } => {
+                    writeln!(out, "    nursery_exit({})", nursery).unwrap();
                 }
             }
         }
@@ -165,5 +182,28 @@ fn print_rvalue(rv: &RValue) -> String {
         RValue::Cast { operand, target_ty } => {
             format!("cast {} as {}", operand, target_ty)
         }
+        RValue::EnumInit { enum_name, variant, tag, payload, arena } => {
+            let p_strs = payload.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(", ");
+            if let Some(a) = arena {
+                format!("{}::{}#{} in {} ({})", enum_name, variant, tag, a, p_strs)
+            } else {
+                format!("{}::{}#{} ({})", enum_name, variant, tag, p_strs)
+            }
+        }
+        RValue::EnumTag(op) => format!("enum_tag({})", op),
+        RValue::EnumPayload { target, index } => format!("enum_payload({}, {})", target, index),
+        RValue::ArrayInit { elements, elem_stride, arena } => {
+            let e_strs = elements.iter().map(|e| e.to_string()).collect::<Vec<_>>().join(", ");
+            if let Some(a) = arena {
+                format!("[{}] (stride {}) in {}", e_strs, elem_stride, a)
+            } else {
+                format!("[{}] (stride {})", e_strs, elem_stride)
+            }
+        }
+        RValue::ArrayIndex { target, index, stride } => {
+            format!("{}[{} * {}]", target, index, stride)
+        }
+        RValue::Deref(op) => format!("*{}", op),
+        RValue::AddrOf(op) => format!("&raw {}", op),
     }
 }

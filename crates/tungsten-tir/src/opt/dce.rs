@@ -103,6 +103,15 @@ fn collect_used_vars_in_inst(inst: &Instruction, used: &mut HashSet<Var>) {
                 collect_used_vars_in_operand(a, used);
             }
         }
+        Instruction::ExternCall { args, .. } => {
+            for a in args {
+                collect_used_vars_in_operand(a, used);
+            }
+        }
+        Instruction::Store { ptr, value, .. } => {
+            collect_used_vars_in_operand(ptr, used);
+            collect_used_vars_in_operand(value, used);
+        }
         Instruction::SetField { base, val, .. } => {
             used.insert(base.clone());
             collect_used_vars_in_operand(val, used);
@@ -110,6 +119,12 @@ fn collect_used_vars_in_inst(inst: &Instruction, used: &mut HashSet<Var>) {
         Instruction::RegionEnter { .. } => {}
         Instruction::RegionExit { arena, .. } => {
             collect_used_vars_in_operand(arena, used);
+        }
+        Instruction::NurseryEnter { dest, .. } => {
+            used.insert(dest.clone());
+        }
+        Instruction::NurseryExit { nursery, .. } => {
+            collect_used_vars_in_operand(nursery, used);
         }
     }
 }
@@ -138,6 +153,30 @@ fn collect_used_vars_in_rvalue(rv: &RValue, used: &mut HashSet<Var>) {
         }
         RValue::Ref { operand, .. } => collect_used_vars_in_operand(operand, used),
         RValue::Cast { operand, .. } => collect_used_vars_in_operand(operand, used),
+        RValue::EnumInit { payload, arena, .. } => {
+            if let Some(a) = arena {
+                collect_used_vars_in_operand(a, used);
+            }
+            for op in payload {
+                collect_used_vars_in_operand(op, used);
+            }
+        }
+        RValue::EnumTag(op) => collect_used_vars_in_operand(op, used),
+        RValue::EnumPayload { target, .. } => collect_used_vars_in_operand(target, used),
+        RValue::ArrayInit { elements, arena, .. } => {
+            if let Some(a) = arena {
+                collect_used_vars_in_operand(a, used);
+            }
+            for op in elements {
+                collect_used_vars_in_operand(op, used);
+            }
+        }
+        RValue::ArrayIndex { target, index, .. } => {
+            collect_used_vars_in_operand(target, used);
+            collect_used_vars_in_operand(index, used);
+        }
+        RValue::Deref(op) => collect_used_vars_in_operand(op, used),
+        RValue::AddrOf(op) => collect_used_vars_in_operand(op, used),
     }
 }
 

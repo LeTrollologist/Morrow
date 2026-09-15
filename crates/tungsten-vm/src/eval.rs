@@ -8,6 +8,8 @@ use crate::value::Value;
 
 pub struct Evaluator {
     functions: HashMap<String, FnDecl>,
+    pub enums: HashMap<String, EnumDecl>,
+    pub extern_fns: std::collections::HashSet<String>,
     scopes: Vec<HashMap<String, Arc<Mutex<Value>>>>,
     handler_stack: Vec<Vec<ActiveHandler>>,
     pub stdout_lines: Vec<String>,
@@ -16,6 +18,7 @@ pub struct Evaluator {
     fiber_handles: HashMap<u64, FiberHandle<Value>>,
     channels: Arc<Mutex<HashMap<u64, Arc<Channel<Value>>>>>,
     pub sockets: SocketRegistry,
+    pub active_nurseries: Vec<Arc<Mutex<Vec<FiberHandle<Value>>>>>,
 }
 
 #[derive(Debug)]
@@ -29,6 +32,8 @@ impl Evaluator {
     pub fn new() -> Self {
         Self {
             functions: HashMap::new(),
+            enums: HashMap::new(),
+            extern_fns: std::collections::HashSet::new(),
             scopes: vec![HashMap::new()],
             handler_stack: Vec::new(),
             stdout_lines: Vec::new(),
@@ -37,13 +42,25 @@ impl Evaluator {
             fiber_handles: HashMap::new(),
             channels: Arc::new(Mutex::new(HashMap::new())),
             sockets: SocketRegistry::new(),
+            active_nurseries: Vec::new(),
         }
     }
 
     pub fn load_program(&mut self, program: &Program) {
         for item in &program.items {
-            if let Item::Fn(f) = item {
-                self.functions.insert(f.name.clone(), f.clone());
+            match item {
+                Item::Fn(f) => {
+                    self.functions.insert(f.name.clone(), f.clone());
+                }
+                Item::Enum(e) => {
+                    self.enums.insert(e.name.clone(), e.clone());
+                }
+                Item::ExternBlock(eb) => {
+                    for f in &eb.fns {
+                        self.extern_fns.insert(f.name.clone());
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -199,6 +216,33 @@ impl Evaluator {
                     _ => Err("Complex field assignment target not supported".to_string()),
                 }
             }
+            ExprKind::Index { target, index } => {
+                let idx_val = match self.eval_expr(index) {
+                    EvalSignal::Normal(v) => match v.as_int() {
+                        Some(i) => i,
+                        None => return Err("Array index must be integer".to_string()),
+                    },
+                    EvalSignal::Error(e) => return Err(e),
+                    _ => return Err("Invalid index signal".to_string()),
+                };
+                if let ExprKind::Ident(name) = &target.kind {
+                    if let Some(cell) = self.lookup_cell(name) {
+                        let mut guard = cell.lock().unwrap();
+                        if let Value::Array(ref mut arr) = *guard {
+                            if idx_val < 0 || idx_val as usize >= arr.len() {
+                                return Err(format!("Array index out of bounds: {} (len {})", idx_val, arr.len()));
+                            }
+                            arr[idx_val as usize] = new_val;
+                            return Ok(());
+                        } else {
+                            return Err(format!("Cannot index non-array variable '{}'", name));
+                        }
+                    } else {
+                        return Err(format!("Undefined variable '{}' in index assignment", name));
+                    }
+                }
+                Err("Complex array index assignment target not supported".to_string())
+            }
             _ => Err("Invalid assignment target".to_string()),
         }
     }
@@ -214,6 +258,16 @@ impl Evaluator {
                 } else if self.functions.contains_key(name) {
                     EvalSignal::Normal(Value::Fn(name.clone()))
                 } else {
+                    for (enum_name, enum_decl) in &self.enums {
+                        if let Some((tag, _)) = enum_decl.variants.iter().enumerate().find(|(_, v)| &v.name == name && v.payload.is_empty()) {
+                            return EvalSignal::Normal(Value::Enum {
+                                name: enum_name.clone(),
+                                variant: name.clone(),
+                                tag,
+                                payload: Vec::new(),
+                            });
+                        }
+                    }
                     EvalSignal::Error(format!("Undefined variable '{}'", name))
                 }
             }
@@ -295,6 +349,44 @@ impl Evaluator {
                     // Clamps to 100 for refinement type Health
                     let result = (cur + delta).min(100);
                     EvalSignal::Normal(Value::Int(result))
+                } else if method == "spawn" && !eval_args.is_empty() {
+                    let f_val = &eval_args[0];
+                    let func_name = match f_val {
+                        Value::Fn(name) => name.clone(),
+                        _ => f_val.to_string(),
+                    };
+
+                    if let Some(target_fn) = self.functions.get(&func_name).cloned() {
+                        let mut fiber_eval = Evaluator::new();
+                        fiber_eval.functions = self.functions.clone();
+                        fiber_eval.channels = Arc::clone(&self.channels);
+                        fiber_eval.scheduler = Arc::clone(&self.scheduler);
+                        fiber_eval.sockets = self.sockets.clone();
+                        let pass_args: Vec<Value> = eval_args[1..].to_vec();
+
+                        let handle = self.scheduler.spawn(move || {
+                            match fiber_eval.eval_fn(&target_fn, pass_args) {
+                                EvalSignal::Normal(v) | EvalSignal::Return(v) => Ok(v),
+                                EvalSignal::Error(e) => Err(e),
+                            }
+                        });
+
+                        if let Some(nursery) = self.active_nurseries.last() {
+                            nursery.lock().unwrap().push(handle.clone());
+                        }
+
+                        let h_id = handle.id.0;
+                        self.fiber_handles.insert(h_id, handle);
+
+                        let mut fields = HashMap::new();
+                        fields.insert("id".to_string(), Value::Int(h_id as i64));
+                        EvalSignal::Normal(Value::Struct {
+                            name: "FiberHandle".into(),
+                            fields,
+                        })
+                    } else {
+                        EvalSignal::Error(format!("spawn: function '{}' not found", func_name))
+                    }
                 } else {
                     EvalSignal::Error(format!("Unknown method '{}'", method))
                 }
@@ -305,6 +397,27 @@ impl Evaluator {
                     match self.eval_expr(a) {
                         EvalSignal::Normal(v) => eval_args.push(v),
                         early => return early,
+                    }
+                }
+
+                if path.len() >= 2 {
+                    let enum_name = &path[path.len() - 2];
+                    let variant_name = &path[path.len() - 1];
+                    if let Some(enum_decl) = self.enums.get(enum_name).cloned() {
+                        if let Some((tag, variant_def)) = enum_decl.variants.iter().enumerate().find(|(_, v)| &v.name == variant_name) {
+                            if eval_args.len() != variant_def.payload.len() {
+                                return EvalSignal::Error(format!(
+                                    "Enum variant {}::{} expects {} arguments, got {}",
+                                    enum_name, variant_name, variant_def.payload.len(), eval_args.len()
+                                ));
+                            }
+                            return EvalSignal::Normal(Value::Enum {
+                                name: enum_name.clone(),
+                                variant: variant_name.clone(),
+                                tag,
+                                payload: eval_args,
+                            });
+                        }
                     }
                 }
 
@@ -377,6 +490,10 @@ impl Evaluator {
                                     }
                                 });
 
+                                if let Some(nursery) = self.active_nurseries.last() {
+                                    nursery.lock().unwrap().push(handle.clone());
+                                }
+
                                 let h_id = handle.id.0;
                                 self.fiber_handles.insert(h_id, handle);
 
@@ -429,6 +546,14 @@ impl Evaluator {
                             self.channels.lock().unwrap().insert(cid, ch);
                             return EvalSignal::Normal(Value::Int(cid as i64));
                         }
+                        if op == "bounded" && !eval_args.is_empty() {
+                            static CH_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+                            let cid = CH_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            let cap = eval_args[0].as_int().unwrap_or(1024).max(1) as usize;
+                            let ch = Arc::new(Channel::bounded(cap));
+                            self.channels.lock().unwrap().insert(cid, ch);
+                            return EvalSignal::Normal(Value::Int(cid as i64));
+                        }
                         if op == "send" && eval_args.len() >= 2 {
                             let cid = eval_args[0].as_int().unwrap_or(1) as u64;
                             let val = eval_args[1].clone();
@@ -450,6 +575,48 @@ impl Evaluator {
                                 }
                             } else {
                                 return EvalSignal::Error(format!("Channel {} not found", cid));
+                            }
+                        }
+                    }
+
+                    if namespace == "Nursery" {
+                        if op == "spawn" && !eval_args.is_empty() {
+                            let f_val = &eval_args[0];
+                            let func_name = match f_val {
+                                Value::Fn(name) => name.clone(),
+                                _ => f_val.to_string(),
+                            };
+
+                            if let Some(target_fn) = self.functions.get(&func_name).cloned() {
+                                let mut fiber_eval = Evaluator::new();
+                                fiber_eval.functions = self.functions.clone();
+                                fiber_eval.channels = Arc::clone(&self.channels);
+                                fiber_eval.scheduler = Arc::clone(&self.scheduler);
+                                fiber_eval.sockets = self.sockets.clone();
+                                let pass_args: Vec<Value> = eval_args[1..].to_vec();
+
+                                let handle = self.scheduler.spawn(move || {
+                                    match fiber_eval.eval_fn(&target_fn, pass_args) {
+                                        EvalSignal::Normal(v) | EvalSignal::Return(v) => Ok(v),
+                                        EvalSignal::Error(e) => Err(e),
+                                    }
+                                });
+
+                                if let Some(nursery) = self.active_nurseries.last() {
+                                    nursery.lock().unwrap().push(handle.clone());
+                                }
+
+                                let h_id = handle.id.0;
+                                self.fiber_handles.insert(h_id, handle);
+
+                                let mut fields = HashMap::new();
+                                fields.insert("id".to_string(), Value::Int(h_id as i64));
+                                return EvalSignal::Normal(Value::Struct {
+                                    name: "FiberHandle".into(),
+                                    fields,
+                                });
+                            } else {
+                                return EvalSignal::Error(format!("Nursery::spawn: function '{}' not found", func_name));
                             }
                         }
                     }
@@ -489,7 +656,7 @@ impl Evaluator {
                         if op == "write" {
                             let conn_id = eval_args.first().and_then(|v| v.as_int()).unwrap_or(0) as u64;
                             let data = eval_args.get(1).and_then(|v| v.as_str()).unwrap_or_else(|| "".to_string());
-                            return match self.sockets.write(conn_id, &data) {
+                            return match self.sockets.write(conn_id, data.as_bytes()) {
                                 Ok(n) => EvalSignal::Normal(Value::Int(n as i64)),
                                 Err(e) => EvalSignal::Error(e),
                             };
@@ -531,8 +698,26 @@ impl Evaluator {
                 }
 
                 if let ExprKind::Ident(fname) = &callee.kind {
+                    if self.extern_fns.contains(fname) {
+                        return EvalSignal::Error(format!(
+                            "Extern function '{}' cannot be run in the interpreter -- compile with 'forge build' for native FFI execution",
+                            fname
+                        ));
+                    }
                     if let Some(fdecl) = self.functions.get(fname).cloned() {
                         return self.eval_fn(&fdecl, eval_args);
+                    }
+                    for (enum_name, enum_decl) in &self.enums {
+                        if let Some((tag, variant_def)) = enum_decl.variants.iter().enumerate().find(|(_, v)| &v.name == fname) {
+                            if eval_args.len() == variant_def.payload.len() {
+                                return EvalSignal::Normal(Value::Enum {
+                                    name: enum_name.clone(),
+                                    variant: fname.clone(),
+                                    tag,
+                                    payload: eval_args,
+                                });
+                            }
+                        }
                     }
                 }
 
@@ -638,6 +823,31 @@ impl Evaluator {
             ExprKind::Region { body, .. } => {
                 self.eval_block(body)
             }
+            ExprKind::Nursery { name, body } => {
+                let nursery_handles = Arc::new(Mutex::new(Vec::new()));
+                self.active_nurseries.push(Arc::clone(&nursery_handles));
+                self.push_scope();
+                if let Some(n) = name {
+                    let mut fields = HashMap::new();
+                    fields.insert("id".to_string(), Value::Int(self.active_nurseries.len() as i64));
+                    self.define_var(n.clone(), Value::Struct {
+                        name: "Nursery".into(),
+                        fields,
+                    });
+                }
+                let res = self.eval_block(body);
+                self.pop_scope();
+                self.active_nurseries.pop();
+
+                // Structured Concurrency join point: Wait for all fibers in this nursery to complete
+                let handles = nursery_handles.lock().unwrap().clone();
+                for h in handles {
+                    if let Err(e) = h.join() {
+                        return EvalSignal::Error(format!("Nursery child fiber failed: {}", e));
+                    }
+                }
+                res
+            }
             ExprKind::If { cond, then_branch, else_branch } => {
                 let c = match self.eval_expr(cond) {
                     EvalSignal::Normal(v) => v.as_bool().unwrap_or(false),
@@ -651,8 +861,101 @@ impl Evaluator {
                     EvalSignal::Normal(Value::Unit)
                 }
             }
+            ExprKind::Loop(body) => {
+                loop {
+                    match self.eval_block(body) {
+                        EvalSignal::Normal(_) => {}
+                        EvalSignal::Return(v) => return EvalSignal::Return(v),
+                        EvalSignal::Error(e) => return EvalSignal::Error(e),
+                    }
+                }
+            }
             ExprKind::Resume(inner) => {
                 self.eval_expr(inner)
+            }
+            ExprKind::Path(path) => {
+                if path.len() >= 2 {
+                    let enum_name = &path[path.len() - 2];
+                    let variant_name = &path[path.len() - 1];
+                    if let Some(enum_decl) = self.enums.get(enum_name).cloned() {
+                        if let Some((tag, _)) = enum_decl.variants.iter().enumerate().find(|(_, v)| &v.name == variant_name && v.payload.is_empty()) {
+                            return EvalSignal::Normal(Value::Enum {
+                                name: enum_name.clone(),
+                                variant: variant_name.clone(),
+                                tag,
+                                payload: Vec::new(),
+                            });
+                        }
+                    }
+                }
+                EvalSignal::Error(format!("Unresolved path: {:?}", path))
+            }
+            ExprKind::Array(elements) => {
+                let mut vals = Vec::new();
+                for elem in elements {
+                    match self.eval_expr(elem) {
+                        EvalSignal::Normal(v) => vals.push(v),
+                        early => return early,
+                    }
+                }
+                EvalSignal::Normal(Value::Array(vals))
+            }
+            ExprKind::Index { target, index } => {
+                let target_val = match self.eval_expr(target) {
+                    EvalSignal::Normal(v) => v,
+                    early => return early,
+                };
+                let idx_val = match self.eval_expr(index) {
+                    EvalSignal::Normal(v) => match v.as_int() {
+                        Some(i) => i,
+                        None => return EvalSignal::Error("Array index must be an integer".to_string()),
+                    },
+                    early => return early,
+                };
+                let arr_val = match &target_val {
+                    Value::Array(arr) => arr.clone(),
+                    Value::Ref(r) => {
+                        let guard = r.lock().unwrap();
+                        if let Value::Array(ref arr) = *guard {
+                            arr.clone()
+                        } else {
+                            return EvalSignal::Error(format!("Cannot index non-array value {}", target_val));
+                        }
+                    }
+                    _ => return EvalSignal::Error(format!("Cannot index non-array value {}", target_val)),
+                };
+                if idx_val < 0 || (idx_val as usize) >= arr_val.len() {
+                    return EvalSignal::Error(format!("Array index out of bounds: {} with len {}", idx_val, arr_val.len()));
+                }
+                EvalSignal::Normal(arr_val[idx_val as usize].clone())
+            }
+            ExprKind::Match { expr: scrutinee_expr, arms } => {
+                let scrutinee = match self.eval_expr(scrutinee_expr) {
+                    EvalSignal::Normal(v) => v,
+                    early => return early,
+                };
+                for arm in arms {
+                    let mut bindings = Vec::new();
+                    if match_pattern(&arm.pattern, &scrutinee, &mut bindings) {
+                        self.push_scope();
+                        for (name, val) in bindings {
+                            self.define_var(name, val);
+                        }
+                        let res = self.eval_expr(&arm.body);
+                        self.pop_scope();
+                        return res;
+                    }
+                }
+                EvalSignal::Error(format!("Non-exhaustive pattern match on {}", scrutinee))
+            }
+            ExprKind::Unsafe { body } => {
+                self.eval_block(body)
+            }
+            ExprKind::Deref(_) => {
+                EvalSignal::Error("Pointer dereference is not supported in the interpreter -- compile with 'forge build' for native FFI execution".into())
+            }
+            ExprKind::AddrOf { expr, .. } => {
+                self.eval_expr(expr)
             }
         }
     }
@@ -686,3 +989,50 @@ impl Evaluator {
         }
     }
 }
+
+fn match_pattern(pattern: &Pattern, value: &Value, bindings: &mut Vec<(String, Value)>) -> bool {
+    match pattern {
+        Pattern::Wildcard(_) => true,
+        Pattern::Variable(name, _) => {
+            bindings.push((name.clone(), value.clone()));
+            true
+        }
+        Pattern::Literal(lit_expr) => {
+            let actual = match value {
+                Value::Ref(r) => r.lock().unwrap().clone(),
+                v => v.clone(),
+            };
+            match (&lit_expr.kind, &actual) {
+                (ExprKind::Int(a), Value::Int(b)) => a == b,
+                (ExprKind::Bool(a), Value::Bool(b)) => a == b,
+                (ExprKind::Str(a), Value::Str(b)) => a == b,
+                _ => false,
+            }
+        }
+        Pattern::Variant { enum_name, variant_name, subpatterns, .. } => {
+            let actual = match value {
+                Value::Ref(r) => r.lock().unwrap().clone(),
+                v => v.clone(),
+            };
+            if let Value::Enum { name, variant: v_name, payload, .. } = actual {
+                if let Some(en) = enum_name {
+                    if en != &name {
+                        return false;
+                    }
+                }
+                if variant_name != &v_name || subpatterns.len() != payload.len() {
+                    return false;
+                }
+                for (subpat, subval) in subpatterns.iter().zip(payload.iter()) {
+                    if !match_pattern(subpat, subval, bindings) {
+                        return false;
+                    }
+                }
+                true
+            } else {
+                false
+            }
+        }
+    }
+}
+

@@ -58,6 +58,10 @@ impl Formatter {
             }
             Item::Struct(st) => {
                 self.indent();
+                if st.repr_c {
+                    self.write("#[repr(C)]\n");
+                    self.indent();
+                }
                 let pub_str = if st.is_pub { "pub " } else { "" };
                 let generics = if st.type_params.is_empty() {
                     String::new()
@@ -69,6 +73,30 @@ impl Formatter {
                 for field in &st.fields {
                     self.indent();
                     self.write(&format!("{}: {},\n", field.name, self.format_type(&field.ty)));
+                }
+                self.indent_level -= 1;
+                self.indent();
+                self.write("}\n");
+            }
+            Item::ExternBlock(eb) => {
+                self.indent();
+                self.write(&format!("extern \"{}\" {{\n", eb.abi));
+                self.indent_level += 1;
+                for f in &eb.fns {
+                    self.indent();
+                    self.write(&format!("fn {}(", f.name));
+                    for (i, (pname, pty)) in f.params.iter().enumerate() {
+                        if i > 0 {
+                            self.write(", ");
+                        }
+                        self.write(&format!("{}: {}", pname, self.format_type(pty)));
+                    }
+                    self.write(")");
+                    let ret_str = self.format_type(&f.ret);
+                    if ret_str != "()" {
+                        self.write(&format!(" -> {}", ret_str));
+                    }
+                    self.write(";\n");
                 }
                 self.indent_level -= 1;
                 self.indent();
@@ -123,6 +151,29 @@ impl Formatter {
                 self.indent();
                 self.write("}\n");
             }
+            Item::Enum(en) => {
+                self.indent();
+                let pub_str = if en.is_pub { "pub " } else { "" };
+                let generics = if en.type_params.is_empty() {
+                    String::new()
+                } else {
+                    format!("<{}>", en.type_params.join(", "))
+                };
+                self.write(&format!("{}enum {}{} {{\n", pub_str, en.name, generics));
+                self.indent_level += 1;
+                for v in &en.variants {
+                    self.indent();
+                    if v.payload.is_empty() {
+                        self.write(&format!("{},\n", v.name));
+                    } else {
+                        let payload_strs: Vec<String> = v.payload.iter().map(|p| self.format_type(p)).collect();
+                        self.write(&format!("{}({}),\n", v.name, payload_strs.join(", ")));
+                    }
+                }
+                self.indent_level -= 1;
+                self.indent();
+                self.write("}\n");
+            }
         }
     }
 
@@ -147,6 +198,13 @@ impl Formatter {
                     format!("&{}", self.format_type(inner))
                 }
             }
+            TypeExpr::Ptr { mutable, inner, .. } => {
+                if *mutable {
+                    format!("*mut {}", self.format_type(inner))
+                } else {
+                    format!("*{}", self.format_type(inner))
+                }
+            }
             TypeExpr::Fn { params, return_type, yields_effects, .. } => {
                 let p_strs: Vec<String> = params.iter().map(|p| self.format_type(p)).collect();
                 let mut s = format!("fn({})", p_strs.join(", "));
@@ -155,6 +213,9 @@ impl Formatter {
                 }
                 s.push_str(&format!(" -> {}", self.format_type(return_type)));
                 s
+            }
+            TypeExpr::Array { elem, len, .. } => {
+                format!("[{}; {}]", self.format_type(elem), len)
             }
             TypeExpr::Unit(_) => "()".to_string(),
         }
@@ -373,11 +434,99 @@ impl Formatter {
                 s.push_str(&sub_fmt.output);
                 s
             }
+            ExprKind::Nursery { name, body } => {
+                let mut s = "nursery ".to_string();
+                if let Some(n) = name {
+                    s.push_str(n);
+                    s.push(' ');
+                }
+                let mut sub_fmt = Formatter {
+                    indent_level: self.indent_level,
+                    output: String::new(),
+                };
+                sub_fmt.format_block(body);
+                s.push_str(&sub_fmt.output);
+                s
+            }
+            ExprKind::Loop(body) => {
+                let mut s = "loop ".to_string();
+                let mut sub_fmt = Formatter {
+                    indent_level: self.indent_level,
+                    output: String::new(),
+                };
+                sub_fmt.format_block(body);
+                s.push_str(&sub_fmt.output);
+                s
+            }
             ExprKind::Resume(inner) => {
                 format!("resume({})", self.format_expr(inner))
             }
+            ExprKind::Match { expr, arms } => {
+                let mut s = format!("match {} {{\n", self.format_expr(expr));
+                for arm in arms {
+                    for _ in 0..(self.indent_level + 1) {
+                        s.push_str("    ");
+                    }
+                    s.push_str(&format!("{} => {},\n", self.format_pattern(&arm.pattern), self.format_expr(&arm.body)));
+                }
+                for _ in 0..self.indent_level {
+                    s.push_str("    ");
+                }
+                s.push('}');
+                s
+            }
+            ExprKind::Array(elements) => {
+                let elem_strs: Vec<String> = elements.iter().map(|e| self.format_expr(e)).collect();
+                format!("[{}]", elem_strs.join(", "))
+            }
+            ExprKind::Index { target, index } => {
+                format!("{}[{}]", self.format_expr(target), self.format_expr(index))
+            }
+            ExprKind::Path(segments) => {
+                segments.join("::")
+            }
+            ExprKind::Unsafe { body } => {
+                let mut s = "unsafe ".to_string();
+                let mut sub_fmt = Formatter {
+                    indent_level: self.indent_level,
+                    output: String::new(),
+                };
+                sub_fmt.format_block(body);
+                s.push_str(&sub_fmt.output);
+                s
+            }
+            ExprKind::Deref(inner) => {
+                format!("*{}", self.format_expr(inner))
+            }
+            ExprKind::AddrOf { mutable, expr } => {
+                if *mutable {
+                    format!("&mut {}", self.format_expr(expr))
+                } else {
+                    format!("&{}", self.format_expr(expr))
+                }
+            }
         }
+    }
 
+    fn format_pattern(&self, pat: &Pattern) -> String {
+        match pat {
+            Pattern::Wildcard(_) => "_".to_string(),
+            Pattern::Literal(e) => self.format_expr(e),
+            Pattern::Variable(name, _) => name.clone(),
+            Pattern::Variant { enum_name, variant_name, subpatterns, .. } => {
+                let base = if let Some(en) = enum_name {
+                    format!("{}::{}", en, variant_name)
+                } else {
+                    variant_name.clone()
+                };
+                if subpatterns.is_empty() {
+                    base
+                } else {
+                    let sub_strs: Vec<String> = subpatterns.iter().map(|p| self.format_pattern(p)).collect();
+                    format!("{}({})", base, sub_strs.join(", "))
+                }
+            }
+        }
     }
 }
 
