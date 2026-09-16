@@ -6,6 +6,18 @@ benchmarks/test.txt
 .DS_Store
 Thumbs.db
 
+# Build & Compilation Artifacts
+*.exe
+*.dll
+*.pdb
+*.o
+*.obj
+*.ll
+*.zip
+examples/*.exe
+examples/*.ll
+examples/*.pdb
+
 # Secrets, SSH Keys, & Credentials Hygiene
 *.pem
 *.key

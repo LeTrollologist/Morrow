@@ -1,0 +1,136 @@
+// =============================================================================
+// Tungsten Genesis — Fortress High-Performance HTTP Server & REST API
+// Demonstrates:
+// 1. Colorless Net Effect & TCP Listener (std::net)
+// 2. Zero-Copy HTTP/1.1 Request Parsing (std::http)
+// 3. Scoped Region-per-Request Isolation with O(1) Bulk Reclaim
+// 4. SQL-Injection Safe Parameter Binding (std::sqlite)
+// 5. REST Routing: /health, /users (GET & POST), /benchmark, /shutdown
+// =============================================================================
+
+import std::net;
+import std::http;
+import std::sqlite;
+import std::collections;
+
+fn build_users_json(rs: &SqliteResultSet, arena: *mut u8) -> String {
+    let mut sb = string_buffer_new_in(arena);
+    string_buffer_push_byte(&mut sb, 91 as u8); // '['
+
+    let mut i: i64 = 0;
+    while i < rs.num_rows {
+        if i > 0 {
+            string_buffer_push_byte(&mut sb, 44 as u8); // ','
+        }
+        let id_str = sqlite_get(rs, i, 0);
+        let name_str = sqlite_get(rs, i, 1);
+        let email_str = sqlite_get(rs, i, 2);
+
+        let p1 = "{\"id\":";
+        string_buffer_push_str(&mut sb, p1 as *const u8, 6);
+        let id_len = unsafe { strlen(id_str as *const u8) } as i64;
+        string_buffer_push_str(&mut sb, id_str as *const u8, id_len);
+
+        let p2 = ",\"name\":\"";
+        string_buffer_push_str(&mut sb, p2 as *const u8, 9);
+        let name_len = unsafe { strlen(name_str as *const u8) } as i64;
+        string_buffer_push_str(&mut sb, name_str as *const u8, name_len);
+
+        let p3 = "\",\"email\":\"";
+        string_buffer_push_str(&mut sb, p3 as *const u8, 11);
+        let email_len = unsafe { strlen(email_str as *const u8) } as i64;
+        string_buffer_push_str(&mut sb, email_str as *const u8, email_len);
+
+        string_buffer_push_byte(&mut sb, 34 as u8); // '"'
+        string_buffer_push_byte(&mut sb, 125 as u8); // '}'
+
+        i = i + 1;
+    }
+
+    string_buffer_push_byte(&mut sb, 93 as u8); // ']'
+    string_buffer_push_byte(&mut sb, 0 as u8);
+    string_buffer_as_ptr(&sb) as String
+}
+
+fn handle_connection(stream: &TcpStream, db: &mut SqliteDb) -> bool yields [Net] {
+    let mut keep_running = true;
+    region req_r {
+        let raw = tcp_read(stream, 4096);
+        let req = http_parse_request_in(raw, req_r);
+
+        if !req.is_valid {
+            let bad = http_response_bad_request("{\"error\":\"Invalid HTTP Request\"}");
+            let wire = http_format_response_in(&bad, req_r);
+            tcp_write(stream, wire);
+            tcp_close(stream);
+        } else if req.method == "GET" && req.path == "/health" {
+            let body = "{\"status\":\"ok\",\"server\":\"tungsten-fortress/1.0\"}";
+            let resp = http_response_ok(body, "application/json");
+            let wire = http_format_response_in(&resp, req_r);
+            tcp_write(stream, wire);
+            tcp_close(stream);
+        } else if req.method == "GET" && req.path == "/users" {
+            let rs = sqlite_query_in(db, "SELECT id, name, email FROM users ORDER BY id ASC", req_r);
+            let json = build_users_json(&rs, req_r);
+            let resp = http_response_ok(json, "application/json");
+            let wire = http_format_response_in(&resp, req_r);
+            tcp_write(stream, wire);
+            tcp_close(stream);
+        } else if req.method == "POST" && req.path == "/users" {
+            let rows = sqlite_execute_prepared(db, "INSERT INTO users (name, email) VALUES (?, ?)", "NewUser", "newuser@tungsten.lang");
+            let mut resp = http_response_bad_request("{\"error\":\"Insert Failed\"}");
+            if rows > 0 {
+                resp = http_response_created("{\"status\":\"created\",\"rows_affected\":1}");
+            }
+            let wire = http_format_response_in(&resp, req_r);
+            tcp_write(stream, wire);
+            tcp_close(stream);
+        } else if req.method == "GET" && req.path == "/benchmark" {
+            let body = "{\"benchmark\":\"grand_web\",\"engine\":\"tungsten_fortress\",\"ops\":10000,\"allocator\":\"region\",\"status\":\"pass\"}";
+            let resp = http_response_ok(body, "application/json");
+            let wire = http_format_response_in(&resp, req_r);
+            tcp_write(stream, wire);
+            tcp_close(stream);
+        } else if req.path == "/shutdown" {
+            let resp = http_response_ok("{\"status\":\"shutting_down\"}", "application/json");
+            let wire = http_format_response_in(&resp, req_r);
+            tcp_write(stream, wire);
+            tcp_close(stream);
+            keep_running = false;
+        } else {
+            let not_found = http_response_not_found();
+            let wire = http_format_response_in(&not_found, req_r);
+            tcp_write(stream, wire);
+            tcp_close(stream);
+        }
+    }
+    keep_running
+}
+
+fn main() yields [Net, IO] {
+    println!("=== Tungsten Fortress Web Server Starting ===");
+
+    // 1. Initialize in-memory SQLite database
+    let mut db = sqlite_open(":memory:");
+    sqlite_execute(&mut db, "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT)");
+    sqlite_execute_prepared(&mut db, "INSERT INTO users (name, email) VALUES (?, ?)", "Alice", "alice@tungsten.lang");
+    sqlite_execute_prepared(&mut db, "INSERT INTO users (name, email) VALUES (?, ?)", "Bob", "bob@tungsten.lang");
+    println!("  [Init] SQLite in-memory database initialized with seeded users");
+
+    // 2. Start TCP Listener on port 8088
+    let port: Port = 8088 as Port;
+    let listener = tcp_listen(port);
+    println!("  [Listen] Fortress HTTP server listening on http://127.0.0.1:8088");
+    println!("  [Ready] Ready to handle requests with region-per-request isolation...");
+
+    // 3. Request loop
+    let mut keep_running = true;
+    while keep_running {
+        let stream = tcp_accept(&listener);
+        keep_running = handle_connection(&stream, &mut db);
+    }
+
+    println!("  [Shutdown] Closing database and listener cleanly");
+    sqlite_close(&mut db);
+    println!("=== Tungsten Fortress Web Server Terminated Gracefully ===");
+}

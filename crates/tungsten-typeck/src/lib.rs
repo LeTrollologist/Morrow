@@ -700,6 +700,130 @@ mod tests {
         let errs = res.unwrap_err();
         assert!(errs.iter().any(|e| e.message.contains("Type unification error") || e.message.contains("Region") || e.message.contains("mismatch")));
     }
+
+    #[test]
+    fn test_http_request_escape_slice_return_rejection() {
+        let code = r#"
+        struct HttpRequest {
+            method: String,
+            path: String,
+            body: String,
+        }
+
+        fn parse_and_leak(raw: String) -> &HttpRequest {
+            region req_r {
+                let req = HttpRequest { method: "GET", path: "/health", body: "" };
+                &req
+            }
+        }
+        "#;
+        let ast = parse(code).unwrap();
+        let res = check(&ast);
+        assert!(res.is_err(), "Returning reference to request struct must be rejected");
+        let errs = res.unwrap_err();
+        assert!(errs.iter().any(|e| e.message.contains("Region escape violation")));
+    }
+
+    #[test]
+    fn test_http_request_escape_outer_struct_rejection() {
+        let code = r#"
+        struct HttpRequest {
+            method: String,
+            path: String,
+        }
+
+        struct GlobalCache {
+            cached_req: &HttpRequest,
+        }
+
+        fn leak_to_cache(cache: &mut GlobalCache) {
+            region req_r {
+                let req = HttpRequest { method: "GET", path: "/users" };
+                cache.cached_req = &req;
+            }
+        }
+        "#;
+        let ast = parse(code).unwrap();
+        let res = check(&ast);
+        assert!(res.is_err(), "Storing request reference into outer cache struct must be rejected");
+        let errs = res.unwrap_err();
+        assert!(errs.iter().any(|e| e.message.contains("Region escape violation")));
+    }
+
+    #[test]
+    fn test_http_request_escape_raw_pointer_cast_rejection() {
+        let code = r#"
+        struct HttpRequest {
+            method: String,
+            path: String,
+        }
+
+        fn leak_raw_ptr() -> *const u8 {
+            let leaked_ptr = region req_r {
+                let req = HttpRequest { method: "POST", path: "/users" };
+                &req as *const u8
+            };
+            leaked_ptr
+        }
+        "#;
+        let ast = parse(code).unwrap();
+        let res = check(&ast);
+        assert!(res.is_err(), "Raw pointer to request struct escaping region must be rejected");
+        let errs = res.unwrap_err();
+        assert!(errs.iter().any(|e| e.message.contains("escape violation") || e.message.contains("Pointer escape")));
+    }
+
+    #[test]
+    fn test_http_request_escape_wrapper_struct_return_rejection() {
+        let code = r#"
+        struct HttpRequest {
+            method: String,
+        }
+
+        struct ResponseWrapper {
+            req_ref: &HttpRequest,
+        }
+
+        fn leak_wrapper() -> ResponseWrapper {
+            region req_r {
+                let req = HttpRequest { method: "GET" };
+                ResponseWrapper { req_ref: &req }
+            }
+        }
+        "#;
+        let ast = parse(code).unwrap();
+        let res = check(&ast);
+        assert!(res.is_err(), "Returning struct wrapping inner reference must be rejected");
+        let errs = res.unwrap_err();
+        assert!(errs.iter().any(|e| e.message.contains("Region escape violation")));
+    }
+
+    #[test]
+    fn test_http_request_escape_enum_payload_rejection() {
+        let code = r#"
+        struct HttpRequest {
+            method: String,
+        }
+
+        enum RequestSlot {
+            Pending(&HttpRequest),
+            Empty,
+        }
+
+        fn leak_enum() -> RequestSlot {
+            region req_r {
+                let req = HttpRequest { method: "GET" };
+                RequestSlot::Pending(&req)
+            }
+        }
+        "#;
+        let ast = parse(code).unwrap();
+        let res = check(&ast);
+        assert!(res.is_err(), "Returning enum wrapping inner reference must be rejected");
+        let errs = res.unwrap_err();
+        assert!(errs.iter().any(|e| e.message.contains("Region escape violation")));
+    }
 }
+
 
 

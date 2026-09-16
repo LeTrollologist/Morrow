@@ -116,6 +116,9 @@ impl<'a> LlvmTextEmitter<'a> {
                 for inst in &block.instructions {
                     self.collect_strings_from_inst(inst);
                 }
+                if let Some(term) = &block.terminator {
+                    self.collect_strings_from_term(term);
+                }
             }
         }
 
@@ -141,6 +144,8 @@ impl<'a> LlvmTextEmitter<'a> {
         header.push_str("declare i64 @socket(i32, i32, i32)\n");
         header.push_str("declare i32 @bind(i64, ptr, i32)\n");
         header.push_str("declare i32 @listen(i64, i32)\n");
+        header.push_str("declare i32 @connect(i64, ptr, i32)\n");
+        header.push_str("declare i32 @inet_addr(ptr)\n");
         header.push_str("declare i64 @accept(i64, ptr, ptr)\n");
         header.push_str("declare i32 @recv(i64, ptr, i32, i32)\n");
         header.push_str("declare i32 @send(i64, ptr, i32, i32)\n");
@@ -164,20 +169,33 @@ impl<'a> LlvmTextEmitter<'a> {
         header.push_str("declare i32 @system(ptr)\n");
         header.push_str("declare i32 @strcmp(ptr, ptr)\n");
         header.push_str("declare ptr @memset(ptr, i32, i64)\n");
-        header.push_str("declare i32 @fflush(ptr)\n\n");
+        header.push_str("declare i32 @fflush(ptr)\n");
+        header.push_str("declare i32 @sqlite3_open(ptr, ptr)\n");
+        header.push_str("declare i32 @sqlite3_close_v2(ptr)\n");
+        header.push_str("declare i32 @sqlite3_exec(ptr, ptr, ptr, ptr, ptr)\n");
+        header.push_str("declare i32 @sqlite3_changes(ptr)\n");
+        header.push_str("declare i32 @sqlite3_prepare_v2(ptr, ptr, i32, ptr, ptr)\n");
+        header.push_str("declare i32 @sqlite3_step(ptr)\n");
+        header.push_str("declare ptr @sqlite3_column_text(ptr, i32)\n");
+        header.push_str("declare i32 @sqlite3_finalize(ptr)\n");
+        header.push_str("declare ptr @sqlite3_errmsg(ptr)\n\n");
 
         // Dynamic C declarations from extern_blocks
         let mut declared_c_fns: std::collections::HashSet<String> = [
             "printf", "putchar", "exit", "malloc", "realloc", "free", "Sleep", "fflush",
-            "WSAStartup", "socket", "bind", "listen", "accept", "recv", "send",
+            "WSAStartup", "socket", "bind", "listen", "connect", "inet_addr", "accept", "recv", "send",
             "closesocket", "setsockopt", "strlen", "CreateThread", "CloseHandle",
             "CreateSemaphoreA", "CreateMutexA", "WaitForSingleObject",
             "ReleaseSemaphore", "ReleaseMutex", "fopen", "fread", "fwrite", "fclose",
             "fseek", "ftell", "remove", "system", "strcmp", "memset",
+            "sqlite3_open", "sqlite3_close_v2", "sqlite3_exec", "sqlite3_changes",
+            "sqlite3_prepare_v2", "sqlite3_step", "sqlite3_column_text",
+            "sqlite3_finalize", "sqlite3_errmsg",
             "tungsten_alloc", "tungsten_region_alloc", "tungsten_region_grow",
             "tungsten_region_enter", "tungsten_region_exit",
             "tungsten_print_i64", "tungsten_println_i64", "tungsten_print_str",
             "tungsten_println_str", "tungsten_io_print", "tungsten_refinement_panic",
+            "tungsten_str_cmp",
             "tungsten_fiber_spawn", "tungsten_fiber_yield", "tungsten_fiber_sleep",
             "tungsten_channel_new", "tungsten_channel_send", "tungsten_channel_recv",
             "tungsten_net_listen", "tungsten_net_accept", "tungsten_net_connect",
@@ -250,6 +268,22 @@ impl<'a> LlvmTextEmitter<'a> {
         header.push_str("    call i32 @fflush(ptr null)\n");
         header.push_str("    ret void\n}\n\n");
 
+        header.push_str("define i32 @tungsten_str_cmp(ptr %a, ptr %b) {\nentry:\n");
+        header.push_str("    %eq = icmp eq ptr %a, %b\n");
+        header.push_str("    br i1 %eq, label %ret_zero, label %check_null\n");
+        header.push_str("check_null:\n");
+        header.push_str("    %a_null = icmp eq ptr %a, null\n");
+        header.push_str("    br i1 %a_null, label %ret_neg, label %check_b_null\n");
+        header.push_str("check_b_null:\n");
+        header.push_str("    %b_null = icmp eq ptr %b, null\n");
+        header.push_str("    br i1 %b_null, label %ret_pos, label %do_strcmp\n");
+        header.push_str("do_strcmp:\n");
+        header.push_str("    %res = call i32 @strcmp(ptr %a, ptr %b)\n");
+        header.push_str("    ret i32 %res\n");
+        header.push_str("ret_zero:\n    ret i32 0\n");
+        header.push_str("ret_neg:\n    ret i32 -1\n");
+        header.push_str("ret_pos:\n    ret i32 1\n}\n\n");
+
         header.push_str("define void @tungsten_refinement_panic(i64 %val, i64 %min_v, i64 %max_v) {\n");
         header.push_str("    call i32 (ptr, ...) @printf(ptr @panic_fmt, i64 %val, i64 %min_v, i64 %max_v)\n");
         header.push_str("    call void @exit(i32 101)\n");
@@ -261,27 +295,70 @@ impl<'a> LlvmTextEmitter<'a> {
         header.push_str("    %p = call ptr @malloc(i64 %alloc_sz)\n");
         header.push_str("    ret ptr %p\n}\n\n");
 
-        // Region Allocator in pure LLVM IR (Arena: { ptr buf, i64 offset, i64 capacity })
+        // Robust Chunked Region Allocator in pure LLVM IR
+        // Arena struct: { ptr cur_buf, i64 cur_offset, i64 cur_cap, ptr chunk_list } (32 bytes)
+        // Each chunk: { ptr next_chunk, i64 reserved, [data_bytes...] } (16-byte header)
         header.push_str("define ptr @tungsten_region_enter() {\n");
-        header.push_str("    %arena = call ptr @malloc(i64 24)\n");
-        header.push_str("    %buf = call ptr @malloc(i64 8192)\n");
-        header.push_str("    store ptr %buf, ptr %arena\n");
+        header.push_str("    %arena = call ptr @malloc(i64 32)\n");
+        header.push_str("    %init_cap = add i64 16777216, 0\n");
+        header.push_str("    %chunk_total = add i64 %init_cap, 16\n");
+        header.push_str("    %chunk = call ptr @malloc(i64 %chunk_total)\n");
+        header.push_str("    store ptr null, ptr %chunk\n");
+        header.push_str("    %data_buf = getelementptr inbounds i8, ptr %chunk, i64 16\n");
+        header.push_str("    store ptr %data_buf, ptr %arena\n");
         header.push_str("    %offset_ptr = getelementptr inbounds i8, ptr %arena, i64 8\n");
         header.push_str("    store i64 0, ptr %offset_ptr\n");
         header.push_str("    %cap_ptr = getelementptr inbounds i8, ptr %arena, i64 16\n");
-        header.push_str("    store i64 8192, ptr %cap_ptr\n");
+        header.push_str("    store i64 %init_cap, ptr %cap_ptr\n");
+        header.push_str("    %chunk_list_ptr = getelementptr inbounds i8, ptr %arena, i64 24\n");
+        header.push_str("    store ptr %chunk, ptr %chunk_list_ptr\n");
         header.push_str("    ret ptr %arena\n}\n\n");
 
         header.push_str("define ptr @tungsten_region_alloc(ptr %arena, i64 %size, i64 %align) {\n");
-        header.push_str("    %offset_ptr = getelementptr inbounds i8, ptr %arena, i64 8\n");
-        header.push_str("    %offset = load i64, ptr %offset_ptr\n");
-        header.push_str("    %buf_ptr = load ptr, ptr %arena\n");
-        header.push_str("    %ptr = getelementptr inbounds i8, ptr %buf_ptr, i64 %offset\n");
-        header.push_str("    %new_offset = add i64 %offset, %size\n");
-        header.push_str("    store i64 %new_offset, ptr %offset_ptr\n");
-        header.push_str("    ret ptr %ptr\n}\n\n");
+        header.push_str("entry:\n");
+        header.push_str("    %is_null = icmp eq ptr %arena, null\n");
+        header.push_str("    br i1 %is_null, label %null_arena, label %check_alloc\n");
+        header.push_str("null_arena:\n");
+        header.push_str("    %hp = call ptr @tungsten_alloc(i64 %size, i64 %align)\n");
+        header.push_str("    ret ptr %hp\n");
+        header.push_str("check_alloc:\n");
+        header.push_str("    %align_cmp = icmp slt i64 %align, 8\n");
+        header.push_str("    %eff_align = select i1 %align_cmp, i64 8, i64 %align\n");
+        header.push_str("    %mask = sub i64 %eff_align, 1\n");
+        header.push_str("    %off_ptr = getelementptr inbounds i8, ptr %arena, i64 8\n");
+        header.push_str("    %cur_off = load i64, ptr %off_ptr\n");
+        header.push_str("    %cur_buf_ptr = load ptr, ptr %arena\n");
+        header.push_str("    %add_mask = add i64 %cur_off, %mask\n");
+        header.push_str("    %not_mask = xor i64 %mask, -1\n");
+        header.push_str("    %aligned_off = and i64 %add_mask, %not_mask\n");
+        header.push_str("    %new_off = add i64 %aligned_off, %size\n");
+        header.push_str("    %cap_ptr = getelementptr inbounds i8, ptr %arena, i64 16\n");
+        header.push_str("    %cur_cap = load i64, ptr %cap_ptr\n");
+        header.push_str("    %fits = icmp sle i64 %new_off, %cur_cap\n");
+        header.push_str("    br i1 %fits, label %bump, label %new_chunk\n");
+        header.push_str("bump:\n");
+        header.push_str("    store i64 %new_off, ptr %off_ptr\n");
+        header.push_str("    %res_ptr = getelementptr inbounds i8, ptr %cur_buf_ptr, i64 %aligned_off\n");
+        header.push_str("    ret ptr %res_ptr\n");
+        header.push_str("new_chunk:\n");
+        header.push_str("    %double_cap = mul i64 %cur_cap, 2\n");
+        header.push_str("    %req_cap = add i64 %size, 1024\n");
+        header.push_str("    %is_double_bigger = icmp sgt i64 %double_cap, %req_cap\n");
+        header.push_str("    %chunk_cap = select i1 %is_double_bigger, i64 %double_cap, i64 %req_cap\n");
+        header.push_str("    %chunk_alloc_sz = add i64 %chunk_cap, 16\n");
+        header.push_str("    %fresh_chunk = call ptr @malloc(i64 %chunk_alloc_sz)\n");
+        header.push_str("    %chunk_list_ptr = getelementptr inbounds i8, ptr %arena, i64 24\n");
+        header.push_str("    %old_chunk_list = load ptr, ptr %chunk_list_ptr\n");
+        header.push_str("    store ptr %old_chunk_list, ptr %fresh_chunk\n");
+        header.push_str("    store ptr %fresh_chunk, ptr %chunk_list_ptr\n");
+        header.push_str("    %fresh_buf = getelementptr inbounds i8, ptr %fresh_chunk, i64 16\n");
+        header.push_str("    store ptr %fresh_buf, ptr %arena\n");
+        header.push_str("    store i64 %size, ptr %off_ptr\n");
+        header.push_str("    store i64 %chunk_cap, ptr %cap_ptr\n");
+        header.push_str("    ret ptr %fresh_buf\n}\n\n");
 
         header.push_str("define ptr @tungsten_region_grow(ptr %arena, ptr %ptr, i64 %old_sz, i64 %new_sz, i64 %align) {\n");
+        header.push_str("entry:\n");
         header.push_str("    %is_null = icmp eq ptr %arena, null\n");
         header.push_str("    br i1 %is_null, label %heap_realloc, label %check_in_place\n");
         header.push_str("heap_realloc:\n");
@@ -294,22 +371,24 @@ impl<'a> LlvmTextEmitter<'a> {
         header.push_str("    %r_ptr = call ptr @realloc(ptr %ptr, i64 %new_sz)\n");
         header.push_str("    ret ptr %r_ptr\n");
         header.push_str("check_in_place:\n");
-        header.push_str("    %buf = load ptr, ptr %arena\n");
-        header.push_str("    %offset_ptr = getelementptr inbounds i8, ptr %arena, i64 8\n");
-        header.push_str("    %offset = load i64, ptr %offset_ptr\n");
+        header.push_str("    %cur_buf = load ptr, ptr %arena\n");
+        header.push_str("    %off_ptr = getelementptr inbounds i8, ptr %arena, i64 8\n");
+        header.push_str("    %cur_off = load i64, ptr %off_ptr\n");
         header.push_str("    %cap_ptr = getelementptr inbounds i8, ptr %arena, i64 16\n");
-        header.push_str("    %cap = load i64, ptr %cap_ptr\n");
-        header.push_str("    %current_top = getelementptr inbounds i8, ptr %buf, i64 %offset\n");
+        header.push_str("    %cur_cap = load i64, ptr %cap_ptr\n");
+        header.push_str("    %cur_top = getelementptr inbounds i8, ptr %cur_buf, i64 %cur_off\n");
         header.push_str("    %end_of_alloc = getelementptr inbounds i8, ptr %ptr, i64 %old_sz\n");
-        header.push_str("    %is_last = icmp eq ptr %end_of_alloc, %current_top\n");
-        header.push_str("    br i1 %is_last, label %check_capacity, label %fallback_alloc\n");
+        header.push_str("    %is_last = icmp eq ptr %end_of_alloc, %cur_top\n");
+        header.push_str("    %is_ge_buf = icmp uge ptr %ptr, %cur_buf\n");
+        header.push_str("    %can_in_place = and i1 %is_last, %is_ge_buf\n");
+        header.push_str("    br i1 %can_in_place, label %check_capacity, label %fallback_alloc\n");
         header.push_str("check_capacity:\n");
         header.push_str("    %diff = sub i64 %new_sz, %old_sz\n");
-        header.push_str("    %new_offset = add i64 %offset, %diff\n");
-        header.push_str("    %has_room = icmp sle i64 %new_offset, %cap\n");
+        header.push_str("    %new_off = add i64 %cur_off, %diff\n");
+        header.push_str("    %has_room = icmp sle i64 %new_off, %cur_cap\n");
         header.push_str("    br i1 %has_room, label %grow_in_place, label %fallback_alloc\n");
         header.push_str("grow_in_place:\n");
-        header.push_str("    store i64 %new_offset, ptr %offset_ptr\n");
+        header.push_str("    store i64 %new_off, ptr %off_ptr\n");
         header.push_str("    ret ptr %ptr\n");
         header.push_str("fallback_alloc:\n");
         header.push_str("    %new_buf = call ptr @tungsten_region_alloc(ptr %arena, i64 %new_sz, i64 %align)\n");
@@ -325,14 +404,26 @@ impl<'a> LlvmTextEmitter<'a> {
         header.push_str("    ret ptr %new_buf\n}\n\n");
 
         header.push_str("define void @tungsten_region_exit(ptr %arena) {\n");
+        header.push_str("entry:\n");
         header.push_str("    %is_null = icmp eq ptr %arena, null\n");
-        header.push_str("    br i1 %is_null, label %done, label %free_blk\n");
-        header.push_str("free_blk:\n");
-        header.push_str("    %buf = load ptr, ptr %arena\n");
-        header.push_str("    call void @free(ptr %buf)\n");
+        header.push_str("    br i1 %is_null, label %done, label %init_free\n");
+        header.push_str("init_free:\n");
+        header.push_str("    %chunk_list_ptr = getelementptr inbounds i8, ptr %arena, i64 24\n");
+        header.push_str("    %first_chunk = load ptr, ptr %chunk_list_ptr\n");
+        header.push_str("    br label %loop_cond\n");
+        header.push_str("loop_cond:\n");
+        header.push_str("    %curr_chunk = phi ptr [ %first_chunk, %init_free ], [ %next_chunk, %free_chunk ]\n");
+        header.push_str("    %has_chunk = icmp ne ptr %curr_chunk, null\n");
+        header.push_str("    br i1 %has_chunk, label %free_chunk, label %free_arena\n");
+        header.push_str("free_chunk:\n");
+        header.push_str("    %next_chunk = load ptr, ptr %curr_chunk\n");
+        header.push_str("    call void @free(ptr %curr_chunk)\n");
+        header.push_str("    br label %loop_cond\n");
+        header.push_str("free_arena:\n");
         header.push_str("    call void @free(ptr %arena)\n");
         header.push_str("    br label %done\n");
-        header.push_str("done:\n    ret void\n}\n\n");
+        header.push_str("done:\n");
+        header.push_str("    ret void\n}\n\n");
 
         header.push_str("define void @tungsten_trace_effect(ptr %eff, i64 %elen, ptr %op, i64 %olen) {\n    ret void\n}\n\n");
         header.push_str("define i32 @tungsten_thread_thunk(ptr %param) {\n");
@@ -524,7 +615,29 @@ impl<'a> LlvmTextEmitter<'a> {
         header.push_str("    %conn = call i64 @accept(i64 %listener, ptr null, ptr null)\n");
         header.push_str("    ret i64 %conn\n}\n\n");
 
-        header.push_str("define i64 @tungsten_net_connect(ptr %host, i64 %port) {\n    ret i64 0\n}\n\n");
+        header.push_str("define i64 @tungsten_net_connect(ptr %host, i64 %port) {\n");
+        header.push_str("    %wsa_buf = alloca [400 x i8]\n");
+        header.push_str("    call i32 @WSAStartup(i16 514, ptr %wsa_buf)\n");
+        header.push_str("    %sock = call i64 @socket(i32 2, i32 1, i32 6)\n");
+        header.push_str("    %addr = alloca [16 x i8]\n");
+        header.push_str("    store i16 2, ptr %addr\n");
+        header.push_str("    %p_lo = and i64 %port, 255\n");
+        header.push_str("    %p_sh = shl i64 %p_lo, 8\n");
+        header.push_str("    %p_hi = lshr i64 %port, 8\n");
+        header.push_str("    %p_hi_m = and i64 %p_hi, 255\n");
+        header.push_str("    %net_port = or i64 %p_sh, %p_hi_m\n");
+        header.push_str("    %net_port16 = trunc i64 %net_port to i16\n");
+        header.push_str("    %port_ptr = getelementptr inbounds i8, ptr %addr, i64 2\n");
+        header.push_str("    store i16 %net_port16, ptr %port_ptr\n");
+        header.push_str("    %ip = call i32 @inet_addr(ptr %host)\n");
+        header.push_str("    %ip_ptr = getelementptr inbounds i8, ptr %addr, i64 4\n");
+        header.push_str("    store i32 %ip, ptr %ip_ptr\n");
+        header.push_str("    %zero_ptr = getelementptr inbounds i8, ptr %addr, i64 8\n");
+        header.push_str("    store i64 0, ptr %zero_ptr\n");
+        header.push_str("    %res = call i32 @connect(i64 %sock, ptr %addr, i32 16)\n");
+        header.push_str("    %is_neg = icmp slt i32 %res, 0\n");
+        header.push_str("    %ret = select i1 %is_neg, i64 -1, i64 %sock\n");
+        header.push_str("    ret i64 %ret\n}\n\n");
 
         header.push_str("define ptr @tungsten_net_read(i64 %conn, i64 %max_len) {\n");
         header.push_str("    %buf_sz = add i64 %max_len, 1\n");
@@ -690,6 +803,93 @@ impl<'a> LlvmTextEmitter<'a> {
         header.push_str("    %code_i64 = sext i32 %code to i64\n");
         header.push_str("    ret i64 %code_i64\n}\n\n");
 
+        header.push_str("@fmt_diag_err = internal constant [22 x i8] c\"error[%lld:%lld]: %s\\0A\\00\"\n");
+        header.push_str("@fmt_diag_warn = internal constant [24 x i8] c\"warning[%lld:%lld]: %s\\0A\\00\"\n\n");
+        header.push_str("define i1 @tungsten_diagnostics_report_error(ptr %msg, i64 %line, i64 %col) {\n");
+        header.push_str("    call i32 (ptr, ...) @printf(ptr @fmt_diag_err, i64 %line, i64 %col, ptr %msg)\n");
+        header.push_str("    call i32 @fflush(ptr null)\n");
+        header.push_str("    ret i1 1\n}\n\n");
+        header.push_str("define i1 @tungsten_diagnostics_report_warning(ptr %msg, i64 %line, i64 %col) {\n");
+        header.push_str("    call i32 (ptr, ...) @printf(ptr @fmt_diag_warn, i64 %line, i64 %col, ptr %msg)\n");
+        header.push_str("    call i32 @fflush(ptr null)\n");
+        header.push_str("    ret i1 1\n}\n\n");
+
+        let has_database_effect = self.module.functions.iter().any(|f| {
+            f.blocks.iter().any(|b| {
+                b.instructions.iter().any(|inst| {
+                    match inst {
+                        Instruction::PerformEffect { effect, .. } => effect == "Database",
+                        Instruction::Call { func, .. } => match func {
+                            Operand::Var(Var::Named(n), _) => n.contains("database"),
+                            Operand::Constant(TirConstant::Str(n)) => n.contains("database"),
+                            _ => false,
+                        },
+                        _ => false,
+                    }
+                })
+            })
+        });
+
+        if has_database_effect {
+            header.push_str("@str_memory_db = internal constant [9 x i8] c\":memory:\\00\"\n");
+            header.push_str("@tungsten_default_db = internal global ptr null\n\n");
+
+            header.push_str("define i64 @tungsten_database_execute(ptr %sql) {\n");
+            header.push_str("    %db = load ptr, ptr @tungsten_default_db\n");
+            header.push_str("    %is_null = icmp eq ptr %db, null\n");
+            header.push_str("    br i1 %is_null, label %init_db, label %exec_sql\n");
+            header.push_str("init_db:\n");
+            header.push_str("    %db_slot = alloca ptr\n");
+            header.push_str("    %open_rc = call i32 @sqlite3_open(ptr @str_memory_db, ptr %db_slot)\n");
+            header.push_str("    %new_db = load ptr, ptr %db_slot\n");
+            header.push_str("    store ptr %new_db, ptr @tungsten_default_db\n");
+            header.push_str("    br label %exec_sql\n");
+            header.push_str("exec_sql:\n");
+            header.push_str("    %cur_db = load ptr, ptr @tungsten_default_db\n");
+            header.push_str("    %rc = call i32 @sqlite3_exec(ptr %cur_db, ptr %sql, ptr null, ptr null, ptr null)\n");
+            header.push_str("    %changes = call i32 @sqlite3_changes(ptr %cur_db)\n");
+            header.push_str("    %changes_i64 = sext i32 %changes to i64\n");
+            header.push_str("    ret i64 %changes_i64\n}\n\n");
+
+            header.push_str("define ptr @tungsten_database_query(ptr %sql) {\n");
+            header.push_str("    %db = load ptr, ptr @tungsten_default_db\n");
+            header.push_str("    %is_null = icmp eq ptr %db, null\n");
+            header.push_str("    br i1 %is_null, label %init_db, label %prepare_sql\n");
+            header.push_str("init_db:\n");
+            header.push_str("    %db_slot = alloca ptr\n");
+            header.push_str("    %open_rc = call i32 @sqlite3_open(ptr @str_memory_db, ptr %db_slot)\n");
+            header.push_str("    %new_db = load ptr, ptr %db_slot\n");
+            header.push_str("    store ptr %new_db, ptr @tungsten_default_db\n");
+            header.push_str("    br label %prepare_sql\n");
+            header.push_str("prepare_sql:\n");
+            header.push_str("    %cur_db = load ptr, ptr @tungsten_default_db\n");
+            header.push_str("    %stmt_slot = alloca ptr\n");
+            header.push_str("    %prep_rc = call i32 @sqlite3_prepare_v2(ptr %cur_db, ptr %sql, i32 -1, ptr %stmt_slot, ptr null)\n");
+            header.push_str("    %prep_ok = icmp eq i32 %prep_rc, 0\n");
+            header.push_str("    br i1 %prep_ok, label %do_step, label %ret_empty\n");
+            header.push_str("do_step:\n");
+            header.push_str("    %stmt = load ptr, ptr %stmt_slot\n");
+            header.push_str("    %step_rc = call i32 @sqlite3_step(ptr %stmt)\n");
+            header.push_str("    %has_row = icmp eq i32 %step_rc, 100\n");
+            header.push_str("    br i1 %has_row, label %get_text, label %fin_empty\n");
+            header.push_str("get_text:\n");
+            header.push_str("    %col_txt = call ptr @sqlite3_column_text(ptr %stmt, i32 0)\n");
+            header.push_str("    %txt_null = icmp eq ptr %col_txt, null\n");
+            header.push_str("    br i1 %txt_null, label %fin_empty, label %copy_txt\n");
+            header.push_str("copy_txt:\n");
+            header.push_str("    %txt_len = call i64 @strlen(ptr %col_txt)\n");
+            header.push_str("    %txt_sz = add i64 %txt_len, 1\n");
+            header.push_str("    %res_buf = call ptr @malloc(i64 %txt_sz)\n");
+            header.push_str("    call void @llvm.memcpy.p0.p0.i64(ptr %res_buf, ptr %col_txt, i64 %txt_sz, i1 false)\n");
+            header.push_str("    call i32 @sqlite3_finalize(ptr %stmt)\n");
+            header.push_str("    ret ptr %res_buf\n");
+            header.push_str("fin_empty:\n");
+            header.push_str("    call i32 @sqlite3_finalize(ptr %stmt)\n");
+            header.push_str("    ret ptr @str_empty\n");
+            header.push_str("ret_empty:\n");
+            header.push_str("    ret ptr @str_empty\n}\n\n");
+        }
+
         // Emit interned string constants
         header.push_str("; User String Literals\n");
         for (i, s) in self.strings.iter().enumerate() {
@@ -788,6 +988,26 @@ impl<'a> LlvmTextEmitter<'a> {
             Instruction::Store { ptr, value, .. } => {
                 self.collect_strings_from_op(ptr);
                 self.collect_strings_from_op(value);
+            }
+            Instruction::StoreIndex { target, index, value, .. } => {
+                self.collect_strings_from_op(target);
+                self.collect_strings_from_op(index);
+                self.collect_strings_from_op(value);
+            }
+            _ => {}
+        }
+    }
+
+    fn collect_strings_from_term(&mut self, term: &Terminator) {
+        match term {
+            Terminator::Return(Some(op)) => {
+                self.collect_strings_from_op(op);
+            }
+            Terminator::BranchCond { cond, .. } => {
+                self.collect_strings_from_op(cond);
+            }
+            Terminator::Resume { arg: Some(op), .. } => {
+                self.collect_strings_from_op(op);
             }
             _ => {}
         }
@@ -1402,6 +1622,28 @@ impl<'a> LlvmTextEmitter<'a> {
                             self.out.push_str(&format!("    store {} {}, ptr {}\n", target_ty, coerced, slot));
                         }
                     }
+                } else if effect == "Diagnostics" {
+                    let msg_val = args.first().map(|a| self.emit_operand(a)).unwrap_or_else(|| "null".to_string());
+                    let msg_ty = args.first().map(|a| self.get_operand_llvm_type(a)).unwrap_or_else(|| "ptr".to_string());
+                    let msg_ptr = self.coerce_val(&msg_val, &msg_ty, "ptr");
+                    let line_val = args.get(1).map(|a| self.emit_operand(a)).unwrap_or_else(|| "0".to_string());
+                    let line_ty = args.get(1).map(|a| self.get_operand_llvm_type(a)).unwrap_or_else(|| "i64".to_string());
+                    let line = self.coerce_val(&line_val, &line_ty, "i64");
+                    let col_val = args.get(2).map(|a| self.emit_operand(a)).unwrap_or_else(|| "0".to_string());
+                    let col_ty = args.get(2).map(|a| self.get_operand_llvm_type(a)).unwrap_or_else(|| "i64".to_string());
+                    let col = self.coerce_val(&col_val, &col_ty, "i64");
+                    let res_temp = self.next_temp();
+                    if op == "report_error" {
+                        self.out.push_str(&format!("    {} = call i1 @tungsten_diagnostics_report_error(ptr {}, i64 {}, i64 {})\n", res_temp, msg_ptr, line, col));
+                    } else {
+                        self.out.push_str(&format!("    {} = call i1 @tungsten_diagnostics_report_warning(ptr {}, i64 {}, i64 {})\n", res_temp, msg_ptr, line, col));
+                    }
+                    if let Some(d) = dest {
+                        let slot = var_to_slot_name(d);
+                        let target_ty = self.var_types.get(d).cloned().unwrap_or_else(|| type_to_llvm(ty));
+                        let coerced = self.coerce_val(&res_temp, "i1", &target_ty);
+                        self.out.push_str(&format!("    store {} {}, ptr {}\n", target_ty, coerced, slot));
+                    }
                 } else if (effect == "Foreign" || effect == "ForeignCall") && (op == "call" || op == "blocking") {
                     let fn_arg = args.first().map(|a| self.emit_operand(a)).unwrap_or_else(|| "null".to_string());
                     let a1_val = args.get(1).map(|a| self.emit_operand(a)).unwrap_or_else(|| "0".to_string());
@@ -1414,6 +1656,28 @@ impl<'a> LlvmTextEmitter<'a> {
                         let target_ty = self.var_types.get(d).cloned().unwrap_or_else(|| type_to_llvm(ty));
                         let coerced = self.coerce_val(&res_temp, "i64", &target_ty);
                         self.out.push_str(&format!("    store {} {}, ptr {}\n", target_ty, coerced, slot));
+                    }
+                } else if effect == "Database" {
+                    let sql_val = args.first().map(|a| self.emit_operand(a)).unwrap_or_else(|| "null".to_string());
+                    let sql_ty = args.first().map(|a| self.get_operand_llvm_type(a)).unwrap_or_else(|| "ptr".to_string());
+                    let sql_ptr = self.coerce_val(&sql_val, &sql_ty, "ptr");
+                    let res_temp = self.next_temp();
+                    if op == "query" {
+                        self.out.push_str(&format!("    {} = call ptr @tungsten_database_query(ptr {})\n", res_temp, sql_ptr));
+                        if let Some(d) = dest {
+                            let slot = var_to_slot_name(d);
+                            let target_ty = self.var_types.get(d).cloned().unwrap_or_else(|| type_to_llvm(ty));
+                            let coerced = self.coerce_val(&res_temp, "ptr", &target_ty);
+                            self.out.push_str(&format!("    store {} {}, ptr {}\n", target_ty, coerced, slot));
+                        }
+                    } else {
+                        self.out.push_str(&format!("    {} = call i64 @tungsten_database_execute(ptr {})\n", res_temp, sql_ptr));
+                        if let Some(d) = dest {
+                            let slot = var_to_slot_name(d);
+                            let target_ty = self.var_types.get(d).cloned().unwrap_or_else(|| type_to_llvm(ty));
+                            let coerced = self.coerce_val(&res_temp, "i64", &target_ty);
+                            self.out.push_str(&format!("    store {} {}, ptr {}\n", target_ty, coerced, slot));
+                        }
                     }
                 }
             }
@@ -1470,8 +1734,12 @@ impl<'a> LlvmTextEmitter<'a> {
                 self.out.push_str(&format!("    {} = getelementptr inbounds i8, ptr {}, i64 {}\n", gep, base_ptr, offset));
                 let val_str = self.emit_operand(val);
                 let val_ty = self.get_operand_llvm_type(val);
-                let val_i64 = self.coerce_val(&val_str, &val_ty, "i64");
-                self.out.push_str(&format!("    store i64 {}, ptr {}\n", val_i64, gep));
+                if val_ty == "ptr" {
+                    self.out.push_str(&format!("    store ptr {}, ptr {}\n", val_str, gep));
+                } else {
+                    let val_i64 = self.coerce_val(&val_str, &val_ty, "i64");
+                    self.out.push_str(&format!("    store i64 {}, ptr {}\n", val_i64, gep));
+                }
             }
             Instruction::RegionEnter { dest, .. } => {
                 let arena_temp = self.next_temp();
@@ -1510,13 +1778,27 @@ impl<'a> LlvmTextEmitter<'a> {
                 self.out.push_str(&format!("    call void @tungsten_nursery_wait_all(ptr {})\n", nur_ptr));
             }
             Instruction::ExternCall { dest, func, args, ty, .. } => {
+                let target_extern = self.module.extern_blocks.iter()
+                    .flat_map(|b| b.fns.iter())
+                    .find(|f| f.name == *func);
+
                 let mut arg_strs = Vec::new();
-                for a in args {
+                for (idx, a) in args.iter().enumerate() {
                     let val = self.emit_operand(a);
                     let arg_ty = self.get_operand_llvm_type(a);
-                    arg_strs.push(format!("{} {}", arg_ty, val));
+                    let expected_ty = if let Some(ef) = target_extern {
+                        ef.params.get(idx).map(|(_, pty)| type_expr_to_llvm_str(pty, false)).unwrap_or_else(|| arg_ty.clone())
+                    } else {
+                        arg_ty.clone()
+                    };
+                    let coerced = self.coerce_val(&val, &arg_ty, &expected_ty);
+                    arg_strs.push(format!("{} {}", expected_ty, coerced));
                 }
-                let ret_llvm_ty = type_to_llvm_ret(ty);
+                let ret_llvm_ty = if let Some(ef) = target_extern {
+                    type_expr_to_llvm_str(&ef.ret, true)
+                } else {
+                    type_to_llvm_ret(ty)
+                };
                 if ret_llvm_ty == "void" {
                     self.out.push_str(&format!("    call void @{}({})\n", func, arg_strs.join(", ")));
                 } else {
@@ -1555,15 +1837,49 @@ impl<'a> LlvmTextEmitter<'a> {
 
                 let val_v = self.emit_operand(value);
                 let val_ty = self.get_operand_llvm_type(value);
-                let elem_llvm_ty = match stride {
-                    1 => "i8",
-                    2 => "i16",
-                    4 => "i32",
-                    _ => "i64",
-                };
-                let coerced_val = self.coerce_val(&val_v, &val_ty, elem_llvm_ty);
-                self.out.push_str(&format!("    store {} {}, ptr {}\n", elem_llvm_ty, coerced_val, gep));
+                if val_ty == "ptr" {
+                    self.out.push_str(&format!("    store ptr {}, ptr {}\n", val_v, gep));
+                } else {
+                    let elem_llvm_ty = match stride {
+                        1 => "i8",
+                        2 => "i16",
+                        4 => "i32",
+                        _ => "i64",
+                    };
+                    let coerced_val = self.coerce_val(&val_v, &val_ty, elem_llvm_ty);
+                    self.out.push_str(&format!("    store {} {}, ptr {}\n", elem_llvm_ty, coerced_val, gep));
+                }
             }
+        }
+    }
+
+    fn is_string_operand(&self, op: &Operand) -> bool {
+        match op {
+            Operand::Constant(TirConstant::Str(_)) => true,
+            Operand::Var(v, ty) => {
+                let check_ty = |t: &Type| -> bool {
+                    let stripped = t.strip_region();
+                    if matches!(stripped, Type::String) {
+                        return true;
+                    }
+                    if let Type::Ref { inner, .. } = stripped {
+                        if matches!(inner.strip_region(), Type::String) {
+                            return true;
+                        }
+                    }
+                    false
+                };
+                if check_ty(ty) {
+                    return true;
+                }
+                if let Some(t_ty) = self.var_tungsten_types.get(v) {
+                    if check_ty(t_ty) {
+                        return true;
+                    }
+                }
+                false
+            }
+            _ => false,
         }
     }
 
@@ -1580,6 +1896,30 @@ impl<'a> LlvmTextEmitter<'a> {
                 return;
             }
 
+            if !fmt_str.contains("{}") {
+                let idx = self.intern_string(fmt_str);
+                self.out.push_str(&format!("    call void @tungsten_print_str(ptr @str_{}, i64 {})\n", idx, fmt_str.len()));
+                for arg_op in &args[1..] {
+                    let val_str = self.emit_operand(arg_op);
+                    let val_ty = self.get_operand_llvm_type(arg_op);
+                    if self.is_string_operand(arg_op) {
+                        let s_ptr = self.coerce_val(&val_str, &val_ty, "ptr");
+                        self.out.push_str(&format!("    call void @tungsten_print_str(ptr {}, i64 0)\n", s_ptr));
+                    } else {
+                        let val_i64 = if val_ty == "i64" {
+                            val_str
+                        } else {
+                            let t_ext = self.next_temp();
+                            self.out.push_str(&format!("    {} = zext {} {} to i64\n", t_ext, val_ty, val_str));
+                            t_ext
+                        };
+                        self.out.push_str(&format!("    call void @tungsten_print_i64(i64 {})\n", val_i64));
+                    }
+                }
+                self.out.push_str("    call i32 @putchar(i32 10)\n");
+                return;
+            }
+
             let parts: Vec<&str> = fmt_str.split("{}").collect();
             let mut arg_idx = 1;
             for (i, part) in parts.iter().enumerate() {
@@ -1593,21 +1933,18 @@ impl<'a> LlvmTextEmitter<'a> {
                     arg_idx += 1;
                     let val_str = self.emit_operand(arg_op);
                     let val_ty = self.get_operand_llvm_type(arg_op);
-                    match arg_op.get_type() {
-                        Type::String => {
-                            let s_ptr = self.coerce_val(&val_str, &val_ty, "ptr");
-                            self.out.push_str(&format!("    call void @tungsten_print_str(ptr {}, i64 0)\n", s_ptr));
-                        }
-                        _ => {
-                            let val_i64 = if val_ty == "i64" {
-                                val_str
-                            } else {
-                                let t_ext = self.next_temp();
-                                self.out.push_str(&format!("    {} = zext {} {} to i64\n", t_ext, val_ty, val_str));
-                                t_ext
-                            };
-                            self.out.push_str(&format!("    call void @tungsten_print_i64(i64 {})\n", val_i64));
-                        }
+                    if self.is_string_operand(arg_op) {
+                        let s_ptr = self.coerce_val(&val_str, &val_ty, "ptr");
+                        self.out.push_str(&format!("    call void @tungsten_print_str(ptr {}, i64 0)\n", s_ptr));
+                    } else {
+                        let val_i64 = if val_ty == "i64" {
+                            val_str
+                        } else {
+                            let t_ext = self.next_temp();
+                            self.out.push_str(&format!("    {} = zext {} {} to i64\n", t_ext, val_ty, val_str));
+                            t_ext
+                        };
+                        self.out.push_str(&format!("    call void @tungsten_print_i64(i64 {})\n", val_i64));
                     }
                 }
             }
@@ -1617,21 +1954,18 @@ impl<'a> LlvmTextEmitter<'a> {
             for a in args {
                 let val_str = self.emit_operand(a);
                 let val_ty = self.get_operand_llvm_type(a);
-                match a.get_type() {
-                    Type::String => {
-                        let s_ptr = self.coerce_val(&val_str, &val_ty, "ptr");
-                        self.out.push_str(&format!("    call void @tungsten_println_str(ptr {}, i64 0)\n", s_ptr));
-                    }
-                    _ => {
-                        let val_i64 = if val_ty == "i64" {
-                            val_str
-                        } else {
-                            let t_ext = self.next_temp();
-                            self.out.push_str(&format!("    {} = zext {} {} to i64\n", t_ext, val_ty, val_str));
-                            t_ext
-                        };
-                        self.out.push_str(&format!("    call void @tungsten_println_i64(i64 {})\n", val_i64));
-                    }
+                if self.is_string_operand(a) {
+                    let s_ptr = self.coerce_val(&val_str, &val_ty, "ptr");
+                    self.out.push_str(&format!("    call void @tungsten_println_str(ptr {}, i64 0)\n", s_ptr));
+                } else {
+                    let val_i64 = if val_ty == "i64" {
+                        val_str
+                    } else {
+                        let t_ext = self.next_temp();
+                        self.out.push_str(&format!("    {} = zext {} {} to i64\n", t_ext, val_ty, val_str));
+                        t_ext
+                    };
+                    self.out.push_str(&format!("    call void @tungsten_println_i64(i64 {})\n", val_i64));
                 }
             }
         }
@@ -1665,37 +1999,65 @@ impl<'a> LlvmTextEmitter<'a> {
         match rv {
             RValue::Use(op) => (self.emit_operand(op), self.get_operand_llvm_type(op)),
             RValue::BinaryOp(op, l, r) => {
-                let lv = self.emit_operand(l);
-                let l_ty = self.get_operand_llvm_type(l);
-                let lv_i64 = self.coerce_val(&lv, &l_ty, "i64");
+                if self.is_string_operand(l) || self.is_string_operand(r) {
+                    let lv = self.emit_operand(l);
+                    let l_ty = self.get_operand_llvm_type(l);
+                    let lv_ptr = self.coerce_val(&lv, &l_ty, "ptr");
 
-                let rv = self.emit_operand(r);
-                let r_ty = self.get_operand_llvm_type(r);
-                let rv_i64 = self.coerce_val(&rv, &r_ty, "i64");
+                    let rv = self.emit_operand(r);
+                    let r_ty = self.get_operand_llvm_type(r);
+                    let rv_ptr = self.coerce_val(&rv, &r_ty, "ptr");
 
-                let t = self.next_temp();
-                let op_str = match op {
-                    BinOp::Add => "add i64",
-                    BinOp::Sub => "sub i64",
-                    BinOp::Mul => "mul i64",
-                    BinOp::Div => "sdiv i64",
-                    BinOp::Eq => "icmp eq i64",
-                    BinOp::NotEq => "icmp ne i64",
-                    BinOp::Lt => "icmp slt i64",
-                    BinOp::LtEq => "icmp sle i64",
-                    BinOp::Gt => "icmp sgt i64",
-                    BinOp::GtEq => "icmp sge i64",
-                    BinOp::And => "and i64",
-                    BinOp::Or => "or i64",
-                };
-                if matches!(op, BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq) {
+                    let strcmp_res = self.next_temp();
+                    self.out.push_str(&format!("    {} = call i32 @tungsten_str_cmp(ptr {}, ptr {})\n", strcmp_res, lv_ptr, rv_ptr));
+
                     let cmp_t = self.next_temp();
-                    self.out.push_str(&format!("    {} = {} {}, {}\n", cmp_t, op_str, lv_i64, rv_i64));
+                    let op_str = match op {
+                        BinOp::Eq => "icmp eq i32",
+                        BinOp::NotEq => "icmp ne i32",
+                        BinOp::Lt => "icmp slt i32",
+                        BinOp::LtEq => "icmp sle i32",
+                        BinOp::Gt => "icmp sgt i32",
+                        BinOp::GtEq => "icmp sge i32",
+                        _ => "icmp eq i32",
+                    };
+                    self.out.push_str(&format!("    {} = {} {}, 0\n", cmp_t, op_str, strcmp_res));
+                    let t = self.next_temp();
                     self.out.push_str(&format!("    {} = zext i1 {} to i64\n", t, cmp_t));
+                    (t, "i64".to_string())
                 } else {
-                    self.out.push_str(&format!("    {} = {} {}, {}\n", t, op_str, lv_i64, rv_i64));
+                    let lv = self.emit_operand(l);
+                    let l_ty = self.get_operand_llvm_type(l);
+                    let lv_i64 = self.coerce_val(&lv, &l_ty, "i64");
+
+                    let rv = self.emit_operand(r);
+                    let r_ty = self.get_operand_llvm_type(r);
+                    let rv_i64 = self.coerce_val(&rv, &r_ty, "i64");
+
+                    let t = self.next_temp();
+                    let op_str = match op {
+                        BinOp::Add => "add i64",
+                        BinOp::Sub => "sub i64",
+                        BinOp::Mul => "mul i64",
+                        BinOp::Div => "sdiv i64",
+                        BinOp::Eq => "icmp eq i64",
+                        BinOp::NotEq => "icmp ne i64",
+                        BinOp::Lt => "icmp slt i64",
+                        BinOp::LtEq => "icmp sle i64",
+                        BinOp::Gt => "icmp sgt i64",
+                        BinOp::GtEq => "icmp sge i64",
+                        BinOp::And => "and i64",
+                        BinOp::Or => "or i64",
+                    };
+                    if matches!(op, BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq) {
+                        let cmp_t = self.next_temp();
+                        self.out.push_str(&format!("    {} = {} {}, {}\n", cmp_t, op_str, lv_i64, rv_i64));
+                        self.out.push_str(&format!("    {} = zext i1 {} to i64\n", t, cmp_t));
+                    } else {
+                        self.out.push_str(&format!("    {} = {} {}, {}\n", t, op_str, lv_i64, rv_i64));
+                    }
+                    (t, "i64".to_string())
                 }
-                (t, "i64".to_string())
             }
             RValue::MethodCall { target, method, args } => {
                 let target_v = self.emit_operand(target);
@@ -1755,10 +2117,14 @@ impl<'a> LlvmTextEmitter<'a> {
                 for (idx, (_, f_op)) in fields.iter().enumerate() {
                     let f_val = self.emit_operand(f_op);
                     let f_ty = self.get_operand_llvm_type(f_op);
-                    let f_i64 = self.coerce_val(&f_val, &f_ty, "i64");
                     let gep = self.next_temp();
                     self.out.push_str(&format!("    {} = getelementptr inbounds i8, ptr {}, i64 {}\n", gep, ptr_temp, idx * 8));
-                    self.out.push_str(&format!("    store i64 {}, ptr {}\n", f_i64, gep));
+                    if f_ty == "ptr" {
+                        self.out.push_str(&format!("    store ptr {}, ptr {}\n", f_val, gep));
+                    } else {
+                        let f_i64 = self.coerce_val(&f_val, &f_ty, "i64");
+                        self.out.push_str(&format!("    store i64 {}, ptr {}\n", f_i64, gep));
+                    }
                 }
 
                 (ptr_temp, "ptr".to_string())
@@ -1772,9 +2138,15 @@ impl<'a> LlvmTextEmitter<'a> {
                 let offset = self.calculate_field_offset(s_name, field);
                 let gep = self.next_temp();
                 let loaded = self.next_temp();
+                let ret_ty = type_to_llvm(_ty);
                 self.out.push_str(&format!("    {} = getelementptr inbounds i8, ptr {}, i64 {}\n", gep, target_ptr, offset));
-                self.out.push_str(&format!("    {} = load i64, ptr {}\n", loaded, gep));
-                (loaded, "i64".to_string())
+                if ret_ty == "ptr" {
+                    self.out.push_str(&format!("    {} = load ptr, ptr {}\n", loaded, gep));
+                    (loaded, "ptr".to_string())
+                } else {
+                    self.out.push_str(&format!("    {} = load i64, ptr {}\n", loaded, gep));
+                    (loaded, "i64".to_string())
+                }
             }
             RValue::Cast { operand, target_ty } => {
                 let val = self.emit_operand(operand);
@@ -1787,7 +2159,7 @@ impl<'a> LlvmTextEmitter<'a> {
                 match operand {
                     Operand::Var(v, ty) => {
                         let slot = var_to_slot_name(v);
-                        if matches!(ty.strip_region(), Type::Struct(_) | Type::Instantiated { .. } | Type::Ref { .. } | Type::Array { .. }) {
+                        if matches!(ty.strip_region(), Type::Struct(_) | Type::Instantiated { .. } | Type::Ref { .. } | Type::Array { .. } | Type::Ptr { .. }) {
                             let loaded = self.next_temp();
                             self.out.push_str(&format!("    {} = load ptr, ptr {}\n", loaded, slot));
                             (loaded, "ptr".to_string())
@@ -1800,12 +2172,20 @@ impl<'a> LlvmTextEmitter<'a> {
                         (format!("@str_{}", idx), "ptr".to_string())
                     }
                     _ => {
-                        let val = self.emit_operand(operand);
-                        let val_ty = self.get_operand_llvm_type(operand);
-                        let t_slot = self.next_temp();
-                        self.out.push_str(&format!("    {} = alloca {}\n", t_slot, val_ty));
-                        self.out.push_str(&format!("    store {} {}, ptr {}\n", val_ty, val, t_slot));
-                        (t_slot, "ptr".to_string())
+                        let op_ty = operand.get_type();
+                        if matches!(op_ty.strip_region(), Type::Struct(_) | Type::Instantiated { .. } | Type::Ref { .. } | Type::Array { .. } | Type::Ptr { .. }) {
+                            let val = self.emit_operand(operand);
+                            let val_ty = self.get_operand_llvm_type(operand);
+                            let coerced = self.coerce_val(&val, &val_ty, "ptr");
+                            (coerced, "ptr".to_string())
+                        } else {
+                            let val = self.emit_operand(operand);
+                            let val_ty = self.get_operand_llvm_type(operand);
+                            let t_slot = self.next_temp();
+                            self.out.push_str(&format!("    {} = alloca {}\n", t_slot, val_ty));
+                            self.out.push_str(&format!("    store {} {}, ptr {}\n", val_ty, val, t_slot));
+                            (t_slot, "ptr".to_string())
+                        }
                     }
                 }
             }
@@ -1920,22 +2300,29 @@ impl<'a> LlvmTextEmitter<'a> {
                 let gep = self.next_temp();
                 self.out.push_str(&format!("    {} = getelementptr inbounds i8, ptr {}, i64 {}\n", gep, target_ptr, offset_val));
 
-                let elem_llvm_ty = match s {
-                    1 => "i8",
-                    2 => "i16",
-                    4 => "i32",
-                    _ => "i64",
-                };
-
-                let loaded = self.next_temp();
-                self.out.push_str(&format!("    {} = load {}, ptr {}\n", loaded, elem_llvm_ty, gep));
-
-                if s < 8 {
-                    let ext = self.next_temp();
-                    self.out.push_str(&format!("    {} = zext {} {} to i64\n", ext, elem_llvm_ty, loaded));
-                    (ext, "i64".to_string())
+                let ret_ty = type_to_llvm(_ty);
+                if ret_ty == "ptr" {
+                    let loaded = self.next_temp();
+                    self.out.push_str(&format!("    {} = load ptr, ptr {}\n", loaded, gep));
+                    (loaded, "ptr".to_string())
                 } else {
-                    (loaded, "i64".to_string())
+                    let elem_llvm_ty = match s {
+                        1 => "i8",
+                        2 => "i16",
+                        4 => "i32",
+                        _ => "i64",
+                    };
+
+                    let loaded = self.next_temp();
+                    self.out.push_str(&format!("    {} = load {}, ptr {}\n", loaded, elem_llvm_ty, gep));
+
+                    if s < 8 {
+                        let ext = self.next_temp();
+                        self.out.push_str(&format!("    {} = zext {} {} to i64\n", ext, elem_llvm_ty, loaded));
+                        (ext, "i64".to_string())
+                    } else {
+                        (loaded, "i64".to_string())
+                    }
                 }
             }
             RValue::Deref(op) => {

@@ -44,3 +44,16 @@ effect FS {
 effect Process {
     fn spawn(cmd: String, args: String) -> i64;
 }
+
+// Diagnostics effect for compiler error and warning reporting
+effect Diagnostics {
+    fn report_error(msg: String, line: i64, col: i64) -> bool;
+    fn report_warning(msg: String, line: i64, col: i64) -> bool;
+}
+
+// Database operations effect for asynchronous I/O offloading
+effect Database {
+    fn query(sql: String) -> String;
+    fn execute(sql: String) -> i64;
+}
+

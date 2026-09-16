@@ -2,8 +2,21 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tungsten_tir::ir::TirModule;
 use crate::llvm_text::emit_llvm_ir;
+
+static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn generate_unique_id() -> String {
+    let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{}_{}_{}", pid, nanos, counter)
+}
 
 pub struct LlvmToolchain {
     pub clang_path: PathBuf,
@@ -73,6 +86,10 @@ pub struct AotOptions {
     pub emit_llvm: Option<PathBuf>,
     pub emit_asm: Option<PathBuf>,
     pub extra_libs: Vec<String>,
+    /// Absolute search paths prepended to the LLD command (before system libs).
+    /// Allows callers to provide the workspace `target/crt` directory when the
+    /// process CWD differs from the workspace root (e.g. during `cargo test`).
+    pub extra_lib_paths: Vec<PathBuf>,
 }
 
 impl Default for AotOptions {
@@ -82,6 +99,7 @@ impl Default for AotOptions {
             emit_llvm: None,
             emit_asm: None,
             extra_libs: Vec::new(),
+            extra_lib_paths: Vec::new(),
         }
     }
 }
@@ -96,6 +114,7 @@ pub fn compile_llvm_aot(
         emit_llvm: None,
         emit_asm: None,
         extra_libs: Vec::new(),
+        extra_lib_paths: Vec::new(),
     };
     compile_llvm_aot_with_options(module, out_exe, &options)
 }
@@ -121,10 +140,7 @@ pub fn compile_llvm_aot_with_options(
     }
 
     let temp_dir = env::temp_dir();
-    let unique_id = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
+    let unique_id = generate_unique_id();
 
     let ll_path = temp_dir.join(format!("tungsten_{}.ll", unique_id));
     let o_path = temp_dir.join(format!("tungsten_{}.o", unique_id));
@@ -204,8 +220,30 @@ pub fn compile_llvm_aot_with_options(
             .arg(&o_path)
             .arg(format!("-L{}", toolchain.crt_dir.display()));
 
+        // Caller-supplied absolute search paths (highest priority — always honored).
+        for extra_path in &options.extra_lib_paths {
+            lld_cmd.arg(format!("-L{}", extra_path.display()));
+        }
+
+        // Fallback: derive paths from CWD (works when invoked via `forge` CLI from workspace root).
+        if let Ok(cur_dir) = std::env::current_dir() {
+            let target_crt = cur_dir.join("target").join("crt");
+            if target_crt.is_dir() {
+                lld_cmd.arg(format!("-L{}", target_crt.display()));
+            }
+            let target_sqlite = cur_dir.join("target").join("sqlite");
+            if target_sqlite.is_dir() {
+                lld_cmd.arg(format!("-L{}", target_sqlite.display()));
+            }
+            lld_cmd.arg(format!("-L{}", cur_dir.display()));
+        }
+
         if is_release {
             lld_cmd.arg("--gc-sections");
+        }
+
+        for lib in &options.extra_libs {
+            lld_cmd.arg(format!("-l{}", lib));
         }
 
         lld_cmd
@@ -220,6 +258,8 @@ pub fn compile_llvm_aot_with_options(
         for lib in &options.extra_libs {
             lld_cmd.arg(format!("-l{}", lib));
         }
+
+        eprintln!("[LLD CMD] {:?}", lld_cmd);
 
         match lld_cmd.output() {
             Ok(res) if res.status.success() => {
@@ -251,10 +291,7 @@ pub fn compile_llvm_aot_with_options(
 
 pub fn run_llvm_aot(module: &TirModule) -> Result<(i32, String), String> {
     let temp_dir = env::temp_dir();
-    let unique_id = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
+    let unique_id = generate_unique_id();
 
     let exe_path = temp_dir.join(format!("tungsten_bin_{}.exe", unique_id));
 

@@ -119,6 +119,8 @@ impl TypeChecker {
         tc.known_effects.insert("ForeignCall".into());
         tc.known_effects.insert("FS".into());
         tc.known_effects.insert("Process".into());
+        tc.known_effects.insert("Diagnostics".into());
+        tc.known_effects.insert("Database".into());
 
         // Concurrency types
         tc.types.insert("FiberHandle".into(), Type::Struct("FiberHandle".into()));
@@ -294,6 +296,11 @@ impl TypeChecker {
         }
 
         // Pass 2: Register Structs
+        for item in &program.items {
+            if let Item::Struct(st) = item {
+                self.types.insert(st.name.clone(), Type::Struct(st.name.clone()));
+            }
+        }
         for item in &program.items {
             if let Item::Struct(st) = item {
                 if !st.type_params.is_empty() {
@@ -629,7 +636,7 @@ impl<'a> FnChecker<'a> {
                 if let Some(v) = value {
                     let (ret_ty, _) = self.check_expr(v);
                     if let Some(r) = ret_ty.region() {
-                        if r.0 > 0 {
+                        if !matches!(ret_ty.strip_region(), Type::Ptr { .. }) && r.0 > 0 {
                             self.errors.push(TypeError::new(
                                 format!(
                                     "Region escape violation: region-backed value of type '{}' with local region '{}' cannot escape function return",
@@ -649,7 +656,7 @@ impl<'a> FnChecker<'a> {
         match &expr.kind {
             ExprKind::Ident(name) => {
                 if let Some((ty, is_mut)) = self.lookup_var(name) {
-                    let is_effective_mut = is_mut || matches!(ty, Type::Ref { is_mut: true, .. });
+                    let is_effective_mut = is_mut || matches!(ty, Type::Ref { is_mut: true, .. } | Type::Ptr { is_mut: true, .. });
                     (ty, is_effective_mut)
                 } else {
                     self.errors.push(TypeError::new(format!("Undefined variable '{}'", name), expr.span));
@@ -657,12 +664,24 @@ impl<'a> FnChecker<'a> {
                 }
             }
             ExprKind::FieldAccess { target, field } => {
-                let (target_ty, is_mut) = self.check_assign_target(target);
+                let (target_ty, mut is_mut) = self.check_assign_target(target);
                 let stripped = target_ty.strip_region();
                 let inner_ty = match stripped {
                     Type::Ref { is_mut: m, inner, .. } => {
                         if !*m {
                             self.errors.push(TypeError::new("Cannot mutate field through immutable reference", expr.span));
+                            is_mut = false;
+                        } else {
+                            is_mut = true;
+                        }
+                        inner.strip_region()
+                    }
+                    Type::Ptr { is_mut: m, inner } => {
+                        if !*m {
+                            self.errors.push(TypeError::new("Cannot mutate field through immutable raw pointer (*const T)", expr.span));
+                            is_mut = false;
+                        } else {
+                            is_mut = true;
                         }
                         inner.strip_region()
                     }
@@ -709,18 +728,18 @@ impl<'a> FnChecker<'a> {
                     ));
                 }
                 let (inner_ty, _) = self.check_expr(inner);
-                match inner_ty {
+                match inner_ty.strip_region() {
                     Type::Ptr { is_mut, inner } => {
                         if !is_mut {
                             self.errors.push(TypeError::new("Cannot assign through immutable raw pointer (*const T)", expr.span));
                         }
-                        (*inner, is_mut)
+                        (*inner.clone(), *is_mut)
                     }
                     Type::Ref { is_mut, inner, .. } => {
                         if !is_mut {
                             self.errors.push(TypeError::new("Cannot assign through immutable reference (&T)", expr.span));
                         }
-                        (*inner, is_mut)
+                        (*inner.clone(), *is_mut)
                     }
                     other => {
                         self.errors.push(TypeError::new(format!("Cannot dereference non-pointer type '{}'", other), expr.span));
@@ -842,6 +861,7 @@ impl<'a> FnChecker<'a> {
                 let stripped = target_ty.strip_region();
                 let base_ty = match stripped {
                     Type::Ref { inner, .. } => inner.strip_region(),
+                    Type::Ptr { inner, .. } => inner.strip_region(),
                     other => other,
                 };
                 if let Type::Struct(sname) = base_ty {
@@ -924,12 +944,17 @@ impl<'a> FnChecker<'a> {
                                     }
                                 }
                             }
-                            if !en.type_params.is_empty() {
+                            let max_arg_region = args.iter().filter_map(|a| self.check_expr(a).0.region()).max();
+                            let mut res_ty = if !en.type_params.is_empty() {
                                 let args_tys: Vec<Type> = args.iter().map(|a| self.check_expr(a).0).collect();
-                                return (Type::Instantiated { name: namespace.clone(), args: args_tys }, None);
+                                Type::Instantiated { name: namespace.clone(), args: args_tys }
                             } else {
-                                return (Type::Enum(namespace.clone()), None);
+                                Type::Enum(namespace.clone())
+                            };
+                            if let Some(r) = max_arg_region {
+                                res_ty = res_ty.bounded_with(r);
                             }
+                            return (res_ty, None);
                         }
                     }
                     if self.parent.known_effects.contains(namespace) {
@@ -1053,6 +1078,19 @@ impl<'a> FnChecker<'a> {
                                 return (Type::I64, None);
                             }
                         }
+                        if namespace == "Diagnostics" {
+                            if op == "report_error" || op == "report_warning" {
+                                return (Type::Bool, None);
+                            }
+                        }
+                        if namespace == "Database" {
+                            if op == "query" {
+                                return (Type::String, None);
+                            }
+                            if op == "execute" {
+                                return (Type::I64, None);
+                            }
+                        }
                         if (namespace == "Foreign" || namespace == "ForeignCall") && (op == "call" || op == "blocking") {
                             if let Some(first_arg) = args.first() {
                                 if let ExprKind::Ident(ref fname) = first_arg.kind {
@@ -1173,7 +1211,7 @@ impl<'a> FnChecker<'a> {
                         // Propagate region bounds from arguments (e.g. vec_new_in(r))
                         let max_arg_region = arg_types.iter().filter_map(|(ty, _)| ty.region()).max();
                         if let Some(r) = max_arg_region {
-                            if matches!(ret_ty.strip_region(), Type::Instantiated { .. } | Type::Struct(_) | Type::Ptr { .. } | Type::Ref { .. }) {
+                            if matches!(ret_ty.strip_region(), Type::Instantiated { .. } | Type::Struct(_) | Type::Ref { .. }) {
                                 ret_ty = ret_ty.bounded_with(r);
                             }
                         }
@@ -1228,7 +1266,7 @@ impl<'a> FnChecker<'a> {
                         let mut ret_ty = sig.return_type;
                         let max_arg_region = arg_tys.iter().filter_map(|ty| ty.region()).max();
                         if let Some(r) = max_arg_region {
-                            if matches!(ret_ty.strip_region(), Type::Instantiated { .. } | Type::Struct(_) | Type::Ptr { .. } | Type::Ref { .. }) {
+                            if matches!(ret_ty.strip_region(), Type::Instantiated { .. } | Type::Struct(_) | Type::Ref { .. }) {
                                 ret_ty = ret_ty.bounded_with(r);
                             }
                         }
@@ -1403,8 +1441,10 @@ impl<'a> FnChecker<'a> {
                             for p in &arm.params {
                                 param_tys.push((p.clone(), Type::String));
                             }
-                            if h.effect_name == "Db" && arm.op_name == "query" {
-                                expected_resume_ty = Type::Struct("Record".into());
+                            if (h.effect_name == "Db" || h.effect_name == "Database") && arm.op_name == "query" {
+                                expected_resume_ty = Type::String;
+                            } else if (h.effect_name == "Db" || h.effect_name == "Database") && arm.op_name == "execute" {
+                                expected_resume_ty = Type::I64;
                             } else if h.effect_name == "Random" {
                                 expected_resume_ty = Type::I64;
                             } else if h.effect_name == "Time" {
@@ -1493,6 +1533,20 @@ impl<'a> FnChecker<'a> {
             }
             ExprKind::Loop(b) => {
                 self.check_block(b, &Type::Unit);
+                (Type::Unit, None)
+            }
+            ExprKind::While { condition, body } => {
+                let (cond_ty, _) = self.check_expr(condition);
+                if !cond_ty.is_compatible_with(&Type::Bool) && !cond_ty.is_compatible_with(&Type::I64) {
+                    self.errors.push(TypeError::new(
+                        format!("Condition must be boolean or integer, found '{}'", cond_ty),
+                        condition.span,
+                    ));
+                }
+                self.check_block(body, &Type::Unit);
+                (Type::Unit, None)
+            }
+            ExprKind::Break => {
                 (Type::Unit, None)
             }
             ExprKind::Region { name, body } => {
@@ -1682,9 +1736,9 @@ impl<'a> FnChecker<'a> {
                     ));
                 }
                 let (inner_ty, _) = self.check_expr(inner);
-                match inner_ty {
-                    Type::Ptr { inner, .. } => (*inner, None),
-                    Type::Ref { inner, .. } => (*inner, None),
+                match inner_ty.strip_region() {
+                    Type::Ptr { inner, .. } => (*inner.clone(), None),
+                    Type::Ref { inner, .. } => (*inner.clone(), None),
                     other => {
                         self.errors.push(TypeError::new(
                             format!("Cannot dereference non-pointer type '{}'", other),
@@ -1837,6 +1891,19 @@ fn check_resume_linearity(expr: &Expr, in_loop: bool, errors: &mut Vec<TypeError
             }
             0
         }
+        ExprKind::While { condition, body } => {
+            let cond_res = check_resume_linearity(condition, in_loop, errors);
+            let loop_block_expr = Expr::new(ExprKind::Block(body.clone()), body.span);
+            let count = check_resume_linearity(&loop_block_expr, true, errors);
+            if count > 0 {
+                errors.push(TypeError::new(
+                    "Linearity violation: 'resume' cannot be invoked inside a while loop (continuations are single-shot)",
+                    body.span,
+                ));
+            }
+            cond_res
+        }
+        ExprKind::Break => 0,
         ExprKind::Binary { left, right, .. } => {
             check_resume_linearity(left, in_loop, errors) + check_resume_linearity(right, in_loop, errors)
         }

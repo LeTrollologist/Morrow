@@ -542,6 +542,39 @@ pub mod tests {
 
         tungsten_region_exit(arena_ptr);
     }
+
+    #[test]
+    fn test_raw_region_stress_100k() {
+        // 100,000 allocations across deep nested regions with child & parent teardowns
+        for parent_cycle in 0..100 {
+            let parent_arena = tungsten_region_enter();
+            assert!(!parent_arena.is_null());
+
+            for child_cycle in 0..10 {
+                let child_arena = tungsten_region_enter();
+                assert!(!child_arena.is_null());
+
+                for i in 0..100 {
+                    let ptr = tungsten_region_alloc(child_arena, 64, 8);
+                    assert!(!ptr.is_null());
+                    unsafe {
+                        *(ptr as *mut u64) = (parent_cycle * 1000 + child_cycle * 100 + i) as u64;
+                    }
+                }
+
+                tungsten_region_exit(child_arena);
+            }
+
+            // Allocate into parent after child has exited
+            let p_ptr = tungsten_region_alloc(parent_arena, 128, 16);
+            assert!(!p_ptr.is_null());
+            unsafe {
+                *(p_ptr as *mut u64) = 0xDEADBEEFCAFEBABE;
+            }
+
+            tungsten_region_exit(parent_arena);
+        }
+    }
 }
 
 

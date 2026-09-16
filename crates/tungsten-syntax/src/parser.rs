@@ -1214,15 +1214,12 @@ impl Parser {
                 if self.match_token(&TokenKind::Else) {
                     if self.check(&TokenKind::If) {
                         let if_expr = self.parse_primary()?;
+                        let span = if_expr.span;
                         // Wrap in synthetic block
                         else_branch = Some(Block {
-                            stmts: vec![Stmt::Expr {
-                                expr: if_expr.clone(),
-                                has_semicolon: false,
-                                span: if_expr.span,
-                            }],
-                            trailing_expr: Some(Box::new(if_expr.clone())),
-                            span: if_expr.span,
+                            stmts: Vec::new(),
+                            trailing_expr: Some(Box::new(if_expr)),
+                            span,
                         });
                     } else {
                         else_branch = Some(self.parse_block()?);
@@ -1309,6 +1306,22 @@ impl Parser {
                     start_tok.span.column,
                 );
                 Ok(Expr::new(ExprKind::Loop(body), span))
+            }
+            TokenKind::While => {
+                let start_tok = self.advance();
+                let condition = self.parse_expr()?;
+                let body = self.parse_block()?;
+                let span = Span::new(
+                    start_tok.span.start,
+                    body.span.end,
+                    start_tok.span.line,
+                    start_tok.span.column,
+                );
+                Ok(Expr::new(ExprKind::While { condition: Box::new(condition), body }, span))
+            }
+            TokenKind::Break => {
+                let tok = self.advance();
+                Ok(Expr::new(ExprKind::Break, tok.span))
             }
             TokenKind::Match => self.parse_match_expr(),
             TokenKind::LBracket => {

@@ -42,6 +42,8 @@ pub enum TokenKind {
     Enum,
     Match,
     Loop,
+    While,
+    Break,
     Nursery,
     Underscore, // _
     Unsafe,

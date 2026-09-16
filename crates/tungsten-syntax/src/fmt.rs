@@ -458,6 +458,17 @@ impl Formatter {
                 s.push_str(&sub_fmt.output);
                 s
             }
+            ExprKind::While { condition, body } => {
+                let mut s = format!("while {} ", self.format_expr(condition));
+                let mut sub_fmt = Formatter {
+                    indent_level: self.indent_level,
+                    output: String::new(),
+                };
+                sub_fmt.format_block(body);
+                s.push_str(&sub_fmt.output);
+                s
+            }
+            ExprKind::Break => "break".to_string(),
             ExprKind::Resume(inner) => {
                 format!("resume({})", self.format_expr(inner))
             }

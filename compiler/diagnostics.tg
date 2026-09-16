@@ -1,0 +1,12 @@
+// Tungsten Self-Hosting Compiler - Diagnostics Reporting
+// Decoupled compiler warning and error handling via algebraic effects
+
+import std::effects;
+
+pub fn report_err(msg: String, line: i64, col: i64) -> bool yields [Diagnostics] {
+    Diagnostics::report_error(msg, line, col)
+}
+
+pub fn report_warn(msg: String, line: i64, col: i64) -> bool yields [Diagnostics] {
+    Diagnostics::report_warning(msg, line, col)
+}

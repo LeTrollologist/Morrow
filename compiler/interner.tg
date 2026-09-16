@@ -1,0 +1,41 @@
+// Tungsten Self-Hosting Compiler - Region-Backed String Interner
+// Maps string identifiers to dense 64-bit Symbol IDs using Robin Hood Hashing
+
+import std::collections;
+
+pub struct Interner {
+    map: HashMap,
+    symbols: Vec<String>,
+    next_id: i64,
+    arena: *mut u8,
+}
+
+pub fn interner_new_in(arena: *mut u8) -> Interner {
+    let map = hashmap_new_in(arena);
+    let symbols: Vec<String> = vec_with_capacity_in(arena, 64);
+    Interner {
+        map: map,
+        symbols: symbols,
+        next_id: 1,
+        arena: arena,
+    }
+}
+
+pub fn interner_intern(interner: &mut Interner, s: String) -> i64 {
+    let existing = hashmap_get(&interner.map, s);
+    if existing != 0 - 1 {
+        return existing;
+    }
+    let id = interner.next_id;
+    interner.next_id = interner.next_id + 1;
+    hashmap_insert(&mut interner.map, s, id);
+    vec_push(&mut interner.symbols, s);
+    return id;
+}
+
+pub fn interner_lookup(interner: &Interner, id: i64) -> String {
+    if id <= 0 || id > interner.symbols.len {
+        return "";
+    }
+    vec_get(&interner.symbols, id - 1)
+}

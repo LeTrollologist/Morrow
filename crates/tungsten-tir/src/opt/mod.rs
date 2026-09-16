@@ -25,6 +25,7 @@ impl PassManager {
         let mut total_stats = OptStats::default();
 
         for func in &mut module.functions {
+            eprintln!("[Opt] optimizing: {} ({} blocks, {} instrs)", func.name, func.blocks.len(), func.blocks.iter().map(|b| b.instructions.len()).sum::<usize>());
             for iter in 0..self.max_iterations {
                 total_stats.iterations = total_stats.iterations.max(iter + 1);
                 let mut changes = 0;

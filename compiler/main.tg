@@ -1,0 +1,88 @@
+// Tungsten Self-Hosting Compiler - Driver Entry Point (tgc)
+// Orchestrates Lexing, Parsing, LLVM Codegen, and Toolchain Linking
+
+import std::fs;
+import std::process;
+import std::collections;
+import compiler::diagnostics;
+import compiler::interner;
+import compiler::ast;
+import compiler::lexer;
+import compiler::parser;
+import compiler::codegen;
+
+extern "C" {
+    fn strlen(s: *const u8) -> usize;
+}
+
+pub fn compile_file(src_path: String, out_ll_path: String, out_exe_path: String) -> i64 yields [FS, Process, Diagnostics, IO] {
+    let mut exit_code: i64 = 0;
+    println!("TGC: Entering compile_file region...");
+    region comp_reg {
+        println!("TGC: Reading source file...");
+        let src = fs_read_to_string_in(src_path, comp_reg);
+        let src_len = unsafe { strlen(src as *const u8) };
+        println!("TGC: Read source file, length: {}", src_len as i64);
+        if src_len == 0 {
+            report_err("Failed to read source file", 1, 1);
+            exit_code = 1;
+        } else {
+            println!("TGC: Creating interner...");
+            let mut interner = interner_new_in(comp_reg);
+            println!("TGC: Tokenizing...");
+            let mut tokens = tokenize(src, &mut interner, comp_reg);
+            println!("TGC: Parsing...");
+            let prog = parse_program(tokens, &mut interner, comp_reg);
+            println!("TGC: Emitting LLVM IR...");
+            let mut ir_buf = emit_llvm_ir(prog, &mut interner, comp_reg);
+            string_buffer_push_byte(&mut ir_buf, 0 as u8);
+            let ir_str = string_as_ptr(&ir_buf) as String;
+
+            println!("TGC: Writing LLVM IR to disk...");
+            let ok_write = fs_write_string(out_ll_path, ir_str);
+            if !ok_write {
+                report_err("Failed to write LLVM IR file", 1, 1);
+                exit_code = 2;
+            } else {
+                println!("TGC: Invoking clang...");
+                let mut cmd_args = string_buffer_new_in(comp_reg);
+                let opt_prefix = "--target=x86_64-pc-windows-gnu -nostartfiles -o ";
+                let opt_suffix = " target/crt/crt2.o -Ltarget/crt -lmingw32 -lmingwex -lmsvcrt -lkernel32 -luser32 -lws2_32 -lgcc";
+                string_buffer_push_str(&mut cmd_args, opt_prefix as *const u8, unsafe { strlen(opt_prefix as *const u8) } as i64);
+                string_buffer_push_str(&mut cmd_args, out_exe_path as *const u8, unsafe { strlen(out_exe_path as *const u8) } as i64);
+                string_buffer_push_byte(&mut cmd_args, 32 as u8);
+                string_buffer_push_str(&mut cmd_args, out_ll_path as *const u8, unsafe { strlen(out_ll_path as *const u8) } as i64);
+                string_buffer_push_str(&mut cmd_args, opt_suffix as *const u8, unsafe { strlen(opt_suffix as *const u8) } as i64);
+                string_buffer_push_byte(&mut cmd_args, 0 as u8);
+                let args_str = string_as_ptr(&cmd_args) as String;
+
+                let mut status: i64 = 0;
+                if fs_exists("C:\\Program Files\\LLVM\\bin\\clang.exe") {
+                    status = process_exec("\"C:\\Program Files\\LLVM\\bin\\clang.exe\"", args_str);
+                } else {
+                    status = process_exec("clang", args_str);
+                }
+                if status != 0 {
+                    report_err("Clang failed to link executable", 1, 1);
+                    exit_code = 3;
+                }
+            }
+        }
+    }
+    return exit_code;
+}
+
+fn main() -> i64 yields [FS, Process, Diagnostics, IO] {
+    let src_path = "examples/bootstrap_sample.tg";
+    let out_ll_path = "examples/bootstrap_sample.ll";
+    let out_exe_path = "examples/bootstrap_sample.exe";
+
+    println!("TGC: Starting Bootstrap Stage 1 compilation...");
+    let res = compile_file(src_path, out_ll_path, out_exe_path);
+    if res == 0 {
+        println!("TGC: Bootstrap Stage 1 compilation completed successfully!");
+    } else {
+        println!("TGC: Compilation failed.");
+    }
+    return res;
+}

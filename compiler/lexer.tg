@@ -1,0 +1,233 @@
+// Tungsten Self-Hosting Compiler - Lexical Scanner
+// Tokenizes Tungsten source code into region-allocated token streams
+
+import std::collections;
+import compiler::ast;
+import compiler::interner;
+import compiler::diagnostics;
+
+extern "C" {
+    fn strlen(s: *const u8) -> usize;
+    fn strcmp(s1: *const u8, s2: *const u8) -> i32;
+}
+
+fn is_whitespace(c: i64) -> bool {
+    c == 32 || c == 9 || c == 10 || c == 13
+}
+
+fn is_digit(c: i64) -> bool {
+    c >= 48 && c <= 57
+}
+
+fn is_alpha(c: i64) -> bool {
+    (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95
+}
+
+fn is_alnum(c: i64) -> bool {
+    is_alpha(c) || is_digit(c)
+}
+
+pub fn tokenize(src: String, interner: &mut Interner, arena: *mut u8) -> Vec<*mut Token> yields [Diagnostics] {
+    let ptr = src as *const u8;
+    let len = unsafe { strlen(ptr) } as i64;
+    let mut tokens: Vec<*mut Token> = vec_with_capacity_in(arena, 128);
+    let mut idx: i64 = 0;
+    let mut line: i64 = 1;
+    let mut col: i64 = 1;
+
+    while idx < len {
+        let c = unsafe { ptr[idx] } as i64;
+
+        // Whitespace handling
+        if is_whitespace(c) {
+            if c == 10 {
+                line = line + 1;
+                col = 1;
+            } else {
+                col = col + 1;
+            }
+            idx = idx + 1;
+        } else if c == 47 && idx + 1 < len && unsafe { ptr[idx + 1] } as i64 == 47 {
+            // Line comment: skip until newline or EOF
+            idx = idx + 2;
+            col = col + 2;
+            while idx < len && unsafe { ptr[idx] } as i64 != 10 {
+                idx = idx + 1;
+                col = col + 1;
+            }
+        } else if is_digit(c) {
+            // Integer literal
+            let start_col = col;
+            let mut val: i64 = 0;
+            while idx < len && is_digit(unsafe { ptr[idx] } as i64) {
+                let digit = unsafe { ptr[idx] } as i64 - 48;
+                val = val * 10 + digit;
+                idx = idx + 1;
+                col = col + 1;
+            }
+            let tok = alloc_token(arena, tok_int(), 0, val, "", line, start_col);
+            vec_push(&mut tokens, tok);
+        } else if is_alpha(c) {
+            // Identifier or Keyword
+            let start_idx = idx;
+            let start_col = col;
+            while idx < len && is_alnum(unsafe { ptr[idx] } as i64) {
+                idx = idx + 1;
+                col = col + 1;
+            }
+            let word_len = idx - start_idx;
+            let sub_ptr = (ptr as usize + start_idx as usize) as *const u8;
+            let mut sbuf = string_buffer_from_utf8_in(arena, sub_ptr, word_len);
+            string_buffer_push_byte(&mut sbuf, 0 as u8);
+            let s = string_as_ptr(&sbuf) as String;
+
+            let mut kind = tok_ident();
+            if unsafe { strcmp(s as *const u8, "fn" as *const u8) == 0 } {
+                kind = tok_kw_fn();
+            } else if unsafe { strcmp(s as *const u8, "let" as *const u8) == 0 } {
+                kind = tok_kw_let();
+            } else if unsafe { strcmp(s as *const u8, "mut" as *const u8) == 0 } {
+                kind = tok_kw_mut();
+            } else if unsafe { strcmp(s as *const u8, "if" as *const u8) == 0 } {
+                kind = tok_kw_if();
+            } else if unsafe { strcmp(s as *const u8, "else" as *const u8) == 0 } {
+                kind = tok_kw_else();
+            } else if unsafe { strcmp(s as *const u8, "while" as *const u8) == 0 } {
+                kind = tok_kw_while();
+            } else if unsafe { strcmp(s as *const u8, "return" as *const u8) == 0 } {
+                kind = tok_kw_return();
+            } else if unsafe { strcmp(s as *const u8, "struct" as *const u8) == 0 } {
+                kind = tok_kw_struct();
+            } else if unsafe { strcmp(s as *const u8, "true" as *const u8) == 0 } {
+                kind = tok_kw_true();
+            } else if unsafe { strcmp(s as *const u8, "false" as *const u8) == 0 } {
+                kind = tok_kw_false();
+            }
+
+            let sym = interner_intern(interner, s);
+            let tok = alloc_token(arena, kind, sym, 0, s, line, start_col);
+            vec_push(&mut tokens, tok);
+        } else if c == 34 {
+            // String literal: "..."
+            let start_col = col;
+            idx = idx + 1;
+            col = col + 1;
+            let start_idx = idx;
+            while idx < len && unsafe { ptr[idx] } as i64 != 34 {
+                if unsafe { ptr[idx] } as i64 == 10 {
+                    line = line + 1;
+                    col = 1;
+                } else {
+                    col = col + 1;
+                }
+                idx = idx + 1;
+            }
+            let str_len = idx - start_idx;
+            let sub_ptr = (ptr as usize + start_idx as usize) as *const u8;
+            let mut sbuf = string_buffer_from_utf8_in(arena, sub_ptr, str_len);
+            string_buffer_push_byte(&mut sbuf, 0 as u8);
+            let s = string_as_ptr(&sbuf) as String;
+
+            if idx < len {
+                idx = idx + 1;
+                col = col + 1;
+            } else {
+                report_err("Unterminated string literal", line, start_col);
+            }
+
+            let sym = interner_intern(interner, s);
+            let tok = alloc_token(arena, tok_str(), sym, 0, s, line, start_col);
+            vec_push(&mut tokens, tok);
+        } else {
+            // Operators and punctuation
+            let start_col = col;
+            let mut kind: i64 = 0;
+            let mut advance: i64 = 1;
+
+            if c == 43 {
+                // +
+                kind = tok_plus();
+            } else if c == 45 {
+                // - or ->
+                if idx + 1 < len && unsafe { ptr[idx + 1] } as i64 == 62 {
+                    kind = tok_arrow();
+                    advance = 2;
+                } else {
+                    kind = tok_minus();
+                }
+            } else if c == 42 {
+                // *
+                kind = tok_star();
+            } else if c == 47 {
+                // /
+                kind = tok_slash();
+            } else if c == 61 {
+                // = or ==
+                if idx + 1 < len && unsafe { ptr[idx + 1] } as i64 == 61 {
+                    kind = tok_eqeq();
+                    advance = 2;
+                } else {
+                    kind = tok_eq();
+                }
+            } else if c == 33 {
+                // ! or !=
+                if idx + 1 < len && unsafe { ptr[idx + 1] } as i64 == 61 {
+                    kind = tok_neq();
+                    advance = 2;
+                } else {
+                    kind = tok_bang();
+                }
+            } else if c == 60 {
+                // < or <=
+                if idx + 1 < len && unsafe { ptr[idx + 1] } as i64 == 61 {
+                    kind = tok_lte();
+                    advance = 2;
+                } else {
+                    kind = tok_lt();
+                }
+            } else if c == 62 {
+                // > or >=
+                if idx + 1 < len && unsafe { ptr[idx + 1] } as i64 == 61 {
+                    kind = tok_gte();
+                    advance = 2;
+                } else {
+                    kind = tok_gt();
+                }
+            } else if c == 40 {
+                kind = tok_lparen();
+            } else if c == 41 {
+                kind = tok_rparen();
+            } else if c == 123 {
+                kind = tok_lbrace();
+            } else if c == 125 {
+                kind = tok_rbrace();
+            } else if c == 59 {
+                kind = tok_semicolon();
+            } else if c == 44 {
+                kind = tok_comma();
+            } else if c == 58 {
+                // : or ::
+                if idx + 1 < len && unsafe { ptr[idx + 1] } as i64 == 58 {
+                    kind = tok_coloncolon();
+                    advance = 2;
+                } else {
+                    kind = tok_colon();
+                }
+            } else {
+                report_err("Unexpected character in input", line, col);
+            }
+
+            if kind != 0 {
+                let tok = alloc_token(arena, kind, 0, 0, "", line, start_col);
+                vec_push(&mut tokens, tok);
+            }
+
+            idx = idx + advance;
+            col = col + advance;
+        }
+    }
+
+    let eof_tok = alloc_token(arena, tok_eof(), 0, 0, "", line, col);
+    vec_push(&mut tokens, eof_tok);
+    tokens
+}

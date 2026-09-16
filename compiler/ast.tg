@@ -1,0 +1,323 @@
+// Tungsten Self-Hosting Compiler - Abstract Syntax Tree & Token Definitions
+// Node allocation within the scoped region arena
+
+import std::collections;
+
+// -----------------------------------------------------------------------------
+// Token Kinds
+// -----------------------------------------------------------------------------
+pub fn tok_eof() -> i64 { 0 }
+pub fn tok_ident() -> i64 { 1 }
+pub fn tok_int() -> i64 { 2 }
+pub fn tok_str() -> i64 { 3 }
+pub fn tok_plus() -> i64 { 4 }
+pub fn tok_minus() -> i64 { 5 }
+pub fn tok_star() -> i64 { 6 }
+pub fn tok_slash() -> i64 { 7 }
+pub fn tok_eq() -> i64 { 8 }
+pub fn tok_eqeq() -> i64 { 9 }
+pub fn tok_neq() -> i64 { 10 }
+pub fn tok_lt() -> i64 { 11 }
+pub fn tok_lte() -> i64 { 12 }
+pub fn tok_gt() -> i64 { 13 }
+pub fn tok_gte() -> i64 { 14 }
+pub fn tok_lparen() -> i64 { 15 }
+pub fn tok_rparen() -> i64 { 16 }
+pub fn tok_lbrace() -> i64 { 17 }
+pub fn tok_rbrace() -> i64 { 18 }
+pub fn tok_colon() -> i64 { 19 }
+pub fn tok_coloncolon() -> i64 { 20 }
+pub fn tok_semicolon() -> i64 { 21 }
+pub fn tok_comma() -> i64 { 22 }
+pub fn tok_arrow() -> i64 { 23 }
+pub fn tok_bang() -> i64 { 24 }
+pub fn tok_kw_fn() -> i64 { 30 }
+pub fn tok_kw_let() -> i64 { 31 }
+pub fn tok_kw_mut() -> i64 { 32 }
+pub fn tok_kw_if() -> i64 { 33 }
+pub fn tok_kw_else() -> i64 { 34 }
+pub fn tok_kw_while() -> i64 { 35 }
+pub fn tok_kw_return() -> i64 { 36 }
+pub fn tok_kw_struct() -> i64 { 37 }
+pub fn tok_kw_true() -> i64 { 38 }
+pub fn tok_kw_false() -> i64 { 39 }
+
+pub struct Token {
+    kind: i64,
+    sym: i64,
+    int_val: i64,
+    str_val: String,
+    line: i64,
+    col: i64,
+}
+
+// -----------------------------------------------------------------------------
+// AST Expression Kinds
+// -----------------------------------------------------------------------------
+pub fn expr_int() -> i64 { 1 }
+pub fn expr_str() -> i64 { 2 }
+pub fn expr_var() -> i64 { 3 }
+pub fn expr_binop() -> i64 { 4 }
+pub fn expr_call() -> i64 { 5 }
+pub fn expr_unary() -> i64 { 6 }
+
+pub struct AstExpr {
+    kind: i64,
+    int_val: i64,
+    sym: i64,
+    op: i64,
+    left: *mut AstExpr,
+    right: *mut AstExpr,
+    args: Vec<*mut AstExpr>,
+}
+
+// -----------------------------------------------------------------------------
+// AST Statement Kinds
+// -----------------------------------------------------------------------------
+pub fn stmt_let() -> i64 { 1 }
+pub fn stmt_assign() -> i64 { 2 }
+pub fn stmt_return() -> i64 { 3 }
+pub fn stmt_expr() -> i64 { 4 }
+pub fn stmt_if() -> i64 { 5 }
+pub fn stmt_while() -> i64 { 6 }
+
+pub struct AstStmt {
+    kind: i64,
+    sym: i64,
+    expr: *mut AstExpr,
+    then_stmts: Vec<*mut AstStmt>,
+    else_stmts: Vec<*mut AstStmt>,
+}
+
+pub struct AstParam {
+    name_sym: i64,
+    ty_sym: i64,
+}
+
+pub struct AstFn {
+    name_sym: i64,
+    params: Vec<*mut AstParam>,
+    ret_ty_sym: i64,
+    body: Vec<*mut AstStmt>,
+}
+
+pub struct AstProgram {
+    functions: Vec<*mut AstFn>,
+}
+
+// -----------------------------------------------------------------------------
+// Region Allocators for AST Nodes
+// -----------------------------------------------------------------------------
+
+pub fn alloc_token(arena: *mut u8, kind: i64, sym: i64, int_val: i64, str_val: String, line: i64, col: i64) -> *mut Token {
+    let p = unsafe {
+        tungsten_region_alloc(arena, 48, 8) as *mut Token
+    };
+    unsafe {
+        p.kind = kind;
+        p.sym = sym;
+        p.int_val = int_val;
+        p.str_val = str_val;
+        p.line = line;
+        p.col = col;
+    }
+    p
+}
+
+pub fn alloc_expr_int(arena: *mut u8, val: i64) -> *mut AstExpr {
+    let p = unsafe {
+        tungsten_region_alloc(arena, 80, 8) as *mut AstExpr
+    };
+    let null_expr = 0 as *mut AstExpr;
+    let empty_args: Vec<*mut AstExpr> = vec_new_in(arena);
+    unsafe {
+        p.kind = expr_int();
+        p.int_val = val;
+        p.sym = 0;
+        p.op = 0;
+        p.left = null_expr;
+        p.right = null_expr;
+        p.args = empty_args;
+    }
+    p
+}
+
+pub fn alloc_expr_var(arena: *mut u8, sym: i64) -> *mut AstExpr {
+    let p = unsafe {
+        tungsten_region_alloc(arena, 80, 8) as *mut AstExpr
+    };
+    let null_expr = 0 as *mut AstExpr;
+    let empty_args: Vec<*mut AstExpr> = vec_new_in(arena);
+    unsafe {
+        p.kind = expr_var();
+        p.int_val = 0;
+        p.sym = sym;
+        p.op = 0;
+        p.left = null_expr;
+        p.right = null_expr;
+        p.args = empty_args;
+    }
+    p
+}
+
+pub fn alloc_expr_binop(arena: *mut u8, op: i64, left: *mut AstExpr, right: *mut AstExpr) -> *mut AstExpr {
+    let p = unsafe {
+        tungsten_region_alloc(arena, 80, 8) as *mut AstExpr
+    };
+    let empty_args: Vec<*mut AstExpr> = vec_new_in(arena);
+    unsafe {
+        p.kind = expr_binop();
+        p.int_val = 0;
+        p.sym = 0;
+        p.op = op;
+        p.left = left;
+        p.right = right;
+        p.args = empty_args;
+    }
+    p
+}
+
+pub fn alloc_expr_call(arena: *mut u8, sym: i64, args: Vec<*mut AstExpr>) -> *mut AstExpr {
+    let p = unsafe {
+        tungsten_region_alloc(arena, 80, 8) as *mut AstExpr
+    };
+    let null_expr = 0 as *mut AstExpr;
+    unsafe {
+        p.kind = expr_call();
+        p.int_val = 0;
+        p.sym = sym;
+        p.op = 0;
+        p.left = null_expr;
+        p.right = null_expr;
+        p.args = args;
+    }
+    p
+}
+
+pub fn alloc_stmt_let(arena: *mut u8, sym: i64, expr: *mut AstExpr) -> *mut AstStmt {
+    let p = unsafe {
+        tungsten_region_alloc(arena, 80, 8) as *mut AstStmt
+    };
+    let empty_then: Vec<*mut AstStmt> = vec_new_in(arena);
+    let empty_else: Vec<*mut AstStmt> = vec_new_in(arena);
+    unsafe {
+        p.kind = stmt_let();
+        p.sym = sym;
+        p.expr = expr;
+        p.then_stmts = empty_then;
+        p.else_stmts = empty_else;
+    }
+    p
+}
+
+pub fn alloc_stmt_assign(arena: *mut u8, sym: i64, expr: *mut AstExpr) -> *mut AstStmt {
+    let p = unsafe {
+        tungsten_region_alloc(arena, 80, 8) as *mut AstStmt
+    };
+    let empty_then: Vec<*mut AstStmt> = vec_new_in(arena);
+    let empty_else: Vec<*mut AstStmt> = vec_new_in(arena);
+    unsafe {
+        p.kind = stmt_assign();
+        p.sym = sym;
+        p.expr = expr;
+        p.then_stmts = empty_then;
+        p.else_stmts = empty_else;
+    }
+    p
+}
+
+pub fn alloc_stmt_return(arena: *mut u8, expr: *mut AstExpr) -> *mut AstStmt {
+    let p = unsafe {
+        tungsten_region_alloc(arena, 80, 8) as *mut AstStmt
+    };
+    let empty_then: Vec<*mut AstStmt> = vec_new_in(arena);
+    let empty_else: Vec<*mut AstStmt> = vec_new_in(arena);
+    unsafe {
+        p.kind = stmt_return();
+        p.sym = 0;
+        p.expr = expr;
+        p.then_stmts = empty_then;
+        p.else_stmts = empty_else;
+    }
+    p
+}
+
+pub fn alloc_stmt_expr(arena: *mut u8, expr: *mut AstExpr) -> *mut AstStmt {
+    let p = unsafe {
+        tungsten_region_alloc(arena, 80, 8) as *mut AstStmt
+    };
+    let empty_then: Vec<*mut AstStmt> = vec_new_in(arena);
+    let empty_else: Vec<*mut AstStmt> = vec_new_in(arena);
+    unsafe {
+        p.kind = stmt_expr();
+        p.sym = 0;
+        p.expr = expr;
+        p.then_stmts = empty_then;
+        p.else_stmts = empty_else;
+    }
+    p
+}
+
+pub fn alloc_stmt_if(arena: *mut u8, cond: *mut AstExpr, then_stmts: Vec<*mut AstStmt>, else_stmts: Vec<*mut AstStmt>) -> *mut AstStmt {
+    let p = unsafe {
+        tungsten_region_alloc(arena, 80, 8) as *mut AstStmt
+    };
+    unsafe {
+        p.kind = stmt_if();
+        p.sym = 0;
+        p.expr = cond;
+        p.then_stmts = then_stmts;
+        p.else_stmts = else_stmts;
+    }
+    p
+}
+
+pub fn alloc_stmt_while(arena: *mut u8, cond: *mut AstExpr, body: Vec<*mut AstStmt>) -> *mut AstStmt {
+    let p = unsafe {
+        tungsten_region_alloc(arena, 80, 8) as *mut AstStmt
+    };
+    let empty_else: Vec<*mut AstStmt> = vec_new_in(arena);
+    unsafe {
+        p.kind = stmt_while();
+        p.sym = 0;
+        p.expr = cond;
+        p.then_stmts = body;
+        p.else_stmts = empty_else;
+    }
+    p
+}
+
+pub fn alloc_param(arena: *mut u8, name_sym: i64, ty_sym: i64) -> *mut AstParam {
+    let p = unsafe {
+        tungsten_region_alloc(arena, 16, 8) as *mut AstParam
+    };
+    unsafe {
+        p.name_sym = name_sym;
+        p.ty_sym = ty_sym;
+    }
+    p
+}
+
+pub fn alloc_fn(arena: *mut u8, name_sym: i64, params: Vec<*mut AstParam>, ret_ty_sym: i64, body: Vec<*mut AstStmt>) -> *mut AstFn {
+    let p = unsafe {
+        tungsten_region_alloc(arena, 80, 8) as *mut AstFn
+    };
+    unsafe {
+        p.name_sym = name_sym;
+        p.params = params;
+        p.ret_ty_sym = ret_ty_sym;
+        p.body = body;
+    }
+    p
+}
+
+pub fn alloc_program(arena: *mut u8) -> *mut AstProgram {
+    let p = unsafe {
+        tungsten_region_alloc(arena, 40, 8) as *mut AstProgram
+    };
+    let funcs: Vec<*mut AstFn> = vec_new_in(arena);
+    unsafe {
+        p.functions = funcs;
+    }
+    p
+}

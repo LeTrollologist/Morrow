@@ -385,7 +385,7 @@ pub fn hashmap_new() -> HashMap {
 }
 
 pub fn hashmap_new_in(arena: *mut u8) -> HashMap {
-    let initial_cap: i64 = 16;
+    let initial_cap: i64 = 256;
     let bytes = (initial_cap * 8) as usize;
     let keys_ptr = unsafe { tungsten_region_alloc(arena, bytes, 8) as *mut String };
     let vals_ptr = unsafe { tungsten_region_alloc(arena, bytes, 8) as *mut i64 };
@@ -430,6 +430,9 @@ pub fn hashmap_insert(map: &mut HashMap, key: String, val: i64) {
     let mut h = hash_str(k);
     let mut curr_psl: i64 = 0;
     let mut idx = h - (h / map.cap) * map.cap;
+    if idx < 0 {
+        idx = idx + map.cap;
+    }
 
     loop {
         let occ = unsafe { map.occupied[idx] };
@@ -487,6 +490,9 @@ pub fn hashmap_insert(map: &mut HashMap, key: String, val: i64) {
 pub fn hashmap_get(map: &HashMap, key: String) -> i64 {
     let h = hash_str(key);
     let mut idx = h - (h / map.cap) * map.cap;
+    if idx < 0 {
+        idx = idx + map.cap;
+    }
     let mut curr_psl: i64 = 0;
 
     loop {
@@ -516,6 +522,9 @@ pub fn hashmap_get(map: &HashMap, key: String) -> i64 {
 pub fn hashmap_contains(map: &HashMap, key: String) -> bool {
     let h = hash_str(key);
     let mut idx = h - (h / map.cap) * map.cap;
+    if idx < 0 {
+        idx = idx + map.cap;
+    }
     let mut curr_psl: i64 = 0;
 
     loop {
@@ -571,6 +580,9 @@ fn hashmap_shift_back(map: &mut HashMap, curr: i64) {
 pub fn hashmap_remove(map: &mut HashMap, key: String) -> bool {
     let h = hash_str(key);
     let mut idx = h - (h / map.cap) * map.cap;
+    if idx < 0 {
+        idx = idx + map.cap;
+    }
     let mut curr_psl: i64 = 0;
 
     loop {

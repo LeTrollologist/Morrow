@@ -294,6 +294,11 @@ pub enum ExprKind {
         body: Block,
     },
     Loop(Block),
+    While {
+        condition: Box<Expr>,
+        body: Block,
+    },
+    Break,
     Resume(Box<Expr>),
     Match {
         expr: Box<Expr>,

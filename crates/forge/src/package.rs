@@ -100,6 +100,8 @@ const EMBEDDED_SLICE: &str = include_str!("../../../std/slice.tg");
 const EMBEDDED_FS: &str = include_str!("../../../std/fs.tg");
 const EMBEDDED_IO: &str = include_str!("../../../std/io.tg");
 const EMBEDDED_PROCESS: &str = include_str!("../../../std/process.tg");
+const EMBEDDED_SQLITE: &str = include_str!("../../../std/sqlite.tg");
+const EMBEDDED_HTTP: &str = include_str!("../../../std/http.tg");
 
 pub const EMBEDDED_STD_FILES: &[(&str, &str)] = &[
     ("prelude.tg", EMBEDDED_PRELUDE),
@@ -112,6 +114,8 @@ pub const EMBEDDED_STD_FILES: &[(&str, &str)] = &[
     ("fs.tg", EMBEDDED_FS),
     ("io.tg", EMBEDDED_IO),
     ("process.tg", EMBEDDED_PROCESS),
+    ("sqlite.tg", EMBEDDED_SQLITE),
+    ("http.tg", EMBEDDED_HTTP),
 ];
 
 /// Recursively compile a package and its dependencies into a unified Program AST
@@ -364,6 +368,9 @@ fn load_and_process_module(
 
     for item in &ast.items {
         if let Item::Import(imp) = item {
+            if imp.path.first().map(|s| s.as_str()) == Some("std") {
+                continue;
+            }
             let resolved = resolve_import_path(
                 &imp.path,
                 &canonical,
@@ -560,6 +567,40 @@ pub fn resolve_import_path(
                 is_dependency: false,
             });
         }
+
+        // Check if parent folder matches the first segment (e.g. parent is "compiler", import is "compiler::ast")
+        if parent.file_name().and_then(|s| s.to_str()) == Some(first_seg) {
+            let mut p_cand = parent.to_path_buf();
+            for seg in &import_path[1..import_path.len() - 1] {
+                p_cand.push(seg);
+            }
+            p_cand.push(format!("{}.tg", last_seg));
+            if p_cand.is_file() {
+                let canon = p_cand.canonicalize().unwrap_or(p_cand);
+                return Ok(ResolvedModule {
+                    file_path: canon,
+                    pkg_info: current_pkg.cloned(),
+                    module_name: last_seg.clone(),
+                    is_dependency: false,
+                });
+            }
+        }
+    }
+
+    // Fallback: check relative to current package root
+    let mut root_cand = current_pkg_root.to_path_buf();
+    for seg in &import_path[0..import_path.len() - 1] {
+        root_cand.push(seg);
+    }
+    root_cand.push(format!("{}.tg", last_seg));
+    if root_cand.is_file() {
+        let canon = root_cand.canonicalize().unwrap_or(root_cand);
+        return Ok(ResolvedModule {
+            file_path: canon,
+            pkg_info: current_pkg.cloned(),
+            module_name: last_seg.clone(),
+            is_dependency: false,
+        });
     }
 
     Err(format!(
@@ -1028,6 +1069,20 @@ fn rewrite_expr(expr: &mut Expr, rewrites: &HashMap<String, String>) -> Result<(
         }
         ExprKind::AddrOf { expr: inner, .. } => {
             rewrite_expr(inner, rewrites)?;
+        }
+        ExprKind::Block(b) | ExprKind::Loop(b) | ExprKind::Region { body: b, .. } => {
+            rewrite_block(b, rewrites)?;
+        }
+        ExprKind::If { cond, then_branch, else_branch } => {
+            rewrite_expr(cond, rewrites)?;
+            rewrite_block(then_branch, rewrites)?;
+            if let Some(eb) = else_branch {
+                rewrite_block(eb, rewrites)?;
+            }
+        }
+        ExprKind::While { condition, body } => {
+            rewrite_expr(condition, rewrites)?;
+            rewrite_block(body, rewrites)?;
         }
         _ => {}
     }

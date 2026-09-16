@@ -1,6 +1,6 @@
 # Tungsten Language Roadmap
 
-> **Vision:** A systems-level programming language that provides the fearless concurrency and zero-cost abstractions of Rust, while eliminating explicit lifetime annotations through **Region-Based Memory Management**, eliminating the async/await divide through **Algebraic Effects**, and eliminating runtime bounds panics through **Refinement Types**.
+> **Vision:** A systems-level programming language that provides the fearless concurrency and zero-cost abstractions of Rust, while eliminating explicit lifetime annotations through **Region-Based Memory Management**, eliminating the async/await function coloring divide through **Algebraic Effects**, and eliminating runtime bounds panics through **Refinement Types**.
 
 ---
 
@@ -10,13 +10,19 @@
 |:---|:---|:---|:---:|
 | **v0.1** | **Working Prototype** | Parser, Typechecker, Refinement Intervals, Effect VM, CLI | **Completed** |
 | **v0.2** | **Developer Experience** | Standard Library (`std`), Formatter (`forge fmt`), Language Server (`tungsten-lsp`) | **Completed** |
-| **v0.3** | **Advanced Type System** | Relational Refinements, Generics, Effect Polymorphism | **Completed** |
-| **v0.4** | **Tungsten IR & Optimization** | SSA / CFG Intermediate Representation (TIR), Continuation Lowering | **Completed** |
-| **v0.5** | **Native Codegen** | Cranelift (Fast JIT/Debug) & Host Runtime ABI Code Generation | **Completed** |
-| **v0.6** | **Colorless Concurrency** | M:N Work-Stealing Fiber Scheduler via Algebraic Effects | **Completed** |
-| **v0.7** | **Physical Region Allocator** | Machine-level Arena Scopes & $\mathcal{O}(1)$ Region Teardown | **Completed** |
-| **v1.0** | **Production & Ecosystem** | `Forge.lock` Package Manager, Stdlib Expansion, Self-Hosting | **Next Priority** |
-
+| **v0.3** | **Advanced Type System** | Relational Refinements, Generics, Effect Row Polymorphism | **Completed** |
+| **v0.4** | **TIR & Optimization** | SSA / CFG Intermediate Representation, Bounds Elimination, DCE | **Completed** |
+| **v0.5** | **Native Codegen & ABI** | LLVM 18 AOT Driver, Cranelift JIT, CodeView PDB Debug Symbols | **Completed** |
+| **v0.6** | **Colorless Concurrency** | M:N Work-Stealing Fiber Scheduler, Nurseries, Channels via Effects | **Completed** |
+| **v0.7** | **Physical Region Allocator** | Machine-Level Arena Scopes, $\mathcal{O}(1)$ Bulk Teardown, Escape Analysis | **Completed** |
+| **v0.8** | **C-ABI FFI & Safe Database** | `forge bindgen`, Safe SQLite Driver (`std/sqlite`), Region Queries | **Completed** |
+| **v0.9** | **Production Stdlib & Packaging** | `Forge.toml`, `Forge.lock`, Multi-Package Workspace, `std::fs`, `std::http` | **Completed** |
+| **v0.10** | **Self-Hosting Compiler Frontend** | Pure Tungsten Frontend (`compiler/`), Robin Hood Symbol Interner, `tgc.exe` | **Completed** |
+| **v0.11** | **Fortress Security Suite** | 10 Adversarial Vectors, 12 `FORT-*` Invariants, 3-Corpus Fuzzing | **Completed** |
+| **v1.0** | **Full Self-Hosting Bootstrap** | Stage 2 Bootstrap (`tgc.exe` compiles itself), Release Candidate | **Next Priority** |
+| **v1.1** | **Fortress v2: Async Network Engine** | IOCP / Epoll Non-Blocking Event Loop, Fiber-Per-Connection (C100K) | **Planned** |
+| **v1.2** | **Formal Verification & SMT Bridge** | Z3 Solver Bridge for Non-Linear Arithmetic, Affine Handle Invariants | **Planned** |
+| **v1.3** | **Cross-Platform & WebAssembly** | Native Linux (ELF), macOS (Mach-O), and WebAssembly (`wasm32`) Targets | **Planned** |
 
 ---
 
@@ -24,206 +30,130 @@
 
 ### v0.1: Working Prototype
 - [x] **Frontend (`tungsten-syntax`)**: Tokenizer and recursive-descent parser handling refinement syntax (`u8(0..=100)`), effect signatures (`yields [Db, IOError]`), and delimited effect handlers (`handle { ... } with Effect { ... }`).
-- [x] **Semantic Analysis (`tungsten-typeck`)**:
-  - Constant interval constraint arithmetic (`[min, max]`).
-  - Statically proven bounds checking on assignments and arithmetic.
-  - Compile-time effect row checking and unhandled effect rejection.
-- [x] **Runtime Evaluator (`tungsten-vm`)**:
-  - Delimited continuation effect dispatcher supporting mock and async handlers.
-  - Scoped reference borrowing (`&mut`) without explicit lifetime annotations.
+- [x] **Semantic Analysis (`tungsten-typeck`)**: Constant interval constraint arithmetic (`[min, max]`), bounds checking on assignments and arithmetic, compile-time effect row checking and unhandled effect rejection.
+- [x] **Runtime Evaluator (`tungsten-vm`)**: Delimited continuation effect dispatcher supporting mock and async handlers. Scoped reference borrowing (`&mut`) without explicit lifetime annotations.
 - [x] **Tooling (`forge`)**: CLI runner supporting `forge check` and `forge run`.
 
 ### v0.2: Developer Experience (DX) & Tooling
-- [x] **Standard Library (`std/`)**:
-  - Pre-registered prelude refinement types: `Percentage`, `Port`, `NonZeroU32`, `Byte`.
-  - Core algebraic effects: `IO`, `Random`, `State`, `Time`, `Yield`.
-- [x] **Opinionated Formatter (`forge fmt`)**:
-  - AST-aware pretty printer with canonical 4-space indentation, operator spacing, and trailing commas.
-  - CI verification support via `forge fmt --check`.
-  - Proved idempotent: $\mathrm{fmt}(\mathrm{fmt}(x)) = \mathrm{fmt}(x)$.
-- [x] **Language Server Protocol (`tungsten-lsp`)**:
-  - JSON-RPC 2.0 stdio server (`forge lsp`) for VS Code, Neovim, and Helix.
-  - Real-time diagnostics with exact source spans on document open and edit.
-  - Hover tooltips detailing inferred types, refinement intervals, and effect rows.
-  - Editor "Format on Save" provider.
+- [x] **Standard Library (`std/`)**: Pre-registered prelude refinement types (`Percentage`, `Port`, `NonZeroU32`, `Byte`) and core algebraic effects (`IO`, `Random`, `State`, `Time`, `Yield`).
+- [x] **Opinionated Formatter (`forge fmt`)**: AST-aware pretty printer with canonical 4-space indentation, operator spacing, and trailing commas. Idempotent: $\mathrm{fmt}(\mathrm{fmt}(x)) = \mathrm{fmt}(x)$.
+- [x] **Language Server Protocol (`tungsten-lsp`)**: JSON-RPC 2.0 stdio server (`forge lsp`) for VS Code, Neovim, and Helix. Real-time diagnostics, hover tooltips detailing inferred types and refinement intervals, and format on save.
 
 ### v0.3: Advanced Type System & Frontier PL
-- [x] **Relational Refinement Types**:
-  - Express inter-parameter inequalities: `fn subslice_len(start: usize, end: usize(>= start)) -> usize`.
-  - Linear arithmetic verification between function parameters, return values, and struct fields.
-  - Statically proven bounds checking and compile-time rejection of relational contract violations.
-- [x] **Generics & Parametric Polymorphism**:
-  - Parametric structs: `struct Container<T> { value: T }`.
-  - Generic functions: `fn wrap<T>(item: T) -> Container<T>`.
-  - Bidirectional Hindley-Milner-style unification and type substitution (`Subst`, `unify`, `substitute`).
-- [x] **Effect Polymorphism & Higher-Order Functions**:
-  - First-class function types: `fn apply<T, U, E>(val: T, f: fn(T) yields [E] -> U) -> U yields [E]`.
-  - Caller-agnostic higher-order abstraction over arbitrary effect rows without color segregation.
-  - Transparent execution across both pure and effectful handlers in `tungsten-vm`.
+- [x] **Relational Refinement Types**: Linear arithmetic verification between function parameters (`fn subslice_len(start: usize, end: usize(>= start)) -> usize`). Statically proven bounds checking and compile-time rejection of relational contract violations.
+- [x] **Generics & Parametric Polymorphism**: Parametric structs (`struct Container<T> { value: T }`), generic functions, and bidirectional Hindley-Milner-style unification and type substitution (`Subst`, `unify`, `substitute`).
+- [x] **Effect Polymorphism & Higher-Order Functions**: First-class function types (`fn apply<T, U, E>(val: T, f: fn(T) yields [E] -> U) -> U yields [E]`), caller-agnostic higher-order abstraction over arbitrary effect rows without color segregation.
 
 ### v0.4: Intermediate Representation (TIR) & Optimization Passes
-- [x] **SSA Intermediate Representation (`tungsten-tir`)**:
-  - Linearized Basic-Block Control Flow Graph (CFG) preserving types, refinement intervals, and effect signatures.
-  - Verification pass (`verify::verify_module`) ensuring CFG integrity, block reachability, and valid terminators.
-- [x] **AST to TIR Lowering**:
-  - Lowers expressions, loops, branching, and function calls into SSA instructions and explicit branch jumps.
-  - Delimited algebraic effect lowering (`handle { ... } with Effect { ... }`) into `HandleEffect` frames and `Resume` continuations.
-- [x] **Middle-End Optimization Pipeline**:
-  - Constant folding and propagation pass (`const_fold`).
-  - Dead code and unreachable block elimination (`dce`).
-  - Redundant refinement bounds check elimination (`bounds_elim`) proving zero-cost abstraction for safe intervals.
-- [x] **CLI Tooling**:
-  - `forge tir [--opt] <file.tg>` for inspecting unoptimized and optimized intermediate representation.
+- [x] **SSA Intermediate Representation (`tungsten-tir`)**: Linearized Basic-Block Control Flow Graph (CFG) preserving types, refinement intervals, and effect signatures.
+- [x] **AST to TIR Lowering**: Lowers expressions, loops, branching, function calls into SSA instructions, and delimited algebraic effect frames into continuations.
+- [x] **Middle-End Optimization Pipeline**: Constant folding (`const_fold`), dead code elimination (`dce`), and redundant bounds check elimination (`bounds_elim`) proving zero-cost abstraction for safe intervals.
 
-### v0.5: Native Codegen via Cranelift & JIT Execution
-- [x] **Machine Codegen Backend (`tungsten-codegen`)**:
-  - Direct translation of TIR basic blocks into Cranelift IR and native machine assembly (x86_64 / AArch64).
-  - Native ABI and runtime bridge:
-    - Zero-overhead C-ABI host imports: `tungsten_print_i64`, `tungsten_println_i64`, `tungsten_print_str`, `tungsten_println_str`, `tungsten_io_print`.
-    - Native refinement trap & panic handler (`tungsten_refinement_panic`).
-    - Heap memory allocation bridge (`tungsten_alloc`).
-  - Native string constant pools and null-terminated string representation.
-  - First-class function pointers and indirect native calls (`call_indirect`).
-  - Dynamic struct allocation and offset-based field access.
-- [x] **In-Memory JIT Compilation Engine**:
-  - `JitEngine` compiling TIR modules into executable machine code in memory.
-  - Verification across effectful database records, higher-order functions, and generic containers.
-- [x] **CLI Tooling**:
-  - `forge run --native <file.tg>` for direct native JIT execution.
-  - `forge build <file.tg>` subcommand for native compilation.
+### v0.5: Native Codegen via LLVM 18 & JIT Execution
+- [x] **Machine Codegen Backend (`tungsten-codegen`)**: Direct translation of TIR basic blocks into portable LLVM 18 IR text and native machine assembly (`x86_64-pc-windows-gnu`).
+- [x] **Debug Symbols & Linker Integration**: CodeView debug information with PDB generation via `rust-lld`. High-performance LTO and function/data-section garbage collection in release mode.
+- [x] **In-Memory JIT Compilation Engine**: `JitEngine` compiling TIR modules into executable machine code in memory.
 
 ### v0.6: Colorless Concurrency via Algebraic Effects & M:N Work-Stealing Fiber Runtime
-- [x] **Fiber Engine & Structured Concurrency (`tungsten-fiber`)**:
-  - Multi-threaded M:N work-stealing scheduler (`Scheduler`) distributing fibers across worker threads with local queues and global injector queue.
-  - Structured concurrency nursery scopes (`Nursery<T>`) guaranteeing lexical lifecycle boundaries and deterministic fiber joins.
-  - Cross-thread unbounded and bounded message channels (`Channel<T>`) with thread-safe send, recv, and try_recv.
-- [x] **Concurrency Algebraic Effects in Typechecker (`tungsten-typeck`)**:
-  - Registered `Async`, `Channel`, and `FiberHandle` in core type system.
-  - Type inference and effect validation for `Async::spawn`, `Async::yield_now`, `Async::await_fiber`, `Async::sleep`, `Channel::new`, `Channel::send`, and `Channel::recv`.
-- [x] **Thread-Safe Runtime Execution (`tungsten-vm`)**:
-  - Converted heap reference values to thread-safe `Arc<Mutex<Value>>`.
-  - Effect dispatch integration routing `Async` and `Channel` operations through multi-threaded fiber scheduler.
-- [x] **Native Codegen & Cranelift JIT Concurrency (`tungsten-codegen`)**:
-  - C-ABI runtime bindings for fiber spawning, yielding, sleep, and channel message passing.
-  - Cranelift IR lowering for `Async` and `Channel` algebraic effect operations into direct native host calls.
-  - Tested and verified end-to-end via `examples/fibers_and_concurrency.tg` on both VM and native JIT (`--native`).
+- [x] **Fiber Engine & Structured Concurrency (`tungsten-fiber`)**: Multi-threaded M:N work-stealing scheduler distributing fibers across worker threads with local queues and global injector queue. Structured concurrency nursery scopes (`Nursery<T>`) guaranteeing lexical lifecycle boundaries and deterministic fiber joins.
+- [x] **Concurrency Algebraic Effects in Typechecker (`tungsten-typeck`)**: Registered `Async`, `Channel`, and `FiberHandle` in core type system. Type inference and effect validation for `Async::spawn`, `Async::yield_now`, `Async::await_fiber`, `Async::sleep`, `Channel::new`, `Channel::send`, and `Channel::recv`.
 
 ### v0.7: Physical Region Allocator & Compile-Time Region Inference
-- [x] **Region Syntax & Grammar (`tungsten-syntax`)**:
-  - `region [name] { ... }` lexical block expression syntax, parser, and AST node `ExprKind::Region`.
-  - Full formatter (`forge fmt`) support and round-trip verification.
-- [x] **Compile-Time Region Inference & Escape Analysis (`tungsten-typeck`)**:
-  - Region IDs attached to references (`Type::Ref { is_mut, inner, region: Option<RegionId> }`).
-  - Automatic inferencing of region scopes without explicit `<'a>` lifetime annotations.
-  - Strict Linear Escape Analysis rejecting references escaping local regions via returns or outer variable assignments.
-- [x] **TIR Region Lifecycle Instructions (`tungsten-tir`)**:
-  - `Instruction::RegionEnter` and `Instruction::RegionExit` instruction variants.
-  - Arena-directed `RValue::StructInit { name, fields, arena: Option<Operand> }`.
-  - Region-aware Dead Code Elimination (`dce`) and basic block lowering.
-- [x] **Native Machine Region Allocator (`tungsten-codegen`)**:
-  - Zero-overhead native bump allocator `PhysicalArena` with $\mathcal{O}(1)$ bulk teardown.
-  - Runtime C-ABI symbols: `tungsten_region_enter`, `tungsten_region_alloc`, `tungsten_region_exit`.
-  - Cranelift JIT translation targeting physical bump arenas inside region blocks.
-- [x] **Full Dual-Backend Execution (`tungsten-vm` & `tungsten-codegen`)**:
-  - Validated end-to-end with `examples/regions_and_lifetimes.tg` across tree-walking VM and native Cranelift JIT.
+- [x] **Region Syntax & Grammar (`tungsten-syntax`)**: `region [name] { ... }` lexical block expression syntax, parser, and AST node `ExprKind::Region`.
+- [x] **Compile-Time Region Inference & Escape Analysis (`tungsten-typeck`)**: Region IDs attached to references (`Type::Ref { is_mut, inner, region: Option<RegionId> }`). Automatic inferencing of region scopes without explicit `<'a>` lifetime annotations. Strict Linear Escape Analysis rejecting references escaping local regions via returns, struct fields, wrapper types, or enum payloads.
+- [x] **Native Machine Region Allocator (`tungsten-codegen`)**: Zero-overhead bump allocator `PhysicalArena` with $\mathcal{O}(1)$ bulk teardown. Runtime C-ABI symbols: `tungsten_region_enter`, `tungsten_region_alloc`, `tungsten_region_exit`.
+
+### v0.8: C-ABI FFI & Safe Database Driver ("The Killer App")
+- [x] **Automated C Header Bindgen (`forge bindgen`)**: Parsed C function prototypes, structs, and `#define` constants directly into safe `extern "C"` bindings.
+- [x] **Safe SQLite Driver (`std/sqlite.tg`)**: Column-name schema separation preventing string duplication across 10,000+ rows; zero-per-row heap allocation via `sqlite_query_in`.
+- [x] **Prepared Statement SQLi Defense**: Implemented `sqlite_execute_prepared` with parameter binding via `sqlite3_bind_text` and `sqlite3_bind_int64`, providing immune parameterized database execution.
+- [x] **Algebraic Effect Database Offload**: Declared `effect Database` with native runtime bridge `@tungsten_database_execute` and `@tungsten_database_query`.
+
+### v0.9: Production Package Manager & Standard Library Expansion
+- [x] **Deterministic Package Management (`forge`)**: Implemented `Forge.toml` manifests, dependency graph resolution, deterministic `Forge.lock` lockfile generation, and diamond dependency deduplication.
+- [x] **Standard Library File System & Processes (`std/fs.tg`, `std/process.tg`)**: Effect-handled filesystem operations (`FS`) and process execution (`Process`) with zero-copy region ingestion.
+- [x] **Cache-Conscious Robin Hood `HashMap` (`std/collections.tg`)**: Structure-of-Arrays (SoA) design with FNV-1a hashing, probe sequence length (PSL) tracking, and dual system-heap / scoped-region allocator support.
+- [x] **Zero-Copy HTTP/1.1 Engine (`std/http.tg`)**: High-performance HTTP parser with region slicing, 64KB max-header guard, and status response formatters.
+
+### v0.10: Self-Hosting Compiler Frontend (Bootstrap Stage 1)
+- [x] **Pure Tungsten Compiler Frontend (`compiler/`)**:
+  - `compiler/diagnostics.tg`: Algebraic effect `Diagnostics` for reporting errors and warnings.
+  - `compiler/interner.tg`: Region-backed Robin Hood symbol interner converting identifiers into dense 64-bit integer symbols with zero heap churn.
+  - `compiler/ast.tg`: Compact AST nodes allocated directly into the compiler scratch arena.
+  - `compiler/lexer.tg`: Fast keyword and multi-character operator tokenizer.
+  - `compiler/parser.tg`: Recursive descent parser with Pratt precedence climbing.
+  - `compiler/codegen.tg`: LLVM 18 IR emitter generating SSA instructions, locals, and runtime thunks.
+  - `compiler/main.tg`: Compiler CLI driver orchestrating the pipeline into native binaries.
+- [x] **3-Stage Bootstrap Grand Loop**:
+  - Stage 1: Host `forge` compiles `compiler/main.tg` into `tgc.exe`.
+  - Stage 2: `tgc.exe` autonomously tokenizes, parses, and generates LLVM IR for `examples/bootstrap_sample.tg`.
+  - Stage 3: Generated binary runs natively, accurately computing arithmetic, loops, factorials, and functions.
+
+### v0.11: Fortress Security & Verification Suite
+- [x] **10 Adversarial Attack Vectors Verified**:
+  - Group A: HTTP boundary enforcement (9B rejection, 10B minimal valid, 16/17-char verbs, 8KB URLs, >64KB rejection).
+  - Group B: TCP fragmentation characterization and connection flood resilience.
+  - Group C: Slow trickle rejection and idle socket drop recovery.
+  - Group D: Prepared statement SQL injection torture (zero injection across union, boolean, and comment attacks).
+  - Group E: Multi-point memory stability across 200 sequential requests (delta: 0.95 MB < 15 MB) and 100,100 nested allocation stress test.
+  - Group F: Negative region escape torture (direct returns, struct fields, pointer casts, wrapper structs, enum payloads strictly rejected by typechecker).
+  - Group G: Crash containment & immediate `200 OK` `/health` recovery after every hostile vector.
+  - Group I: Multi-generation clean server restart (5 consecutive spawn/traffic/shutdown cycles with exit code 0).
+  - Group K: 3-Corpus fuzzing (random bytes 0–8KB, mutated HTTP requests, boundary payloads) with 0 crashes or hangs.
+- [x] **Formal Invariant Ledger (`FORT-*`)**: 12/12 invariants passed with 100% success across 134+ workspace tests.
 
 ---
 
+## Upcoming Milestones: The Path to v1.0 & Beyond
 
-## Upcoming Milestones
+### Phase 6: Full Self-Hosting Bootstrap & v1.0 Release Candidate (v1.0)
+*Target: Complete self-sufficiency where the Tungsten compiler is built entirely by Tungsten itself.*
 
-### Phase 1: Advanced Type System & Frontier PL (v0.3)
-*Target: Elevate Tungsten's typechecker from constant intervals to relational mathematical proofs and full polymorphism.*
-
-1. **Relational Refinement Types**:
-   - Express inter-variable constraints:
-     ```rust
-     fn slice(arr: Array, start: usize, end: usize(>= start && <= arr.len)) -> Slice
-     ```
-   - Linear arithmetic verification between function parameters, return values, and struct fields.
-2. **Generics & Parametric Polymorphism**:
-   - Generic structs: `struct Box<T> { value: T }`, `struct Result<T, E>`.
-   - Generic functions: `fn identity<T>(val: T) -> T`.
-3. **Effect Polymorphism**:
-   - Higher-order functions that abstract over the effects of caller closures:
-     ```rust
-     fn map<T, U, E>(arr: [T], f: fn(T) yields E -> U) -> [U] yields E
-     ```
-   - Solves the classic problem where higher-order functions in Rust cannot cleanly handle both sync, async, and fallible closures.
-4. **SMT Solver Integration**:
-   - Optional Z3 solver bridge to verify complex non-linear arithmetic constraints and inductive properties when interval arithmetic is insufficient.
+1. **Self-Hosting Stage 2 (Bootstrap Closure)**:
+   - Compile `compiler/main.tg` using `tgc.exe` (Stage 1) to produce `tgc_stage2.exe`.
+   - Verify Stage 2 binary equivalence or semantic convergence: `tgc_stage2.exe` compiles the standard library and compiler test suites cleanly.
+2. **Compiler Frontend Enhancements in Tungsten**:
+   - Port the typechecker (`tungsten-typeck`) and region escape analysis into `compiler/typeck.tg`.
+   - Port the middle-end TIR optimization passes (constant folding, bounds check elimination) into `compiler/opt.tg`.
+3. **Formal Language Specification & EBNF**:
+   - Publish formal grammar specification and operational semantics for Tungsten's region inference, algebraic effects, and refinement intervals.
 
 ---
 
-### Phase 2: Compiler Backend & Optimization (v0.4 & v0.5)
-*Target: Transition from tree-walking evaluation to optimized native machine code.*
+### Phase 7: Fortress v2 — High-Concurrency Async Network Engine (v1.1)
+*Target: Multiplexing 100,000+ concurrent connections over the M:N fiber runtime with per-fiber region isolation.*
 
-1. **Tungsten Intermediate Representation (TIR)**:
-   - High-level Static Single Assignment (SSA) form preserving type refinements and effect operations.
-   - Middle-end optimization passes:
-     - Dead Code Elimination (DCE).
-     - Constant Folding & Propagation.
-     - Redundant Refinement Bounds Check Elimination (proven zero-cost).
-     - Inline Expansion.
-2. **Continuation Lowering**:
-   - Transform delimited effect handlers into zero-cost stack-allocated state machines for synchronous execution.
-   - Transform yielding points into fiber yield frames for asynchronous execution.
-3. **Native Code Generators (`tungsten-codegen`)**:
-   - **Cranelift Backend**: Blazing-fast compilation times for local iterative builds and debug mode (`forge build`).
-   - **LLVM Backend** (via `inkwell`): World-class optimizations, vectorization, and link-time optimization (LTO) for release binaries (`forge build --release`).
-   - **WebAssembly Target (`wasm32-unknown-unknown`)**: Compile Tungsten directly to the browser, leveraging algebraic effects to map I/O directly into JavaScript host promises.
+1. **Non-Blocking I/O Event Loop via `Net` Effect**:
+   - Implement Windows IOCP (I/O Completion Ports) and Linux epoll backend drivers in `tungsten-fiber`.
+   - When a socket read/write would block, the fiber yields back to the work-stealing scheduler without stalling the OS worker thread.
+2. **Fiber-Per-Connection Architecture**:
+   - Spawn a lightweight fiber for each incoming connection inside a structured nursery.
+   - Combine fiber concurrency with region isolation: each fiber owns an independent memory region that is bulk-reclaimed upon connection termination.
+3. **HTTP/1.1 Streaming & Keep-Alive Support**:
+   - Multi-chunk streaming request reader resolving single-`recv()` fragmentation limitations.
+   - Pipelining and `Connection: keep-alive` support over fiber channels.
+4. **C100K Benchmark Verification**:
+   - Benchmarking 100,000 simultaneous connections with bounded memory footprint (< 100 MB total).
 
 ---
 
-### Phase 3: Fearless Concurrency via Algebraic Effects (v0.6)
-*Target: Zero-color, high-performance concurrency multiplexed over OS threads.*
+### Phase 8: Formal Verification & SMT Solver Integration (v1.2)
+*Target: Mathematically verifiable zero-panic systems programming.*
 
-1. **Green-Thread / Fiber Engine**:
-   - Stackful coroutines / delimited continuations driven by an `Async` / `Spawn` effect handler.
-   - Functions never need `async fn` or `.await` syntax: calling an I/O operation naturally yields execution back to the fiber scheduler.
-2. **M:N Work-Stealing Runtime**:
-   - Multi-threaded scheduler multiplexing $M$ Tungsten fibers across $N$ physical CPU cores.
-   - Non-blocking I/O event loop driver (epoll / kqueue / IOCP).
-3. **Structured Concurrency**:
-   - Nursery scopes ensuring all spawned concurrent tasks must join or abort before their enclosing lexical scope finishes.
+1. **Z3 SMT Solver Bridge**:
+   - Optional Z3 solver integration for non-linear arithmetic refinement constraints (multiplication, division, modular arithmetic).
+   - Automated induction proofs for recursive function bounds.
+2. **Affine & Linear Resource Invariants**:
+   - Affine ownership types for OS handles (sockets, file descriptors, database connections), proving at compile time that handles are closed exactly once and cannot leak across error paths.
 
 ---
 
-### Phase 4: Native Region-Based Memory Management (v0.7)
-*Target: Complete elimination of explicit lifetime syntax `<'a>` at machine level.*
+### Phase 9: Multi-Target Codegen & WebAssembly (v1.3)
+*Target: Universal systems development from bare metal to browsers.*
 
-1. **Compile-Time Region Inference**:
-   - Tofte-Talpin region inference augmented with linear and affine ownership types.
-   - Automatically partitions heap allocations into lexical arena frames.
-2. **$\mathcal{O}(1)$ Bulk Deallocation**:
-   - Arena scopes freed in single pointer bumps without traversing individual heap objects (except for registered foreign resource finalizers).
-3. **Linear Escape Analysis**:
-   - The compiler guarantees pointers cannot outlive their enclosing region scope, guaranteeing 100% spatial and temporal memory safety without garbage collection.
-
----
-
-### Phase 5: Ecosystem & Production Hardening (v1.0)
-*Target: A rock-solid, production-ready language and package ecosystem.*
-
-1. **Dependency Management in `forge`**:
-   - Full `Forge.toml` specification: dependencies, git repositories, targets, and compiler profiles.
-   - Deterministic `Forge.lock` lockfile resolution.
-2. **Expanded Standard Library**:
-   - `std::collections` (Vector, HashMap, BTreeMap).
-   - `std::net` (TCP, UDP, TLS abstractions over effects).
-   - `std::sync` (Channels, Mutexes, Atomic operations).
-3. **Language Specification & Formal Verification**:
-   - Formal EBNF grammar and operational semantics.
-   - Test suites covering soundness, progress, and preservation proofs.
-4. **Self-Hosting Toolchain**:
-   - Rewriting the Tungsten compiler frontend in Tungsten itself.
-
----
-
-## Suggested Next Immediate Sprint: Phase 5 (v1.0)
-
-To complete the journey toward a production-grade systems language, the recommended immediate next sprint is **Phase 5: Ecosystem & Production Hardening (v1.0)**:
-1. **Dependency Management in `forge`**: Deterministic `Forge.lock` lockfile resolution and package registry integration.
-2. **Standard Library Expansion**: Collections (`Vector`, `HashMap`), networking (`std::net`), and concurrency primitives (`std::sync`).
-3. **Formal Specification & Self-Hosting**: EBNF language grammar and bootstrapping the compiler frontend in Tungsten.
-
+1. **Linux (x86_64 / AArch64) & macOS Targets**:
+   - ELF and Mach-O binary emission via LLVM backend and LLD linker.
+   - POSIX socket and syscall shims in `std/fs` and `std/net`.
+2. **WebAssembly Target (`wasm32-unknown-unknown`)**:
+   - Direct compilation to Wasm bytecode.
+   - Algebraic effect mapping to JavaScript host promises and browser Web APIs without runtime shims.

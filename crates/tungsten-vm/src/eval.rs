@@ -25,6 +25,7 @@ pub struct Evaluator {
 pub enum EvalSignal {
     Normal(Value),
     Return(Value),
+    Break,
     Error(String),
 }
 
@@ -69,6 +70,7 @@ impl Evaluator {
         if let Some(main_fn) = self.functions.get("main").cloned() {
             match self.eval_fn(&main_fn, Vec::new()) {
                 EvalSignal::Normal(v) | EvalSignal::Return(v) => Ok(v),
+                EvalSignal::Break => Err("Unexpected break outside loop".to_string()),
                 EvalSignal::Error(e) => Err(e),
             }
         } else {
@@ -367,6 +369,7 @@ impl Evaluator {
                         let handle = self.scheduler.spawn(move || {
                             match fiber_eval.eval_fn(&target_fn, pass_args) {
                                 EvalSignal::Normal(v) | EvalSignal::Return(v) => Ok(v),
+                                EvalSignal::Break => Err("Unexpected break outside loop".to_string()),
                                 EvalSignal::Error(e) => Err(e),
                             }
                         });
@@ -486,6 +489,7 @@ impl Evaluator {
                                 let handle = self.scheduler.spawn(move || {
                                     match fiber_eval.eval_fn(&target_fn, pass_args) {
                                         EvalSignal::Normal(v) | EvalSignal::Return(v) => Ok(v),
+                                        EvalSignal::Break => Err("Unexpected break outside loop".to_string()),
                                         EvalSignal::Error(e) => Err(e),
                                     }
                                 });
@@ -598,6 +602,7 @@ impl Evaluator {
                                 let handle = self.scheduler.spawn(move || {
                                     match fiber_eval.eval_fn(&target_fn, pass_args) {
                                         EvalSignal::Normal(v) | EvalSignal::Return(v) => Ok(v),
+                                        EvalSignal::Break => Err("Unexpected break outside loop".to_string()),
                                         EvalSignal::Error(e) => Err(e),
                                     }
                                 });
@@ -717,6 +722,21 @@ impl Evaluator {
                                 Ok(status) => EvalSignal::Normal(Value::Int(status.code().unwrap_or(0) as i64)),
                                 Err(_) => EvalSignal::Normal(Value::Int(-1)),
                             };
+                        }
+                    }
+
+                    // Diagnostics effect runtime operations
+                    if namespace == "Diagnostics" {
+                        let msg = eval_args.first().and_then(|v| v.as_str()).unwrap_or_default();
+                        let line = eval_args.get(1).and_then(|v| v.as_int()).unwrap_or(0);
+                        let col = eval_args.get(2).and_then(|v| v.as_int()).unwrap_or(0);
+                        if op == "report_error" {
+                            eprintln!("error[{}:{}]: {}", line, col, msg);
+                            return EvalSignal::Normal(Value::Bool(true));
+                        }
+                        if op == "report_warning" {
+                            eprintln!("warning[{}:{}]: {}", line, col, msg);
+                            return EvalSignal::Normal(Value::Bool(true));
                         }
                     }
                 }
@@ -917,11 +937,35 @@ impl Evaluator {
                 loop {
                     match self.eval_block(body) {
                         EvalSignal::Normal(_) => {}
+                        EvalSignal::Break => break,
                         EvalSignal::Return(v) => return EvalSignal::Return(v),
                         EvalSignal::Error(e) => return EvalSignal::Error(e),
                     }
                 }
+                EvalSignal::Normal(Value::Unit)
             }
+            ExprKind::While { condition, body } => {
+                loop {
+                    let cond_val = match self.eval_expr(condition) {
+                        EvalSignal::Normal(v) => match v.as_bool() {
+                            Some(b) => b,
+                            None => return EvalSignal::Error("Condition in while loop must be a bool".to_string()),
+                        },
+                        early => return early,
+                    };
+                    if !cond_val {
+                        break;
+                    }
+                    match self.eval_block(body) {
+                        EvalSignal::Normal(_) => {}
+                        EvalSignal::Break => break,
+                        EvalSignal::Return(v) => return EvalSignal::Return(v),
+                        EvalSignal::Error(e) => return EvalSignal::Error(e),
+                    }
+                }
+                EvalSignal::Normal(Value::Unit)
+            }
+            ExprKind::Break => EvalSignal::Break,
             ExprKind::Resume(inner) => {
                 self.eval_expr(inner)
             }

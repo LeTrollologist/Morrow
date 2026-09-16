@@ -35,6 +35,7 @@ struct TirLowerer {
     scopes: Vec<HashMap<String, (Var, Type)>>,
     next_var_version: usize,
     continuation_stack: Vec<BlockId>,
+    loop_exits: Vec<BlockId>,
     source_file: Option<String>,
     source_dir: Option<String>,
 }
@@ -55,6 +56,7 @@ impl TirLowerer {
             scopes: Vec::new(),
             next_var_version: 0,
             continuation_stack: Vec::new(),
+            loop_exits: Vec::new(),
             source_file: None,
             source_dir: None,
         }
@@ -336,10 +338,18 @@ impl TirLowerer {
                         });
                     }
                     ExprKind::FieldAccess { target: base, field } => {
-                        if let ExprKind::Ident(base_name) = &base.kind {
+                        let base_ident = match &base.kind {
+                            ExprKind::Ident(base_name) => Some(base_name.as_str()),
+                            ExprKind::Deref(inner) => match &inner.kind {
+                                ExprKind::Ident(inner_name) => Some(inner_name.as_str()),
+                                _ => None,
+                            },
+                            _ => None,
+                        };
+                        if let Some(base_name) = base_ident {
                             let (base_var, _) = self
                                 .lookup_scoped_var(base_name)
-                                .unwrap_or_else(|| (Var::Named(base_name.clone()), Type::Unit));
+                                .unwrap_or_else(|| (Var::Named(base_name.to_string()), Type::Unit));
                             self.emit(Instruction::SetField {
                                 base: base_var,
                                 field: field.clone(),
@@ -428,17 +438,28 @@ impl TirLowerer {
                 res_op
             }
             ExprKind::FieldAccess { target, field } => {
-                let t_op = self.lower_expr(target);
-                let field_ty = match t_op.get_type() {
-                    Type::Struct(ref s_name) => {
-                        self.type_checker
-                            .structs
-                            .get(s_name)
-                            .and_then(|fields| fields.get(field))
-                            .cloned()
-                            .unwrap_or(Type::Unit)
-                    }
-                    _ => Type::Unit,
+                let actual_target = match &target.kind {
+                    ExprKind::Deref(inner) => inner.as_ref(),
+                    _ => target.as_ref(),
+                };
+                let t_op = self.lower_expr(actual_target);
+                let struct_name = match t_op.get_type().strip_region() {
+                    Type::Struct(ref s_name) => Some(s_name.clone()),
+                    Type::Ref { ref inner, .. } | Type::Ptr { ref inner, .. } => match inner.strip_region() {
+                        Type::Struct(ref s_name) => Some(s_name.clone()),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                let field_ty = if let Some(ref s_name) = struct_name {
+                    self.type_checker
+                        .structs
+                        .get(s_name)
+                        .and_then(|fields| fields.get(field))
+                        .cloned()
+                        .unwrap_or(Type::Unit)
+                } else {
+                    Type::Unit
                 };
                 let (dest, res_op) = self.alloc_temp(field_ty.clone());
                 self.emit(Instruction::Assign {
@@ -515,6 +536,12 @@ impl TirLowerer {
                             } else {
                                 Type::I64
                             }
+                        } else {
+                            Type::I64
+                        }
+                    } else if effect == "Database" {
+                        if op == "query" {
+                            Type::String
                         } else {
                             Type::I64
                         }
@@ -788,13 +815,47 @@ impl TirLowerer {
                 let loop_exit = self.new_block(Some("loop_exit"));
                 self.terminate(Terminator::Branch(loop_header));
 
+                self.loop_exits.push(loop_exit);
                 self.set_current_block(loop_header);
                 self.lower_block(body);
                 if !self.is_current_terminated() {
                     self.terminate(Terminator::Branch(loop_header));
                 }
+                self.loop_exits.pop();
 
                 self.set_current_block(loop_exit);
+                Operand::Constant(TirConstant::Unit)
+            }
+            ExprKind::While { condition, body } => {
+                let while_header = self.new_block(Some("while_header"));
+                let while_body = self.new_block(Some("while_body"));
+                let while_exit = self.new_block(Some("while_exit"));
+                self.terminate(Terminator::Branch(while_header));
+
+                self.loop_exits.push(while_exit);
+
+                self.set_current_block(while_header);
+                let cond_op = self.lower_expr(condition);
+                self.terminate(Terminator::BranchCond {
+                    cond: cond_op,
+                    then_block: while_body,
+                    else_block: while_exit,
+                });
+
+                self.set_current_block(while_body);
+                self.lower_block(body);
+                if !self.is_current_terminated() {
+                    self.terminate(Terminator::Branch(while_header));
+                }
+                self.loop_exits.pop();
+
+                self.set_current_block(while_exit);
+                Operand::Constant(TirConstant::Unit)
+            }
+            ExprKind::Break => {
+                if let Some(exit_bb) = self.loop_exits.last().copied() {
+                    self.terminate(Terminator::Branch(exit_bb));
+                }
                 Operand::Constant(TirConstant::Unit)
             }
             ExprKind::Region { name, body } => {

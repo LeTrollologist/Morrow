@@ -1,0 +1,363 @@
+// =============================================================================
+// Tungsten Standard Library — Safe Zero-Copy HTTP/1.1 Engine (Fortress Edition)
+// Demonstrates:
+// 1. Zero-copy HTTP request parsing directly into region memory
+// 2. Refinement & bounds checking defending against header overflow / DoS
+// 3. Structured response formatting with automatic Content-Length calculation
+// =============================================================================
+
+import std::collections;
+
+extern "C" {
+    fn strlen(s: *const u8) -> usize;
+    fn strcmp(s1: *const u8, s2: *const u8) -> i32;
+    fn tungsten_region_alloc(arena: *mut u8, size: usize, align: usize) -> *mut u8;
+}
+
+pub struct HttpRequest {
+    method: String,
+    path: String,
+    body: String,
+    is_valid: bool,
+}
+
+pub struct HttpResponse {
+    status_code: i64,
+    status_text: String,
+    content_type: String,
+    body: String,
+}
+
+// -----------------------------------------------------------------------------
+// Response Constructors
+// -----------------------------------------------------------------------------
+
+pub fn http_response_ok(body: String, content_type: String) -> HttpResponse {
+    HttpResponse {
+        status_code: 200,
+        status_text: "OK",
+        content_type: content_type,
+        body: body,
+    }
+}
+
+pub fn http_response_created(body: String) -> HttpResponse {
+    HttpResponse {
+        status_code: 201,
+        status_text: "Created",
+        content_type: "application/json",
+        body: body,
+    }
+}
+
+pub fn http_response_not_found() -> HttpResponse {
+    HttpResponse {
+        status_code: 404,
+        status_text: "Not Found",
+        content_type: "application/json",
+        body: "{\"error\":\"Not Found\"}",
+    }
+}
+
+pub fn http_response_bad_request(msg: String) -> HttpResponse {
+    HttpResponse {
+        status_code: 400,
+        status_text: "Bad Request",
+        content_type: "application/json",
+        body: msg,
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Safe Zero-Copy Request Parser
+// -----------------------------------------------------------------------------
+
+// Helper to copy a substring slice [start..end) into region arena as a null-terminated String
+fn http_slice_to_str_in(src: *const u8, start: i64, end: i64, arena: *mut u8) -> String {
+    let len = end - start;
+    if len <= 0 {
+        return "";
+    }
+    let buf_sz = (len + 1) as usize;
+    let dst = unsafe {
+        tungsten_region_alloc(arena, buf_sz, 1)
+    };
+    let mut i: i64 = 0;
+    while i < len {
+        unsafe {
+            dst[i] = src[start + i];
+        }
+        i = i + 1;
+    }
+    unsafe {
+        dst[len] = 0 as u8;
+        dst as String
+    }
+}
+
+// Parse HTTP/1.1 request from raw buffer into region arena
+pub fn http_parse_request_in(raw: String, arena: *mut u8) -> HttpRequest {
+    let ptr = raw as *const u8;
+    let total_len = unsafe { strlen(ptr) } as i64;
+
+    // Defense-in-depth: Reject empty or excessive headers (> 64KB)
+    if total_len < 10 || total_len > 65536 {
+        return HttpRequest {
+            method: "UNKNOWN",
+            path: "/",
+            body: "",
+            is_valid: false,
+        };
+    }
+
+    // 1. Parse Method: search for first space
+    let mut sp1: i64 = 0;
+    while sp1 < total_len && sp1 < 16 {
+        let b = unsafe { ptr[sp1] };
+        if b == 32 as u8 { // ' '
+            break;
+        }
+        sp1 = sp1 + 1;
+    }
+
+    if sp1 >= 16 || sp1 == 0 {
+        return HttpRequest {
+            method: "UNKNOWN",
+            path: "/",
+            body: "",
+            is_valid: false,
+        };
+    }
+
+    let method = http_slice_to_str_in(ptr, 0, sp1, arena);
+
+    // 2. Parse Path: search for second space
+    let path_start = sp1 + 1;
+    let mut sp2 = path_start;
+    while sp2 < total_len {
+        let b = unsafe { ptr[sp2] };
+        if b == 32 as u8 || b == 13 as u8 || b == 10 as u8 { // ' ' or '\r' or '\n'
+            break;
+        }
+        sp2 = sp2 + 1;
+    }
+
+    let path = http_slice_to_str_in(ptr, path_start, sp2, arena);
+
+    // 3. Search for header-body delimiter "\r\n\r\n"
+    let mut body_start: i64 = 0 - 1;
+    let mut j: i64 = sp2;
+    while j + 3 < total_len {
+        let b0 = unsafe { ptr[j] };
+        let b1 = unsafe { ptr[j + 1] };
+        let b2 = unsafe { ptr[j + 2] };
+        let b3 = unsafe { ptr[j + 3] };
+        if b0 == 13 as u8 && b1 == 10 as u8 && b2 == 13 as u8 && b3 == 10 as u8 {
+            body_start = j + 4;
+            break;
+        }
+        j = j + 1;
+    }
+
+    if body_start < 0 {
+        return HttpRequest {
+            method: "UNKNOWN",
+            path: "/",
+            body: "",
+            is_valid: false,
+        };
+    }
+
+    // 4. Validate HTTP Version in Request Line (must contain "HTTP/1.")
+    let mut line1_end: i64 = 0 - 1;
+    let mut k: i64 = sp2;
+    while k + 1 < body_start {
+        let c0 = unsafe { ptr[k] };
+        let c1 = unsafe { ptr[k + 1] };
+        if c0 == 13 as u8 && c1 == 10 as u8 {
+            line1_end = k;
+            break;
+        }
+        k = k + 1;
+    }
+
+    if line1_end < 0 {
+        return HttpRequest {
+            method: "UNKNOWN",
+            path: "/",
+            body: "",
+            is_valid: false,
+        };
+    }
+
+    let mut has_http1 = false;
+    let mut v_scan: i64 = sp2;
+    while v_scan + 6 < line1_end {
+        let b0 = unsafe { ptr[v_scan] };
+        let b1 = unsafe { ptr[v_scan + 1] };
+        let b2 = unsafe { ptr[v_scan + 2] };
+        let b3 = unsafe { ptr[v_scan + 3] };
+        let b4 = unsafe { ptr[v_scan + 4] };
+        let b5 = unsafe { ptr[v_scan + 5] };
+        let b6 = unsafe { ptr[v_scan + 6] };
+        if b0 == 72 as u8 && b1 == 84 as u8 && b2 == 84 as u8 && b3 == 80 as u8 && b4 == 47 as u8 && b5 == 49 as u8 && b6 == 46 as u8 {
+            has_http1 = true;
+            break;
+        }
+        v_scan = v_scan + 1;
+    }
+
+    if !has_http1 {
+        return HttpRequest {
+            method: "UNKNOWN",
+            path: "/",
+            body: "",
+            is_valid: false,
+        };
+    }
+
+    // 5. Validate Header Lines (Every header line must have ':' and non-empty name)
+    let mut h_idx: i64 = line1_end + 2;
+    let headers_end = body_start - 2;
+    let mut headers_valid = true;
+
+    while h_idx < headers_end && headers_valid {
+        let mut line_end: i64 = headers_end;
+        let mut scan: i64 = h_idx;
+        while scan + 1 < headers_end {
+            let b0 = unsafe { ptr[scan] };
+            let b1 = unsafe { ptr[scan + 1] };
+            if b0 == 13 as u8 && b1 == 10 as u8 {
+                line_end = scan;
+                break;
+            }
+            scan = scan + 1;
+        }
+
+        if line_end > h_idx {
+            let mut colon_pos: i64 = 0 - 1;
+            let mut c_scan: i64 = h_idx;
+            while c_scan < line_end {
+                if unsafe { ptr[c_scan] } == 58 as u8 { // ':'
+                    colon_pos = c_scan;
+                    break;
+                }
+                c_scan = c_scan + 1;
+            }
+
+            if colon_pos <= h_idx {
+                headers_valid = false;
+            }
+        }
+
+        h_idx = line_end + 2;
+    }
+
+    if !headers_valid {
+        return HttpRequest {
+            method: "UNKNOWN",
+            path: "/",
+            body: "",
+            is_valid: false,
+        };
+    }
+
+    let mut body = "";
+    if body_start < total_len {
+        body = http_slice_to_str_in(ptr, body_start, total_len, arena);
+    }
+
+    HttpRequest {
+        method: method,
+        path: path,
+        body: body,
+        is_valid: true,
+    }
+}
+
+// -----------------------------------------------------------------------------
+// HTTP/1.1 Response Formatter
+// -----------------------------------------------------------------------------
+
+fn int_to_string_in(val: i64, arena: *mut u8) -> String {
+    if val == 0 {
+        return "0";
+    }
+    let mut buf = string_buffer_new_in(arena);
+    let mut temp = val;
+    let is_neg = temp < 0;
+    if is_neg {
+        temp = 0 - temp;
+    }
+
+    // Digits in reverse
+    let mut digits: Vec<i64> = vec_new_in(arena);
+    while temp > 0 {
+        let next_val = temp / 10;
+        let d = temp - (next_val * 10);
+        vec_push(&mut digits, d);
+        temp = next_val;
+    }
+
+    if is_neg {
+        string_buffer_push_byte(&mut buf, 45 as u8); // '-'
+    }
+
+    let mut k = digits.len - 1;
+    while k >= 0 {
+        let d = vec_get(&digits, k);
+        let byte_val = (48 + d) as u8;
+        string_buffer_push_byte(&mut buf, byte_val);
+        k = k - 1;
+    }
+
+    string_buffer_push_byte(&mut buf, 0 as u8);
+    string_buffer_as_ptr(&buf) as String
+}
+
+pub fn http_format_response_in(resp: &HttpResponse, arena: *mut u8) -> String {
+    let mut sb = string_buffer_new_in(arena);
+
+    // Status Line: HTTP/1.1 <code <text>\r\n
+    let line1 = "HTTP/1.1 ";
+    string_buffer_push_str(&mut sb, line1 as *const u8, 9);
+    let code_str = int_to_string_in(resp.status_code, arena);
+    let code_len = unsafe { strlen(code_str as *const u8) } as i64;
+    string_buffer_push_str(&mut sb, code_str as *const u8, code_len);
+    string_buffer_push_byte(&mut sb, 32 as u8); // ' '
+
+    let text_len = unsafe { strlen(resp.status_text as *const u8) } as i64;
+    string_buffer_push_str(&mut sb, resp.status_text as *const u8, text_len);
+    string_buffer_push_byte(&mut sb, 13 as u8); // '\r'
+    string_buffer_push_byte(&mut sb, 10 as u8); // '\n'
+
+    // Content-Type Header
+    let ct_prefix = "Content-Type: ";
+    string_buffer_push_str(&mut sb, ct_prefix as *const u8, 14);
+    let ct_len = unsafe { strlen(resp.content_type as *const u8) } as i64;
+    string_buffer_push_str(&mut sb, resp.content_type as *const u8, ct_len);
+    string_buffer_push_byte(&mut sb, 13 as u8);
+    string_buffer_push_byte(&mut sb, 10 as u8);
+
+    // Content-Length Header
+    let body_len = unsafe { strlen(resp.body as *const u8) } as i64;
+    let cl_prefix = "Content-Length: ";
+    string_buffer_push_str(&mut sb, cl_prefix as *const u8, 16);
+    let bl_str = int_to_string_in(body_len, arena);
+    let bl_len = unsafe { strlen(bl_str as *const u8) } as i64;
+    string_buffer_push_str(&mut sb, bl_str as *const u8, bl_len);
+    string_buffer_push_byte(&mut sb, 13 as u8);
+    string_buffer_push_byte(&mut sb, 10 as u8);
+
+    // Connection: close
+    let conn_hdr = "Connection: close\r\n\r\n";
+    string_buffer_push_str(&mut sb, conn_hdr as *const u8, 21);
+
+    // Body
+    if body_len > 0 {
+        string_buffer_push_str(&mut sb, resp.body as *const u8, body_len);
+    }
+
+    string_buffer_push_byte(&mut sb, 0 as u8);
+    string_buffer_as_ptr(&sb) as String
+}

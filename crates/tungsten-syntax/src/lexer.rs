@@ -249,6 +249,8 @@ impl<'a> Lexer<'a> {
                         "enum" => TokenKind::Enum,
                         "match" => TokenKind::Match,
                         "loop" => TokenKind::Loop,
+                        "while" => TokenKind::While,
+                        "break" => TokenKind::Break,
                         "nursery" => TokenKind::Nursery,
                         "unsafe" => TokenKind::Unsafe,
                         "extern" => TokenKind::Extern,

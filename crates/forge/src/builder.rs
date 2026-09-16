@@ -29,27 +29,57 @@ impl Default for BuildOptions {
 pub fn get_target_dir_root(target: Option<&str>) -> PathBuf {
     if let Some(target_str) = target {
         let p = Path::new(target_str);
+        // 1. If there is a Forge.toml somewhere above the target file, that manifest's parent IS the root.
+        if let Some(m) = find_manifest(p) {
+            return m.parent().unwrap().to_path_buf();
+        }
+
+        // 2. Walk UP from the target file path looking for a workspace-root indicator
+        //    (both target/crt and std/ directories present). This detects when target is in
+        //    a workspace (e.g., examples/sqlite_benchmark.tg inside the Tungsten workspace).
+        let start = if p.is_file() {
+            p.parent().map(|d| d.to_path_buf())
+        } else if p.is_dir() {
+            Some(p.to_path_buf())
+        } else {
+            None
+        };
+        if let Some(start_dir) = start {
+            let mut dir: Option<PathBuf> = Some(start_dir);
+            while let Some(d) = dir {
+                if d.join("target").join("crt").is_dir() && d.join("std").is_dir() {
+                    return d;
+                }
+                dir = d.parent().map(|p| p.to_path_buf());
+            }
+        }
+
+        // 3. Target was specified, but is not inside a workspace. Use target's parent directory.
         if p.is_file() {
-            if let Some(m) = find_manifest(p) {
-                return m.parent().unwrap().to_path_buf();
-            } else if let Some(parent) = p.parent() {
+            if let Some(parent) = p.parent() {
                 if !parent.as_os_str().is_empty() {
                     return parent.to_path_buf();
                 }
             }
         } else if p.is_dir() {
-            if let Some(m) = find_manifest(p) {
-                return m.parent().unwrap().to_path_buf();
-            }
             return p.to_path_buf();
         }
     }
+
+    // 4. If no target was specified, search from current_dir.
     if let Ok(curr) = env::current_dir() {
         if let Some(m) = find_manifest(&curr) {
             return m.parent().unwrap().to_path_buf();
         }
-        return curr;
+        let mut dir: Option<PathBuf> = Some(curr);
+        while let Some(d) = dir {
+            if d.join("target").join("crt").is_dir() && d.join("std").is_dir() {
+                return d;
+            }
+            dir = d.parent().map(|p| p.to_path_buf());
+        }
     }
+
     PathBuf::from(".")
 }
 
@@ -119,6 +149,7 @@ pub fn build_target(
 ) -> Result<PathBuf, String> {
     let (ast, path_desc) = load_program_auto(target)?;
 
+    eprintln!("[Forge] Type checking AST ({} items)...", ast.items.len());
     if let Err(errs) = tungsten_typeck::check(&ast) {
         let mut msg = format!("\n[Type & Effect Error] {} error(s) found in {}:\n", errs.len(), path_desc);
         for (idx, err) in errs.iter().enumerate() {
@@ -126,11 +157,14 @@ pub fn build_target(
         }
         return Err(msg);
     }
+    eprintln!("[Forge] Type check passed. Lowering to TIR...");
 
     let (src_file, src_dir) = resolve_source_info(&path_desc);
     let mut module = tungsten_tir::compile_with_source(&ast, src_file, src_dir)
         .map_err(|e| format!("[TIR Lowering Error]: {}", e))?;
+    eprintln!("[Forge] TIR lowered ({} functions). Running optimization passes...", module.functions.len());
     let stats = tungsten_tir::optimize(&mut module);
+    eprintln!("[Forge] TIR optimization complete ({} const folds, {} bounds elim).", stats.const_folds, stats.bounds_checks_eliminated);
 
     let bin_name = Path::new(&path_desc)
         .file_stem()
@@ -138,11 +172,86 @@ pub fn build_target(
         .unwrap_or("app");
 
     let root_dir = get_target_dir_root(target);
+    let crt_dst = root_dir.join("target").join("crt");
+    if !crt_dst.join("crt2.o").is_file() {
+        if let Ok(toolchain) = tungsten_codegen::LlvmToolchain::discover() {
+            let _ = fs::create_dir_all(&crt_dst);
+            if let Ok(entries) = fs::read_dir(&toolchain.crt_dir) {
+                for entry in entries.flatten() {
+                    let dest = crt_dst.join(entry.file_name());
+                    let _ = fs::copy(entry.path(), dest);
+                }
+            }
+        }
+    }
+
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|p| p.to_path_buf());
+
+    let sqlite_a = crt_dst.join("libsqlite3.a");
+    if !sqlite_a.is_file() {
+        // 1. Try to copy prebuilt libsqlite3.a from workspace
+        let ws_sqlite_a = workspace_root.as_ref().map(|ws| ws.join("target").join("crt").join("libsqlite3.a"));
+        if let Some(src) = ws_sqlite_a.filter(|p| p.is_file()) {
+            let _ = fs::copy(&src, &sqlite_a);
+        } else if Path::new("target/crt/libsqlite3.a").is_file() {
+            let _ = fs::copy("target/crt/libsqlite3.a", &sqlite_a);
+        } else {
+            // 2. Try to generate via llvm-dlltool from sqlite3.def
+            let sqlite_def = root_dir.join("target").join("sqlite").join("sqlite3.def");
+            let ws_def = workspace_root.as_ref().map(|ws| ws.join("target").join("sqlite").join("sqlite3.def"));
+            let def_path = if sqlite_def.is_file() {
+                Some(sqlite_def)
+            } else if let Some(p) = ws_def.filter(|p| p.is_file()) {
+                Some(p)
+            } else if Path::new("target/sqlite/sqlite3.def").is_file() {
+                Some(PathBuf::from("target/sqlite/sqlite3.def"))
+            } else {
+                None
+            };
+
+            if let Some(def_p) = def_path {
+                if let Ok(toolchain) = tungsten_codegen::LlvmToolchain::discover() {
+                    if let Some(llvm_bin) = toolchain.clang_path.parent() {
+                        let dlltool = llvm_bin.join("llvm-dlltool.exe");
+                        if dlltool.is_file() {
+                            let _ = std::process::Command::new(dlltool)
+                                .arg("-m").arg("i386:x86-64")
+                                .arg("-d").arg(&def_p)
+                                .arg("-l").arg(&sqlite_a)
+                                .arg("-D").arg("sqlite3.dll")
+                                .output();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     let profile_dir = if options.release { "release" } else { "debug" };
     let out_dir = root_dir.join("target").join(profile_dir);
     let _ = fs::create_dir_all(&out_dir);
 
     let out_exe = options.custom_out.clone().unwrap_or_else(|| out_dir.join(format!("{}.exe", bin_name)));
+
+    let sqlite_dll_src = if root_dir.join("target").join("sqlite").join("sqlite3.dll").is_file() {
+        Some(root_dir.join("target").join("sqlite").join("sqlite3.dll"))
+    } else if let Some(ws_dll) = workspace_root.as_ref().map(|ws| ws.join("target").join("sqlite").join("sqlite3.dll")).filter(|p| p.is_file()) {
+        Some(ws_dll)
+    } else if Path::new("target/sqlite/sqlite3.dll").is_file() {
+        Some(PathBuf::from("target/sqlite/sqlite3.dll"))
+    } else {
+        None
+    };
+
+    if let Some(dll_src) = sqlite_dll_src {
+        let _ = fs::copy(&dll_src, out_dir.join("sqlite3.dll"));
+        if let Some(parent) = out_exe.parent() {
+            let _ = fs::copy(&dll_src, parent.join("sqlite3.dll"));
+        }
+    }
 
     let llvm_path = if options.emit_llvm {
         Some(out_exe.with_extension("ll"))
@@ -158,11 +267,45 @@ pub fn build_target(
 
     let opt_level = if options.release { "O3" } else { "O0" };
 
+    let mut extra_libs = Vec::new();
+    let mut extra_lib_paths = Vec::new();
+
+    let root_target_crt = root_dir.join("target").join("crt");
+    let root_target_sqlite = root_dir.join("target").join("sqlite");
+
+    if sqlite_a.is_file() || root_target_crt.join("libsqlite3.a").is_file() || Path::new("target/crt/libsqlite3.a").is_file() {
+        extra_libs.push("sqlite3".to_string());
+    }
+
+    // Always supply absolute paths derived from the resolved workspace root,
+    // so that `cargo test` (which runs from a different CWD) can still find libsqlite3.a.
+    if crt_dst.is_dir() {
+        extra_lib_paths.push(crt_dst);
+    }
+    if root_target_crt.is_dir() {
+        extra_lib_paths.push(root_target_crt);
+    }
+    if root_target_sqlite.is_dir() {
+        extra_lib_paths.push(root_target_sqlite);
+    }
+    if let Some(ref ws) = workspace_root {
+        let ws_crt = ws.join("target").join("crt");
+        if ws_crt.is_dir() {
+            extra_lib_paths.push(ws_crt);
+        }
+        let ws_sqlite = ws.join("target").join("sqlite");
+        if ws_sqlite.is_dir() {
+            extra_lib_paths.push(ws_sqlite);
+        }
+    }
+    extra_lib_paths.push(root_dir.clone());
+
     let aot_opts = tungsten_codegen::AotOptions {
         opt_level: opt_level.to_string(),
         emit_llvm: llvm_path,
         emit_asm: asm_path,
-        extra_libs: Vec::new(),
+        extra_libs,
+        extra_lib_paths,
     };
 
     if options.release {

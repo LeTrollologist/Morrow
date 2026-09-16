@@ -52,39 +52,43 @@ pub fn strip_comments(input: &str) -> String {
 /// Maps a C type string to a Tungsten type string
 pub fn map_c_type(c_ty: &str) -> String {
     let s = c_ty.trim();
+    if s.contains("(*") || s.contains(')') {
+        return "*mut u8".to_string();
+    }
     let is_const = s.starts_with("const ") || s.ends_with(" const");
-    let clean = s.replace("const", "")
-                 .replace("struct", "")
-                 .replace("enum", "")
-                 .replace("unsigned", "unsigned_")
-                 .trim()
-                 .to_string();
+    let mut clean = s.replace("const", "")
+                     .replace("struct", "")
+                     .replace("enum", "")
+                     .replace("SQLITE_API", "")
+                     .replace("SQLITE_EXTERN", "")
+                     .replace("SQLITE_DEPRECATED", "")
+                     .replace("SQLITE_EXPERIMENTAL", "")
+                     .replace("SQLITE_SYSAPI", "")
+                     .replace("SQLITE_WSD", "")
+                     .replace("unsigned", "unsigned_")
+                     .trim()
+                     .to_string();
 
-    if clean.ends_with('*') {
-        let base = clean.trim_end_matches('*').trim();
-        let inner = if base.is_empty() || base == "void" {
-            "u8".to_string()
-        } else {
-            map_c_type(base)
-        };
-        if is_const {
-            return format!("*const {}", inner);
-        } else {
-            return format!("*mut {}", inner);
-        }
+    let mut ptr_depth = 0;
+    while clean.ends_with('*') {
+        ptr_depth += 1;
+        clean = clean.trim_end_matches('*').trim().to_string();
     }
 
-    match clean.as_str() {
-        "void" => "()".to_string(),
+    let base_ty = match clean.as_str() {
+        "void" => if ptr_depth > 0 { "u8".to_string() } else { "()".to_string() },
         "char" | "int8_t" => "u8".to_string(),
         "unsigned_ char" | "uint8_t" | "unsigned_char" => "u8".to_string(),
         "short" | "int16_t" | "short int" => "i16".to_string(),
         "unsigned_ short" | "uint16_t" | "unsigned_short" => "u16".to_string(),
         "int" | "int32_t" => "i32".to_string(),
         "unsigned_ int" | "uint32_t" | "unsigned_" | "unsigned_int" => "u32".to_string(),
-        "long" | "long int" | "long long" | "int64_t" => "i64".to_string(),
-        "unsigned_ long" | "unsigned_ long long" | "uint64_t" | "size_t" | "uintptr_t" | "unsigned_long" => "usize".to_string(),
+        "long" | "long int" | "long long" | "int64_t" | "sqlite3_int64" | "sqlite_int64" => "i64".to_string(),
+        "unsigned_ long" | "unsigned_ long long" | "uint64_t" | "size_t" | "uintptr_t" | "unsigned_long" | "sqlite3_uint64" => "usize".to_string(),
+        "float" => "f32".to_string(),
+        "double" | "sqlite3_rtree_dbl" => "f64".to_string(),
         "bool" | "_Bool" => "bool".to_string(),
+        "sqlite3" | "sqlite3_stmt" | "sqlite3_value" | "sqlite3_context" | "sqlite3_blob" | "sqlite3_backup" | "sqlite3_file" | "sqlite3_vfs" => "u8".to_string(),
         other => {
             if other.is_empty() {
                 "u8".to_string()
@@ -92,7 +96,29 @@ pub fn map_c_type(c_ty: &str) -> String {
                 other.to_string()
             }
         }
+    };
+
+    let mut res = base_ty;
+    for i in 0..ptr_depth {
+        if i == 0 && is_const {
+            res = format!("*const {}", res);
+        } else {
+            res = format!("*mut {}", res);
+        }
     }
+    res
+}
+
+fn is_valid_identifier(name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let mut chars = name.chars();
+    let first = chars.next().unwrap();
+    if !first.is_ascii_alphabetic() && first != '_' {
+        return false;
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// Parse C header source and generate Tungsten code
@@ -101,6 +127,7 @@ pub fn generate_bindings(header_content: &str) -> Result<String, String> {
     let mut defines = Vec::new();
     let mut structs = Vec::new();
     let mut functions = Vec::new();
+    let mut seen_fn_names = std::collections::HashSet::new();
 
     for line in stripped.lines() {
         let trimmed = line.trim();
@@ -132,20 +159,16 @@ pub fn generate_bindings(header_content: &str) -> Result<String, String> {
     while cursor < chars.len() {
         if let Some(pos) = find_substring(&chars, cursor, "struct ") {
             let start = pos + 7;
-            // Check if there is an opening brace before semicolon
             if let Some(brace_pos) = find_char(&chars, start, '{') {
                 if let Some(semi_pos) = find_char(&chars, start, ';') {
                     if semi_pos < brace_pos {
-                        // Forward declaration: struct Foo; - skip
                         cursor = semi_pos + 1;
                         continue;
                     }
                 }
-                // Extract struct name (if before brace)
                 let name_candidate: String = chars[start..brace_pos].iter().collect();
                 let name = name_candidate.trim().to_string();
 
-                // Find matching closing brace
                 if let Some(close_brace) = find_char(&chars, brace_pos + 1, '}') {
                     let body: String = chars[brace_pos + 1..close_brace].iter().collect();
                     let end_pos = find_char(&chars, close_brace, ';').unwrap_or(close_brace);
@@ -156,14 +179,18 @@ pub fn generate_bindings(header_content: &str) -> Result<String, String> {
                         after_brace.trim().to_string()
                     };
 
-                    if !final_name.is_empty() {
+                    if is_valid_identifier(&final_name) {
                         let mut fields = Vec::new();
+                        let valid_struct = true;
                         for field_stmt in body.split(';') {
                             let f_trim = field_stmt.trim();
                             if f_trim.is_empty() {
                                 continue;
                             }
-                            // Split by whitespace: type field_name
+                            if f_trim.contains('(') || f_trim.contains(')') || f_trim.contains('[') {
+                                // Skip function pointer / array fields for simple struct mapping
+                                continue;
+                            }
                             let parts: Vec<&str> = f_trim.split_whitespace().collect();
                             if parts.len() >= 2 {
                                 let mut f_name = parts.last().unwrap().to_string();
@@ -172,15 +199,19 @@ pub fn generate_bindings(header_content: &str) -> Result<String, String> {
                                     f_name.remove(0);
                                     type_parts.push("*");
                                 }
-                                let c_ty = type_parts.join(" ");
-                                let tg_ty = map_c_type(&c_ty);
-                                fields.push((f_name, tg_ty));
+                                if is_valid_identifier(&f_name) {
+                                    let c_ty = type_parts.join(" ");
+                                    let tg_ty = map_c_type(&c_ty);
+                                    fields.push((f_name, tg_ty));
+                                }
                             }
                         }
-                        structs.push(CStruct {
-                            name: final_name,
-                            fields,
-                        });
+                        if !fields.is_empty() && valid_struct {
+                            structs.push(CStruct {
+                                name: final_name,
+                                fields,
+                            });
+                        }
                     }
                     cursor = end_pos + 1;
                     continue;
@@ -192,8 +223,15 @@ pub fn generate_bindings(header_content: &str) -> Result<String, String> {
 
     // Parse functions: declarations ending in ';'
     for stmt in stripped.split(';') {
-        let trimmed = stmt.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.contains('{') || trimmed.contains('}') {
+        // A ';'-delimited chunk may start with #define lines (which have no ';').
+        // Extract the last non-empty, non-preprocessor line as the actual declaration candidate.
+        let candidate = stmt.lines()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .last()
+            .unwrap_or("");
+        let trimmed = candidate;
+        if trimmed.is_empty() || trimmed.starts_with("typedef") || trimmed.contains('{') || trimmed.contains('}') {
             continue;
         }
 
@@ -203,9 +241,11 @@ pub fn generate_bindings(header_content: &str) -> Result<String, String> {
                     let pre_paren = trimmed[..paren_open].trim();
                     let params_str = trimmed[paren_open + 1..paren_close].trim();
 
-                    // Pre-paren contains: [extern] [modifiers] <ret_type> <fn_name>
+                    // Filter out C keywords, calling conventions, and export macros
                     let pre_parts: Vec<&str> = pre_paren.split_whitespace()
-                        .filter(|p| !matches!(*p, "extern" | "__cdecl" | "__stdcall" | "WINAPI" | "APIENTRY"))
+                        .filter(|p| !matches!(*p, "extern" | "__cdecl" | "__stdcall" | "WINAPI" | "APIENTRY" |
+                                                  "SQLITE_API" | "SQLITE_EXTERN" | "SQLITE_DEPRECATED" |
+                                                  "SQLITE_EXPERIMENTAL" | "SQLITE_SYSAPI" | "SQLITE_WSD"))
                         .collect();
 
                     if pre_parts.is_empty() {
@@ -219,7 +259,7 @@ pub fn generate_bindings(header_content: &str) -> Result<String, String> {
                         ret_parts.push("*");
                     }
 
-                    if fn_name.is_empty() {
+                    if !is_valid_identifier(&fn_name) || seen_fn_names.contains(&fn_name) {
                         continue;
                     }
 
@@ -235,12 +275,16 @@ pub fn generate_bindings(header_content: &str) -> Result<String, String> {
                                 continue;
                             }
                             if p_trim == "..." {
-                                // Varargs not supported directly in fn sig
+                                continue;
+                            }
+                            if p_trim.contains('(') && p_trim.contains(')') {
+                                // Function pointer parameter
+                                let p_name = format!("callback_{}", idx);
+                                params.push((p_name, "*mut u8".to_string()));
                                 continue;
                             }
                             let parts: Vec<&str> = p_trim.split_whitespace().collect();
                             if parts.len() == 1 {
-                                // Anonymous parameter: type only
                                 let p_ty = map_c_type(parts[0]);
                                 params.push((format!("arg{}", idx), p_ty));
                             } else {
@@ -250,6 +294,9 @@ pub fn generate_bindings(header_content: &str) -> Result<String, String> {
                                     p_name.remove(0);
                                     type_parts.push("*");
                                 }
+                                if !is_valid_identifier(&p_name) {
+                                    p_name = format!("arg{}", idx);
+                                }
                                 let c_ty = type_parts.join(" ");
                                 let p_ty = map_c_type(&c_ty);
                                 params.push((p_name, p_ty));
@@ -257,6 +304,7 @@ pub fn generate_bindings(header_content: &str) -> Result<String, String> {
                         }
                     }
 
+                    seen_fn_names.insert(fn_name.clone());
                     functions.push(CFn {
                         name: fn_name,
                         params,
@@ -428,5 +476,21 @@ mod tests {
         assert!(tg.contains("fn malloc(size: usize) -> *mut u8;"));
         assert!(tg.contains("fn free(ptr: *mut u8);"));
         assert!(tg.contains("fn add(a: i32, b: i32) -> i32;"));
+    }
+    #[test]
+    fn test_bindgen_sqlite_stubs() {
+        // Regression test: #define lines without trailing ';' must not swallow the
+        // first function declaration following them in the same ';'-split chunk.
+        let header = r#"
+        #define SQLITE_OK 0
+        int sqlite3_open(const char *filename, void **ppDb);
+        int sqlite3_close(void *db);
+        const char *sqlite3_errmsg(void *db);
+        "#;
+        let tg = generate_bindings(header).unwrap();
+        assert!(tg.contains("sqlite3_open"),  "sqlite3_open missing:\n{}", tg);
+        assert!(tg.contains("sqlite3_close"), "sqlite3_close missing:\n{}", tg);
+        assert!(tg.contains("sqlite3_errmsg"),"sqlite3_errmsg missing:\n{}", tg);
+        assert!(tg.contains("extern \"C\""), "extern C block missing:\n{}", tg);
     }
 }
