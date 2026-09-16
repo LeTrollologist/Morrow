@@ -49,10 +49,21 @@ fn test_web_service_full_lifecycle() {
     let exe_path = build_target(Some(target_str), &options).expect("Web service build should succeed");
     assert!(exe_path.exists(), "Built executable must exist at {}", exe_path.display());
 
-    // Spawn the web service
-    let mut child: Child = Command::new(&exe_path)
-        .spawn()
-        .expect("Failed to spawn web_service child process");
+    // Spawn the web service with retry on Windows error 5
+    let mut child_res = None;
+    for attempt in 0..15 {
+        match Command::new(&exe_path).spawn() {
+            Ok(c) => {
+                child_res = Some(c);
+                break;
+            }
+            Err(e) if e.raw_os_error() == Some(5) => {
+                thread::sleep(Duration::from_millis(50 * (attempt + 1)));
+            }
+            Err(e) => panic!("Failed to spawn web_service child process: {}", e),
+        }
+    }
+    let mut child: Child = child_res.expect("Failed to spawn web_service child process");
 
     // Allow the server a moment to bind the socket
     thread::sleep(Duration::from_millis(300));

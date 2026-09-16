@@ -30,7 +30,7 @@ For development status and upcoming milestones, see [ROADMAP.md](ROADMAP.md).
 ```
 Tungsten/
 ├── Cargo.toml
-├── compiler/              # Self-Hosting Compiler Frontend (Stage 1 in Tungsten)
+├── compiler/              # Self-Hosting Compiler Frontend (Bootstrap Closure in Tungsten)
 │   ├── ast.tg, lexer.tg, parser.tg, codegen.tg
 │   ├── interner.tg, diagnostics.tg, main.tg
 ├── std/                   # Tungsten Standard Library

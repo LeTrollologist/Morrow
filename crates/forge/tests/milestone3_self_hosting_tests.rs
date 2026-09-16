@@ -47,6 +47,7 @@ fn test_milestone3_bootstrap_grand_loop() {
         }
     }
     let tgc_out = out_res.expect("tgc execution must succeed");
+    println!("DEBUG TGC: status={:?}, stdout={}, stderr={}", tgc_out.status, String::from_utf8_lossy(&tgc_out.stdout), String::from_utf8_lossy(&tgc_out.stderr));
     assert!(tgc_out.status.success(), "tgc must exit with code 0");
     let tgc_stdout = String::from_utf8_lossy(&tgc_out.stdout);
     assert!(

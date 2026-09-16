@@ -117,9 +117,20 @@ fn test_c100k_concurrency_and_heartbeat() {
         .expect("Building Fortress v2 server should succeed");
 
     let port: u16 = 8096;
-    let mut child: Child = Command::new(&exe_path)
-        .spawn()
-        .expect("Failed to launch Fortress v2 web server");
+    let mut child_res = None;
+    for attempt in 0..15 {
+        match Command::new(&exe_path).spawn() {
+            Ok(c) => {
+                child_res = Some(c);
+                break;
+            }
+            Err(e) if e.raw_os_error() == Some(5) => {
+                thread::sleep(Duration::from_millis(50 * (attempt + 1)));
+            }
+            Err(e) => panic!("Failed to launch Fortress v2 web server: {}", e),
+        }
+    }
+    let mut child: Child = child_res.expect("Failed to launch Fortress v2 web server");
 
     let pid = child.id();
     thread::sleep(Duration::from_millis(600));

@@ -216,64 +216,56 @@ fn string_buffer_push_byte(s: &mut StringBuffer, byte: u8) {
     s.len = s.len + 1;
 }
 
-fn string_buffer_push_str_helper(s: &mut StringBuffer, text: *const u8, i: i64, len: i64) {
-    if i < len {
+fn string_buffer_push_str(s: &mut StringBuffer, text: *const u8, text_len: i64) {
+    let mut i: i64 = 0;
+    while i < text_len {
         let b = unsafe { text[i] };
         string_buffer_push_byte(s, b);
-        string_buffer_push_str_helper(s, text, i + 1, len);
+        i = i + 1;
     }
-}
-
-fn string_buffer_push_str(s: &mut StringBuffer, text: *const u8, text_len: i64) {
-    string_buffer_push_str_helper(s, text, 0, text_len);
-}
-
-fn string_validate_utf8_helper(ptr: *const u8, i: i64, len: i64) -> bool {
-    if i >= len {
-        return true;
-    }
-    let b = unsafe { ptr[i] as i64 };
-    if b < 128 {
-        return string_validate_utf8_helper(ptr, i + 1, len);
-    }
-    if b >= 192 && b < 224 {
-        if i + 1 >= len {
-            return false;
-        }
-        let b1 = unsafe { ptr[i + 1] as i64 };
-        if b1 < 128 || b1 >= 192 {
-            return false;
-        }
-        return string_validate_utf8_helper(ptr, i + 2, len);
-    }
-    if b >= 224 && b < 240 {
-        if i + 2 >= len {
-            return false;
-        }
-        let b1 = unsafe { ptr[i + 1] as i64 };
-        let b2 = unsafe { ptr[i + 2] as i64 };
-        if b1 < 128 || b1 >= 192 || b2 < 128 || b2 >= 192 {
-            return false;
-        }
-        return string_validate_utf8_helper(ptr, i + 3, len);
-    }
-    if b >= 240 && b < 248 {
-        if i + 3 >= len {
-            return false;
-        }
-        let b1 = unsafe { ptr[i + 1] as i64 };
-        let b2 = unsafe { ptr[i + 2] as i64 };
-        let b3 = unsafe { ptr[i + 3] as i64 };
-        if b1 < 128 || b1 >= 192 || b2 < 128 || b2 >= 192 || b3 < 128 || b3 >= 192 {
-            return false;
-        }
-        return string_validate_utf8_helper(ptr, i + 4, len);
-    }
-    false
 }
 
 fn string_validate_utf8(ptr: *const u8, len: i64) -> bool {
-    string_validate_utf8_helper(ptr, 0, len)
+    let mut i: i64 = 0;
+    while i < len {
+        let b = unsafe { ptr[i] as i64 };
+        if b < 128 {
+            i = i + 1;
+        } else if b >= 192 && b < 224 {
+            if i + 1 >= len {
+                return false;
+            }
+            let b1 = unsafe { ptr[i + 1] as i64 };
+            if b1 < 128 || b1 >= 192 {
+                return false;
+            }
+            i = i + 2;
+        } else if b >= 224 && b < 240 {
+            if i + 2 >= len {
+                return false;
+            }
+            let c1 = unsafe { ptr[i + 1] as i64 };
+            let c2 = unsafe { ptr[i + 2] as i64 };
+            if c1 < 128 || c1 >= 192 || c2 < 128 || c2 >= 192 {
+                return false;
+            }
+            i = i + 3;
+        } else if b >= 240 && b < 248 {
+            if i + 3 >= len {
+                return false;
+            }
+            let d1 = unsafe { ptr[i + 1] as i64 };
+            let d2 = unsafe { ptr[i + 2] as i64 };
+            let d3 = unsafe { ptr[i + 3] as i64 };
+            if d1 < 128 || d1 >= 192 || d2 < 128 || d2 >= 192 || d3 < 128 || d3 >= 192 {
+                return false;
+            }
+            i = i + 4;
+        } else {
+            return false;
+        }
+    }
+    true
 }
 
 fn string_buffer_from_utf8(ptr: *const u8, len: i64) -> StringBuffer {
@@ -328,31 +320,29 @@ fn string_free(s: &mut StringBuffer) { string_buffer_free(s) }
 
 pub struct HashMap {
     keys: *mut String,
+    len: i64,
+    cap: i64,
+    arena: *mut u8,
     vals: *mut i64,
     hashes: *mut i64,
     psls: *mut i64,
     occupied: *mut i64,
-    len: i64,
-    cap: i64,
-    arena: *mut u8,
-}
-
-fn hash_str_helper(ptr: *const u8, i: i64, len: i64, h: i64) -> i64 {
-    if i >= len {
-        if h < 0 {
-            return 0 - h;
-        }
-        return h;
-    }
-    let b = unsafe { ptr[i] } as i64;
-    let next_h = (h * 31 + b) * 1099511628211;
-    hash_str_helper(ptr, i + 1, len, next_h)
 }
 
 pub fn hash_str(s: String) -> i64 {
     let ptr = s as *const u8;
     let len = unsafe { strlen(ptr) } as i64;
-    hash_str_helper(ptr, 0, len, 1469598103934665603)
+    let mut h: i64 = 1469598103934665603;
+    let mut i: i64 = 0;
+    while i < len {
+        let b = unsafe { ptr[i] } as i64;
+        h = (h * 31 + b) * 1099511628211;
+        i = i + 1;
+    }
+    if h < 0 {
+        return 0 - h;
+    }
+    h
 }
 
 pub fn hashmap_new() -> HashMap {
@@ -361,26 +351,24 @@ pub fn hashmap_new() -> HashMap {
     let keys_ptr = unsafe { tungsten_alloc(bytes, 8) as *mut String };
     let vals_ptr = unsafe { tungsten_alloc(bytes, 8) as *mut i64 };
     let hashes_ptr = unsafe { tungsten_alloc(bytes, 8) as *mut i64 };
-    let psls_ptr = unsafe {
-        let p = tungsten_alloc(bytes, 8);
-        memset(p, 0, bytes);
-        p as *mut i64
-    };
-    let occ_ptr = unsafe {
-        let p = tungsten_alloc(bytes, 8);
-        memset(p, 0, bytes);
-        p as *mut i64
-    };
+    let psls_raw = unsafe { tungsten_alloc(bytes, 8) };
+    unsafe { memset(psls_raw, 0, bytes); }
+    let psls_ptr = psls_raw as *mut i64;
+
+    let occ_raw = unsafe { tungsten_alloc(bytes, 8) };
+    unsafe { memset(occ_raw, 0, bytes); }
+    let occ_ptr = occ_raw as *mut i64;
+
     let null_arena: *mut u8 = 0 as *mut u8;
     HashMap {
         keys: keys_ptr,
+        len: 0,
+        cap: initial_cap,
+        arena: null_arena,
         vals: vals_ptr,
         hashes: hashes_ptr,
         psls: psls_ptr,
         occupied: occ_ptr,
-        len: 0,
-        cap: initial_cap,
-        arena: null_arena,
     }
 }
 
@@ -390,25 +378,24 @@ pub fn hashmap_new_in(arena: *mut u8) -> HashMap {
     let keys_ptr = unsafe { tungsten_region_alloc(arena, bytes, 8) as *mut String };
     let vals_ptr = unsafe { tungsten_region_alloc(arena, bytes, 8) as *mut i64 };
     let hashes_ptr = unsafe { tungsten_region_alloc(arena, bytes, 8) as *mut i64 };
-    let psls_ptr = unsafe {
-        let p = tungsten_region_alloc(arena, bytes, 8);
-        memset(p, 0, bytes);
-        p as *mut i64
-    };
-    let occ_ptr = unsafe {
-        let p = tungsten_region_alloc(arena, bytes, 8);
-        memset(p, 0, bytes);
-        p as *mut i64
-    };
+
+    let psls_raw = unsafe { tungsten_region_alloc(arena, bytes, 8) };
+    unsafe { memset(psls_raw, 0, bytes); }
+    let psls_ptr = psls_raw as *mut i64;
+
+    let occ_raw = unsafe { tungsten_region_alloc(arena, bytes, 8) };
+    unsafe { memset(occ_raw, 0, bytes); }
+    let occ_ptr = occ_raw as *mut i64;
+
     HashMap {
         keys: keys_ptr,
+        len: 0,
+        cap: initial_cap,
+        arena: arena,
         vals: vals_ptr,
         hashes: hashes_ptr,
         psls: psls_ptr,
         occupied: occ_ptr,
-        len: 0,
-        cap: initial_cap,
-        arena: arena,
     }
 }
 
@@ -551,30 +538,32 @@ pub fn hashmap_contains(map: &HashMap, key: String) -> bool {
     return false;
 }
 
-fn hashmap_shift_back(map: &mut HashMap, curr: i64) {
-    let mut next = curr + 1;
-    if next >= map.cap {
-        next = 0;
-    }
-    let next_occ = unsafe { map.occupied[next] };
-    let next_psl = unsafe { map.psls[next] };
-    if next_occ == 0 || next_psl == 0 {
-        unsafe {
-            map.occupied[curr] = 0;
-            map.psls[curr] = 0;
+fn hashmap_shift_back(map: &mut HashMap, start: i64) {
+    let mut curr = start;
+    loop {
+        let mut next = curr + 1;
+        if next >= map.cap {
+            next = 0;
         }
-        return;
-    }
+        let next_occ = unsafe { map.occupied[next] };
+        let next_psl = unsafe { map.psls[next] };
+        if next_occ == 0 || next_psl == 0 {
+            unsafe {
+                map.occupied[curr] = 0;
+                map.psls[curr] = 0;
+            }
+            return;
+        }
 
-    unsafe {
-        map.keys[curr] = map.keys[next];
-        map.vals[curr] = map.vals[next];
-        map.hashes[curr] = map.hashes[next];
-        map.psls[curr] = next_psl - 1;
-        map.occupied[curr] = 1;
+        unsafe {
+            map.keys[curr] = map.keys[next];
+            map.vals[curr] = map.vals[next];
+            map.hashes[curr] = map.hashes[next];
+            map.psls[curr] = next_psl - 1;
+            map.occupied[curr] = 1;
+        }
+        curr = next;
     }
-
-    hashmap_shift_back(map, next);
 }
 
 pub fn hashmap_remove(map: &mut HashMap, key: String) -> bool {
@@ -611,18 +600,6 @@ pub fn hashmap_remove(map: &mut HashMap, key: String) -> bool {
     return false;
 }
 
-fn hashmap_rehash_helper(map: &mut HashMap, old_keys: *mut String, old_vals: *mut i64, old_occ: *mut i64, old_cap: i64, i: i64) {
-    if i < old_cap {
-        let occ = unsafe { old_occ[i] };
-        if occ != 0 {
-            let k = unsafe { old_keys[i] };
-            let v = unsafe { old_vals[i] };
-            hashmap_insert(map, k, v);
-        }
-        hashmap_rehash_helper(map, old_keys, old_vals, old_occ, old_cap, i + 1);
-    }
-}
-
 pub fn hashmap_grow(map: &mut HashMap) {
     let old_cap = map.cap;
     let old_keys = map.keys;
@@ -641,34 +618,29 @@ pub fn hashmap_grow(map: &mut HashMap) {
     let mut new_psls: *mut i64 = 0 as *mut i64;
     let mut new_occ: *mut i64 = 0 as *mut i64;
 
+    let mut psls_raw: *mut u8 = 0 as *mut u8;
+    let mut occ_raw: *mut u8 = 0 as *mut u8;
+
     if map.arena == null_arena {
         new_keys = unsafe { tungsten_alloc(bytes, 8) as *mut String };
         new_vals = unsafe { tungsten_alloc(bytes, 8) as *mut i64 };
         new_hashes = unsafe { tungsten_alloc(bytes, 8) as *mut i64 };
-        new_psls = unsafe {
-            let p = tungsten_alloc(bytes, 8);
-            memset(p, 0, bytes);
-            p as *mut i64
-        };
-        new_occ = unsafe {
-            let p = tungsten_alloc(bytes, 8);
-            memset(p, 0, bytes);
-            p as *mut i64
-        };
+        psls_raw = unsafe { tungsten_alloc(bytes, 8) };
+        unsafe { memset(psls_raw, 0, bytes); }
+        new_psls = psls_raw as *mut i64;
+        occ_raw = unsafe { tungsten_alloc(bytes, 8) };
+        unsafe { memset(occ_raw, 0, bytes); }
+        new_occ = occ_raw as *mut i64;
     } else {
         new_keys = unsafe { tungsten_region_alloc(map.arena, bytes, 8) as *mut String };
         new_vals = unsafe { tungsten_region_alloc(map.arena, bytes, 8) as *mut i64 };
         new_hashes = unsafe { tungsten_region_alloc(map.arena, bytes, 8) as *mut i64 };
-        new_psls = unsafe {
-            let p = tungsten_region_alloc(map.arena, bytes, 8);
-            memset(p, 0, bytes);
-            p as *mut i64
-        };
-        new_occ = unsafe {
-            let p = tungsten_region_alloc(map.arena, bytes, 8);
-            memset(p, 0, bytes);
-            p as *mut i64
-        };
+        psls_raw = unsafe { tungsten_region_alloc(map.arena, bytes, 8) };
+        unsafe { memset(psls_raw, 0, bytes); }
+        new_psls = psls_raw as *mut i64;
+        occ_raw = unsafe { tungsten_region_alloc(map.arena, bytes, 8) };
+        unsafe { memset(occ_raw, 0, bytes); }
+        new_occ = occ_raw as *mut i64;
     }
 
     map.keys = new_keys;
@@ -679,7 +651,16 @@ pub fn hashmap_grow(map: &mut HashMap) {
     map.cap = new_cap;
     map.len = 0;
 
-    hashmap_rehash_helper(map, old_keys, old_vals, old_occ, old_cap, 0);
+    let mut i: i64 = 0;
+    while i < old_cap {
+        let occ = unsafe { old_occ[i] };
+        if occ != 0 {
+            let k = unsafe { old_keys[i] };
+            let v = unsafe { old_vals[i] };
+            hashmap_insert(map, k, v);
+        }
+        i = i + 1;
+    }
 
     if map.arena == null_arena {
         unsafe {

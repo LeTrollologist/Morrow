@@ -1,12 +1,26 @@
 // Tungsten Self-Hosting Compiler - Diagnostics Reporting
 // Decoupled compiler warning and error handling via algebraic effects
 
-import std::effects;
+extern "C" {
+    fn puts(s: *const u8) -> i32;
+    fn printf(fmt: *const u8, msg: *const u8, line: i64, col: i64) -> i32;
+    fn fflush(f: *const u8) -> i32;
+}
 
 pub fn report_err(msg: String, line: i64, col: i64) -> bool yields [Diagnostics] {
-    Diagnostics::report_error(msg, line, col)
+    unsafe {
+        printf("[PARSER ERROR] %s (line %lld, col %lld)\n" as *const u8, msg as *const u8, line, col);
+        fflush(0 as *const u8);
+    }
+    true
 }
 
 pub fn report_warn(msg: String, line: i64, col: i64) -> bool yields [Diagnostics] {
-    Diagnostics::report_warning(msg, line, col)
+    unsafe {
+        printf("[PARSER WARN] %s (line %lld, col %lld)\n" as *const u8, msg as *const u8, line, col);
+        fflush(0 as *const u8);
+    }
+    true
 }
+
+

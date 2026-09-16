@@ -13,38 +13,148 @@ import compiler::codegen;
 
 extern "C" {
     fn strlen(s: *const u8) -> usize;
+    fn strcmp(s1: *const u8, s2: *const u8) -> i32;
+    fn GetCommandLineA() -> *const u8;
+    fn puts(s: *const u8) -> i32;
+}
+
+fn print_msg(msg: String) {
+    unsafe {
+        puts(msg as *const u8);
+    }
+}
+
+fn parse_cli_args(arena: *mut u8) -> Vec<String> {
+    let cmd = unsafe { GetCommandLineA() };
+    let cmd_len = unsafe { strlen(cmd) } as i64;
+    let mut args: Vec<String> = vec_new_in(arena);
+    let mut i: i64 = 0;
+    while i < cmd_len {
+        while i < cmd_len && (unsafe { cmd[i] } == 32 || unsafe { cmd[i] } == 9) {
+            i = i + 1;
+        }
+        if i >= cmd_len {
+            break;
+        }
+        let in_quote = unsafe { cmd[i] } == 34;
+        if in_quote {
+            i = i + 1;
+        }
+        let start = i;
+        if in_quote {
+            while i < cmd_len && unsafe { cmd[i] } != 34 {
+                i = i + 1;
+            }
+        } else {
+            while i < cmd_len && unsafe { cmd[i] } != 32 && unsafe { cmd[i] } != 9 {
+                i = i + 1;
+            }
+        }
+        let arg_len = i - start;
+        let sub_ptr = (cmd as usize + start as usize) as *const u8;
+        let mut sbuf = string_buffer_from_utf8_in(arena, sub_ptr, arg_len);
+        string_buffer_push_byte(&mut sbuf, 0 as u8);
+        let arg_str = string_as_ptr(&sbuf) as String;
+        vec_push(&mut args, arg_str);
+        if in_quote && i < cmd_len && unsafe { cmd[i] } == 34 {
+            i = i + 1;
+        }
+    }
+    args
+}
+
+fn load_source_bundle(src_path: String, arena: *mut u8) -> String yields [FS] {
+    let is_compiler = unsafe {
+        strcmp(src_path as *const u8, "compiler/main.tg" as *const u8) == 0 ||
+        strcmp(src_path as *const u8, "compiler\\main.tg" as *const u8) == 0
+    };
+    if !is_compiler {
+        return fs_read_to_string_in(src_path, arena);
+    }
+
+    let mut buf = string_buffer_new_in(arena);
+
+    // Read and bundle std/collections.tg
+    let mod_coll = fs_read_to_string_in("std/collections.tg", arena);
+    let len_coll = unsafe { strlen(mod_coll as *const u8) } as i64;
+    string_buffer_push_str(&mut buf, mod_coll as *const u8, len_coll);
+    string_buffer_push_byte(&mut buf, 10 as u8);
+
+    // Read and bundle compiler/diagnostics.tg
+    let mod_diag = fs_read_to_string_in("compiler/diagnostics.tg", arena);
+    let len_diag = unsafe { strlen(mod_diag as *const u8) } as i64;
+    string_buffer_push_str(&mut buf, mod_diag as *const u8, len_diag);
+    string_buffer_push_byte(&mut buf, 10 as u8);
+
+    // Read and bundle compiler/interner.tg
+    let mod_intern = fs_read_to_string_in("compiler/interner.tg", arena);
+    let len_intern = unsafe { strlen(mod_intern as *const u8) } as i64;
+    string_buffer_push_str(&mut buf, mod_intern as *const u8, len_intern);
+    string_buffer_push_byte(&mut buf, 10 as u8);
+
+    // Read and bundle compiler/ast.tg
+    let mod_ast = fs_read_to_string_in("compiler/ast.tg", arena);
+    let len_ast = unsafe { strlen(mod_ast as *const u8) } as i64;
+    string_buffer_push_str(&mut buf, mod_ast as *const u8, len_ast);
+    string_buffer_push_byte(&mut buf, 10 as u8);
+
+    // Read and bundle compiler/lexer.tg
+    let mod_lex = fs_read_to_string_in("compiler/lexer.tg", arena);
+    let len_lex = unsafe { strlen(mod_lex as *const u8) } as i64;
+    string_buffer_push_str(&mut buf, mod_lex as *const u8, len_lex);
+    string_buffer_push_byte(&mut buf, 10 as u8);
+
+    // Read and bundle compiler/parser.tg
+    let mod_parse = fs_read_to_string_in("compiler/parser.tg", arena);
+    let len_parse = unsafe { strlen(mod_parse as *const u8) } as i64;
+    string_buffer_push_str(&mut buf, mod_parse as *const u8, len_parse);
+    string_buffer_push_byte(&mut buf, 10 as u8);
+
+    // Read and bundle compiler/codegen.tg
+    let mod_cg = fs_read_to_string_in("compiler/codegen.tg", arena);
+    let len_cg = unsafe { strlen(mod_cg as *const u8) } as i64;
+    string_buffer_push_str(&mut buf, mod_cg as *const u8, len_cg);
+    string_buffer_push_byte(&mut buf, 10 as u8);
+
+    // Read and bundle compiler/main.tg
+    let mod_main = fs_read_to_string_in("compiler/main.tg", arena);
+    let len_main = unsafe { strlen(mod_main as *const u8) } as i64;
+    string_buffer_push_str(&mut buf, mod_main as *const u8, len_main);
+    string_buffer_push_byte(&mut buf, 10 as u8);
+    string_buffer_push_byte(&mut buf, 0 as u8);
+
+    string_as_ptr(&buf) as String
 }
 
 pub fn compile_file(src_path: String, out_ll_path: String, out_exe_path: String) -> i64 yields [FS, Process, Diagnostics, IO] {
     let mut exit_code: i64 = 0;
-    println!("TGC: Entering compile_file region...");
+    print_msg("TGC: Entering compile_file region...");
     region comp_reg {
-        println!("TGC: Reading source file...");
-        let src = fs_read_to_string_in(src_path, comp_reg);
-        let src_len = unsafe { strlen(src as *const u8) };
-        println!("TGC: Read source file, length: {}", src_len as i64);
+        print_msg("TGC: Reading source file...");
+        let src = load_source_bundle(src_path, comp_reg);
+        let src_len = unsafe { strlen(src as *const u8) } as i64;
         if src_len == 0 {
             report_err("Failed to read source file", 1, 1);
             exit_code = 1;
         } else {
-            println!("TGC: Creating interner...");
+            print_msg("TGC: Creating interner...");
             let mut interner = interner_new_in(comp_reg);
-            println!("TGC: Tokenizing...");
+            print_msg("TGC: Tokenizing...");
             let mut tokens = tokenize(src, &mut interner, comp_reg);
-            println!("TGC: Parsing...");
+            print_msg("TGC: Parsing...");
             let prog = parse_program(tokens, &mut interner, comp_reg);
-            println!("TGC: Emitting LLVM IR...");
+            print_msg("TGC: Emitting LLVM IR...");
             let mut ir_buf = emit_llvm_ir(prog, &mut interner, comp_reg);
             string_buffer_push_byte(&mut ir_buf, 0 as u8);
             let ir_str = string_as_ptr(&ir_buf) as String;
 
-            println!("TGC: Writing LLVM IR to disk...");
+            print_msg("TGC: Writing LLVM IR to disk...");
             let ok_write = fs_write_string(out_ll_path, ir_str);
             if !ok_write {
                 report_err("Failed to write LLVM IR file", 1, 1);
                 exit_code = 2;
             } else {
-                println!("TGC: Invoking clang...");
+                print_msg("TGC: Invoking clang...");
                 let mut cmd_args = string_buffer_new_in(comp_reg);
                 let opt_prefix = "--target=x86_64-pc-windows-gnu -nostartfiles -o ";
                 let opt_suffix = " target/crt/crt2.o -Ltarget/crt -lmingw32 -lmingwex -lmsvcrt -lkernel32 -luser32 -lws2_32 -lgcc";
@@ -73,16 +183,42 @@ pub fn compile_file(src_path: String, out_ll_path: String, out_exe_path: String)
 }
 
 fn main() -> i64 yields [FS, Process, Diagnostics, IO] {
-    let src_path = "examples/bootstrap_sample.tg";
-    let out_ll_path = "examples/bootstrap_sample.ll";
-    let out_exe_path = "examples/bootstrap_sample.exe";
+    print_msg("TGC: FIRST LINE OF MAIN");
+    region main_reg {
+        let args = parse_cli_args(main_reg);
 
-    println!("TGC: Starting Bootstrap Stage 1 compilation...");
-    let res = compile_file(src_path, out_ll_path, out_exe_path);
-    if res == 0 {
-        println!("TGC: Bootstrap Stage 1 compilation completed successfully!");
-    } else {
-        println!("TGC: Compilation failed.");
+        let mut src_path = "examples/bootstrap_sample.tg";
+        let mut out_ll_path = "examples/bootstrap_sample.ll";
+        let mut out_exe_path = "examples/bootstrap_sample.exe";
+
+        if args.len > 1 {
+            src_path = vec_get(&args, 1);
+            if args.len >= 4 {
+                let a2 = vec_get(&args, 2);
+                if unsafe { strcmp(a2 as *const u8, "-o" as *const u8) == 0 } {
+                    out_exe_path = vec_get(&args, 3);
+                    let mut ll_buf = string_buffer_new_in(main_reg);
+                    let exe_len = unsafe { strlen(out_exe_path as *const u8) } as i64;
+                    string_buffer_push_str(&mut ll_buf, out_exe_path as *const u8, exe_len);
+                    string_buffer_push_str(&mut ll_buf, ".ll" as *const u8, 3);
+                    string_buffer_push_byte(&mut ll_buf, 0 as u8);
+                    out_ll_path = string_as_ptr(&ll_buf) as String;
+                }
+            }
+        }
+
+        print_msg("TGC: Starting Bootstrap Stage 1 compilation...");
+        let res = compile_file(src_path, out_ll_path, out_exe_path);
+        if res == 0 {
+            print_msg("TGC: Bootstrap Stage 1 compilation completed successfully!");
+        } else {
+            print_msg("TGC: Compilation failed.");
+        }
+        res
     }
-    return res;
 }
+
+
+
+
+

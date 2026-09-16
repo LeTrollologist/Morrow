@@ -34,6 +34,8 @@ pub fn tokenize(src: String, interner: &mut Interner, arena: *mut u8) -> Vec<*mu
     let mut idx: i64 = 0;
     let mut line: i64 = 1;
     let mut col: i64 = 1;
+    let mut start_col: i64 = 0;
+    let mut start_idx: i64 = 0;
 
     while idx < len {
         let c = unsafe { ptr[idx] } as i64;
@@ -57,7 +59,7 @@ pub fn tokenize(src: String, interner: &mut Interner, arena: *mut u8) -> Vec<*mu
             }
         } else if is_digit(c) {
             // Integer literal
-            let start_col = col;
+            start_col = col;
             let mut val: i64 = 0;
             while idx < len && is_digit(unsafe { ptr[idx] } as i64) {
                 let digit = unsafe { ptr[idx] } as i64 - 48;
@@ -69,8 +71,8 @@ pub fn tokenize(src: String, interner: &mut Interner, arena: *mut u8) -> Vec<*mu
             vec_push(&mut tokens, tok);
         } else if is_alpha(c) {
             // Identifier or Keyword
-            let start_idx = idx;
-            let start_col = col;
+            start_idx = idx;
+            start_col = col;
             while idx < len && is_alnum(unsafe { ptr[idx] } as i64) {
                 idx = idx + 1;
                 col = col + 1;
@@ -102,6 +104,22 @@ pub fn tokenize(src: String, interner: &mut Interner, arena: *mut u8) -> Vec<*mu
                 kind = tok_kw_true();
             } else if unsafe { strcmp(s as *const u8, "false" as *const u8) == 0 } {
                 kind = tok_kw_false();
+            } else if unsafe { strcmp(s as *const u8, "as" as *const u8) == 0 } {
+                kind = tok_kw_as();
+            } else if unsafe { strcmp(s as *const u8, "unsafe" as *const u8) == 0 } {
+                kind = tok_kw_unsafe();
+            } else if unsafe { strcmp(s as *const u8, "region" as *const u8) == 0 } {
+                kind = tok_kw_region();
+            } else if unsafe { strcmp(s as *const u8, "extern" as *const u8) == 0 } {
+                kind = tok_kw_extern();
+            } else if unsafe { strcmp(s as *const u8, "import" as *const u8) == 0 } {
+                kind = tok_kw_import();
+            } else if unsafe { strcmp(s as *const u8, "pub" as *const u8) == 0 } {
+                kind = tok_kw_pub();
+            } else if unsafe { strcmp(s as *const u8, "loop" as *const u8) == 0 } {
+                kind = tok_kw_loop();
+            } else if unsafe { strcmp(s as *const u8, "break" as *const u8) == 0 } {
+                kind = tok_kw_break();
             }
 
             let sym = interner_intern(interner, s);
@@ -109,22 +127,50 @@ pub fn tokenize(src: String, interner: &mut Interner, arena: *mut u8) -> Vec<*mu
             vec_push(&mut tokens, tok);
         } else if c == 34 {
             // String literal: "..."
-            let start_col = col;
+            start_col = col;
             idx = idx + 1;
             col = col + 1;
-            let start_idx = idx;
+            let mut sbuf = string_buffer_new_in(arena);
             while idx < len && unsafe { ptr[idx] } as i64 != 34 {
-                if unsafe { ptr[idx] } as i64 == 10 {
-                    line = line + 1;
-                    col = 1;
+                let sc = unsafe { ptr[idx] } as i64;
+                if sc == 92 && idx + 1 < len {
+                    let next_c = unsafe { ptr[idx + 1] } as i64;
+                    if next_c == 34 {
+                        string_buffer_push_byte(&mut sbuf, 34 as u8);
+                        idx = idx + 2;
+                        col = col + 2;
+                    } else if next_c == 110 {
+                        string_buffer_push_byte(&mut sbuf, 10 as u8);
+                        idx = idx + 2;
+                        col = col + 2;
+                    } else if next_c == 114 {
+                        string_buffer_push_byte(&mut sbuf, 13 as u8);
+                        idx = idx + 2;
+                        col = col + 2;
+                    } else if next_c == 116 {
+                        string_buffer_push_byte(&mut sbuf, 9 as u8);
+                        idx = idx + 2;
+                        col = col + 2;
+                    } else if next_c == 92 {
+                        string_buffer_push_byte(&mut sbuf, 92 as u8);
+                        idx = idx + 2;
+                        col = col + 2;
+                    } else {
+                        string_buffer_push_byte(&mut sbuf, sc as u8);
+                        idx = idx + 1;
+                        col = col + 1;
+                    }
                 } else {
-                    col = col + 1;
+                    if sc == 10 {
+                        line = line + 1;
+                        col = 1;
+                    } else {
+                        col = col + 1;
+                    }
+                    string_buffer_push_byte(&mut sbuf, sc as u8);
+                    idx = idx + 1;
                 }
-                idx = idx + 1;
             }
-            let str_len = idx - start_idx;
-            let sub_ptr = (ptr as usize + start_idx as usize) as *const u8;
-            let mut sbuf = string_buffer_from_utf8_in(arena, sub_ptr, str_len);
             string_buffer_push_byte(&mut sbuf, 0 as u8);
             let s = string_as_ptr(&sbuf) as String;
 
@@ -140,7 +186,7 @@ pub fn tokenize(src: String, interner: &mut Interner, arena: *mut u8) -> Vec<*mu
             vec_push(&mut tokens, tok);
         } else {
             // Operators and punctuation
-            let start_col = col;
+            start_col = col;
             let mut kind: i64 = 0;
             let mut advance: i64 = 1;
 
@@ -161,6 +207,29 @@ pub fn tokenize(src: String, interner: &mut Interner, arena: *mut u8) -> Vec<*mu
             } else if c == 47 {
                 // /
                 kind = tok_slash();
+            } else if c == 46 {
+                // .
+                kind = tok_dot();
+            } else if c == 38 {
+                // & or &&
+                if idx + 1 < len && unsafe { ptr[idx + 1] } as i64 == 38 {
+                    kind = tok_and();
+                    advance = 2;
+                } else {
+                    kind = tok_amp();
+                }
+            } else if c == 124 {
+                // | or ||
+                if idx + 1 < len && unsafe { ptr[idx + 1] } as i64 == 124 {
+                    kind = tok_or();
+                    advance = 2;
+                }
+            } else if c == 91 {
+                // [
+                kind = tok_lbracket();
+            } else if c == 93 {
+                // ]
+                kind = tok_rbracket();
             } else if c == 61 {
                 // = or ==
                 if idx + 1 < len && unsafe { ptr[idx + 1] } as i64 == 61 {

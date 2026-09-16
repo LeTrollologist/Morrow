@@ -443,23 +443,36 @@ impl TirLowerer {
                     _ => target.as_ref(),
                 };
                 let t_op = self.lower_expr(actual_target);
-                let struct_name = match t_op.get_type().strip_region() {
-                    Type::Struct(ref s_name) => Some(s_name.clone()),
-                    Type::Ref { ref inner, .. } | Type::Ptr { ref inner, .. } => match inner.strip_region() {
-                        Type::Struct(ref s_name) => Some(s_name.clone()),
-                        _ => None,
-                    },
-                    _ => None,
+                let stripped_target = match t_op.get_type().strip_region() {
+                    Type::Ref { inner, .. } | Type::Ptr { inner, .. } => inner.strip_region().clone(),
+                    other => other.clone(),
                 };
-                let field_ty = if let Some(ref s_name) = struct_name {
-                    self.type_checker
-                        .structs
-                        .get(s_name)
-                        .and_then(|fields| fields.get(field))
-                        .cloned()
-                        .unwrap_or(Type::Unit)
-                } else {
-                    Type::Unit
+                let field_ty = match stripped_target {
+                    Type::Struct(ref s_name) => {
+                        self.type_checker
+                            .structs
+                            .get(s_name)
+                            .and_then(|fields| fields.get(field))
+                            .cloned()
+                            .unwrap_or(Type::Unit)
+                    }
+                    Type::Instantiated { ref name, ref args } => {
+                        if let Some(st_decl) = self.type_checker.generic_structs.get(name) {
+                            if let Some(fdef) = st_decl.fields.iter().find(|f| f.name == *field) {
+                                let mut subst = tungsten_typeck::unify::Subst::new();
+                                for (tp, arg_ty) in st_decl.type_params.iter().zip(args.iter()) {
+                                    subst.bind(tp.clone(), arg_ty.clone());
+                                }
+                                let raw_ty = self.type_checker.resolve_type_expr_with_generics(&fdef.ty, &st_decl.type_params).unwrap_or(Type::Unit);
+                                tungsten_typeck::unify::substitute(&raw_ty, &subst)
+                            } else {
+                                Type::Unit
+                            }
+                        } else {
+                            Type::Unit
+                        }
+                    }
+                    _ => Type::Unit,
                 };
                 let (dest, res_op) = self.alloc_temp(field_ty.clone());
                 self.emit(Instruction::Assign {
@@ -593,10 +606,17 @@ impl TirLowerer {
                                 .generic_functions
                                 .get(name)
                                 .and_then(|f| {
+                                    let mut subst = tungsten_typeck::unify::Subst::new();
+                                    for (arg_op, param) in arg_ops.iter().zip(f.params.iter()) {
+                                        if let Ok(expected_param_ty) = self.type_checker.resolve_type_expr_with_generics(&param.ty, &f.type_params) {
+                                            let _ = tungsten_typeck::unify::unify(&expected_param_ty, &arg_op.get_type(), &mut subst);
+                                        }
+                                    }
                                     f.return_type.as_ref().and_then(|rt| {
                                         self.type_checker
                                             .resolve_type_expr_with_generics(rt, &f.type_params)
                                             .ok()
+                                            .map(|raw_ret| tungsten_typeck::unify::substitute(&raw_ret, &subst))
                                     })
                                 })
                         })

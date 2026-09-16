@@ -6,6 +6,10 @@ import compiler::ast;
 import compiler::interner;
 import compiler::diagnostics;
 
+extern "C" {
+    fn strcmp(s1: *const u8, s2: *const u8) -> i32;
+}
+
 pub struct Parser {
     tokens: Vec<*mut Token>,
     pos: i64,
@@ -56,16 +60,65 @@ fn expect(p: &mut Parser, kind: i64, err_msg: String) -> *mut Token yields [Diag
 }
 
 fn get_binop_precedence(kind: i64) -> i64 {
-    if kind == tok_eqeq() || kind == tok_neq() || kind == tok_lt() || kind == tok_lte() || kind == tok_gt() || kind == tok_gte() {
+    if kind == tok_or() {
         return 1;
     }
-    if kind == tok_plus() || kind == tok_minus() {
+    if kind == tok_and() {
         return 2;
     }
-    if kind == tok_star() || kind == tok_slash() {
+    if kind == tok_eqeq() || kind == tok_neq() || kind == tok_lt() || kind == tok_lte() || kind == tok_gt() || kind == tok_gte() {
         return 3;
     }
+    if kind == tok_plus() || kind == tok_minus() {
+        return 4;
+    }
+    if kind == tok_star() || kind == tok_slash() {
+        return 5;
+    }
     return 0;
+}
+
+// Parses type annotations (e.g. i64, String, *mut u8, &mut Vec<T>, etc.)
+pub fn parse_type(p: &mut Parser) -> i64 {
+    if check(p, tok_star()) {
+        advance(p); // consume *
+        if check(p, tok_kw_mut()) {
+            advance(p);
+        } else if check(p, tok_ident()) {
+            let tok = current_tok(p);
+            let interner_ref = p.interner as &Interner;
+            let s = interner_lookup(interner_ref, tok.sym);
+            if unsafe { strcmp(s as *const u8, "const" as *const u8) == 0 } {
+                advance(p);
+            }
+        }
+        return parse_type(p);
+    }
+    if check(p, tok_amp()) {
+        advance(p); // consume &
+        if check(p, tok_kw_mut()) {
+            advance(p);
+        }
+        return parse_type(p);
+    }
+    if check(p, tok_ident()) {
+        let tok = advance(p);
+        let sym = tok.sym;
+        if check(p, tok_lt()) {
+            advance(p); // consume <
+            let mut depth: i64 = 1;
+            while depth > 0 && !check(p, tok_eof()) {
+                if check(p, tok_lt()) {
+                    depth = depth + 1;
+                } else if check(p, tok_gt()) {
+                    depth = depth - 1;
+                }
+                advance(p);
+            }
+        }
+        return sym;
+    }
+    0
 }
 
 fn parse_primary_expr(p: &mut Parser) -> *mut AstExpr yields [Diagnostics] {
@@ -77,9 +130,40 @@ fn parse_primary_expr(p: &mut Parser) -> *mut AstExpr yields [Diagnostics] {
         return alloc_expr_int(p.arena, tok.int_val);
     }
 
-    if kind == tok_ident() {
+    if kind == tok_str() {
         advance(p);
-        let sym = tok.sym;
+        return alloc_expr_str(p.arena, tok.str_val, tok.sym);
+    }
+
+    if kind == tok_kw_true() {
+        advance(p);
+        return alloc_expr_int(p.arena, 1);
+    }
+
+    if kind == tok_kw_false() {
+        advance(p);
+        return alloc_expr_int(p.arena, 0);
+    }
+
+
+    if kind == tok_kw_unsafe() {
+        advance(p);
+        let stmts = parse_block(p);
+        let mut last_expr: *mut AstExpr = alloc_expr_int(p.arena, 0);
+        if stmts.len > 0 {
+            let last_s = vec_get(&stmts, stmts.len - 1);
+            if last_s.kind == stmt_expr() || last_s.kind == stmt_return() {
+                last_expr = last_s.expr;
+            }
+        }
+        return last_expr;
+    }
+
+    if kind == tok_ident() {
+        let name_tok = advance(p);
+        let sym = name_tok.sym;
+
+        // Function call: ident(...)
         if check(p, tok_lparen()) {
             advance(p); // consume (
             let mut args: Vec<*mut AstExpr> = vec_new_in(p.arena);
@@ -95,6 +179,24 @@ fn parse_primary_expr(p: &mut Parser) -> *mut AstExpr yields [Diagnostics] {
             expect(p, tok_rparen(), "Expected ')' after function arguments");
             return alloc_expr_call(p.arena, sym, args);
         }
+
+        // Struct instantiation: Ident { field: expr, ... }
+        if check(p, tok_lbrace()) && peek_kind(p, 1) == tok_ident() && peek_kind(p, 2) == tok_colon() {
+            advance(p); // consume {
+            let mut args: Vec<*mut AstExpr> = vec_new_in(p.arena);
+            while !check(p, tok_rbrace()) && !check(p, tok_eof()) {
+                expect(p, tok_ident(), "Expected field name in struct literal");
+                expect(p, tok_colon(), "Expected ':' after field name");
+                let fval = parse_expr(p);
+                vec_push(&mut args, fval);
+                if check(p, tok_comma()) {
+                    advance(p);
+                }
+            }
+            expect(p, tok_rbrace(), "Expected '}' after struct literal");
+            return alloc_expr_struct_init(p.arena, sym, args);
+        }
+
         return alloc_expr_var(p.arena, sym);
     }
 
@@ -110,8 +212,60 @@ fn parse_primary_expr(p: &mut Parser) -> *mut AstExpr yields [Diagnostics] {
     alloc_expr_int(p.arena, 0)
 }
 
-fn parse_expr_prec(p: &mut Parser, min_prec: i64) -> *mut AstExpr yields [Diagnostics] {
+fn parse_postfix_expr(p: &mut Parser) -> *mut AstExpr yields [Diagnostics] {
     let mut left = parse_primary_expr(p);
+
+    loop {
+        if check(p, tok_dot()) {
+            advance(p); // consume .
+            let fld_tok = expect(p, tok_ident(), "Expected field name after '.'");
+            left = alloc_expr_field(p.arena, left, fld_tok.sym);
+        } else if check(p, tok_lbracket()) {
+            advance(p); // consume [
+            let idx = parse_expr(p);
+            expect(p, tok_rbracket(), "Expected ']' after index");
+            left = alloc_expr_index(p.arena, left, idx);
+        } else if check(p, tok_kw_as()) {
+            advance(p); // consume as
+            let ty_sym = parse_type(p);
+            left = alloc_expr_cast(p.arena, left, ty_sym);
+        } else {
+            break;
+        }
+    }
+
+    left
+}
+
+fn parse_unary_expr(p: &mut Parser) -> *mut AstExpr yields [Diagnostics] {
+    let kind = current_kind(p);
+
+    if kind == tok_bang() {
+        advance(p);
+        let inner = parse_unary_expr(p);
+        return alloc_expr_unary(p.arena, tok_bang(), inner);
+    }
+
+    if kind == tok_minus() {
+        advance(p);
+        let inner = parse_unary_expr(p);
+        return alloc_expr_unary(p.arena, tok_minus(), inner);
+    }
+
+    if kind == tok_amp() {
+        advance(p);
+        if check(p, tok_kw_mut()) {
+            advance(p);
+        }
+        let inner = parse_unary_expr(p);
+        return alloc_expr_unary(p.arena, tok_amp(), inner);
+    }
+
+    parse_postfix_expr(p)
+}
+
+fn parse_expr_prec(p: &mut Parser, min_prec: i64) -> *mut AstExpr yields [Diagnostics] {
+    let mut left = parse_unary_expr(p);
 
     loop {
         let op_kind = current_kind(p);
@@ -154,7 +308,7 @@ pub fn parse_stmt(p: &mut Parser) -> *mut AstStmt yields [Diagnostics] {
         let sym = name_tok.sym;
         if check(p, tok_colon()) {
             advance(p); // consume :
-            expect(p, tok_ident(), "Expected type annotation after ':'");
+            parse_type(p);
         }
         expect(p, tok_eq(), "Expected '=' in let binding");
         let init_expr = parse_expr(p);
@@ -164,6 +318,11 @@ pub fn parse_stmt(p: &mut Parser) -> *mut AstStmt yields [Diagnostics] {
 
     if kind == tok_kw_return() {
         advance(p); // consume return
+        if check(p, tok_semicolon()) {
+            advance(p);
+            let dummy = alloc_expr_int(p.arena, 0);
+            return alloc_stmt_return(p.arena, dummy);
+        }
         let ret_expr = parse_expr(p);
         expect(p, tok_semicolon(), "Expected ';' after return expression");
         return alloc_stmt_return(p.arena, ret_expr);
@@ -171,14 +330,7 @@ pub fn parse_stmt(p: &mut Parser) -> *mut AstStmt yields [Diagnostics] {
 
     if kind == tok_kw_if() {
         advance(p); // consume if
-        let has_paren = check(p, tok_lparen());
-        if has_paren {
-            advance(p);
-        }
         let cond = parse_expr(p);
-        if has_paren {
-            expect(p, tok_rparen(), "Expected ')' after if condition");
-        }
         let then_stmts = parse_block(p);
         let mut else_stmts: Vec<*mut AstStmt> = vec_new_in(p.arena);
         if check(p, tok_kw_else()) {
@@ -195,52 +347,110 @@ pub fn parse_stmt(p: &mut Parser) -> *mut AstStmt yields [Diagnostics] {
 
     if kind == tok_kw_while() {
         advance(p); // consume while
-        let has_paren = check(p, tok_lparen());
-        if has_paren {
-            advance(p);
-        }
         let cond = parse_expr(p);
-        if has_paren {
-            expect(p, tok_rparen(), "Expected ')' after while condition");
-        }
         let body = parse_block(p);
         return alloc_stmt_while(p.arena, cond, body);
     }
 
-    // Assignment or Expression statement
-    if kind == tok_ident() && peek_kind(p, 1) == tok_eq() {
-        let name_tok = advance(p);
+    if kind == tok_kw_loop() {
+        advance(p); // consume loop
+        let body = parse_block(p);
+        let cond = alloc_expr_int(p.arena, 1);
+        return alloc_stmt_while(p.arena, cond, body);
+    }
+
+    if kind == tok_kw_break() {
+        advance(p); // consume break
+        expect(p, tok_semicolon(), "Expected ';' after break");
+        return alloc_stmt_break(p.arena);
+    }
+
+    if kind == tok_kw_region() {
+        advance(p); // consume region
+        let name_tok = expect(p, tok_ident(), "Expected region name after 'region'");
+        let body = parse_block(p);
+        return alloc_stmt_block(p.arena, name_tok.sym, body);
+    }
+
+    if kind == tok_kw_unsafe() {
+        advance(p); // consume unsafe
+        let body = parse_block(p);
+        return alloc_stmt_block(p.arena, 0, body);
+    }
+
+    // Expression or Assignment statement
+    let lhs = parse_expr(p);
+    if check(p, tok_eq()) {
         advance(p); // consume =
         let val_expr = parse_expr(p);
         expect(p, tok_semicolon(), "Expected ';' after assignment");
-        return alloc_stmt_assign(p.arena, name_tok.sym, val_expr);
+        if lhs.kind == expr_field() {
+            return alloc_stmt_field_assign(p.arena, lhs.left, lhs.sym, val_expr);
+        }
+        if lhs.kind == expr_index() {
+            return alloc_stmt_index_assign(p.arena, lhs.left, lhs.right, val_expr);
+        }
+        return alloc_stmt_assign(p.arena, lhs.sym, val_expr);
     }
 
-    let e = parse_expr(p);
-    expect(p, tok_semicolon(), "Expected ';' after expression statement");
-    alloc_stmt_expr(p.arena, e)
+    if check(p, tok_semicolon()) {
+        advance(p);
+    } else if !check(p, tok_rbrace()) {
+        expect(p, tok_semicolon(), "Expected ';' after expression statement");
+    }
+    alloc_stmt_expr(p.arena, lhs)
 }
 
-pub fn parse_fn(p: &mut Parser) -> *mut AstFn yields [Diagnostics] {
-    expect(p, tok_kw_fn(), "Expected 'fn'");
-    let name_tok = expect(p, tok_ident(), "Expected function name");
+pub fn parse_struct(p: &mut Parser) -> *mut AstStruct yields [Diagnostics] {
+    expect(p, tok_kw_struct(), "Expected 'struct'");
+    let name_tok = expect(p, tok_ident(), "Expected struct name");
     let name_sym = name_tok.sym;
 
-    expect(p, tok_lparen(), "Expected '(' after function name");
+    // Optional generic type parameter: <T>
+    if check(p, tok_lt()) {
+        advance(p);
+        while !check(p, tok_gt()) && !check(p, tok_eof()) {
+            advance(p);
+        }
+        expect(p, tok_gt(), "Expected '>' after generic parameter");
+    }
+
+    expect(p, tok_lbrace(), "Expected '{' to start struct body");
+    let mut fields: Vec<*mut AstField> = vec_new_in(p.arena);
+    while !check(p, tok_rbrace()) && !check(p, tok_eof()) {
+        let f_name = expect(p, tok_ident(), "Expected field name");
+        expect(p, tok_colon(), "Expected ':' after field name");
+        let f_ty = parse_type(p);
+        let field_node = alloc_field(p.arena, f_name.sym, f_ty);
+        vec_push(&mut fields, field_node);
+        if check(p, tok_comma()) {
+            advance(p);
+        }
+    }
+    expect(p, tok_rbrace(), "Expected '}' to close struct body");
+    alloc_struct(p.arena, name_sym, fields)
+}
+
+pub fn parse_extern_fn(p: &mut Parser) -> *mut AstExternFn yields [Diagnostics] {
+    expect(p, tok_kw_fn(), "Expected 'fn' in extern block");
+    let name_tok = expect(p, tok_ident(), "Expected extern function name");
+    let name_sym = name_tok.sym;
+
+    expect(p, tok_lparen(), "Expected '(' after extern function name");
     let mut params: Vec<*mut AstParam> = vec_new_in(p.arena);
     if !check(p, tok_rparen()) {
         let p_name = expect(p, tok_ident(), "Expected parameter name");
         expect(p, tok_colon(), "Expected ':' after parameter name");
-        let p_ty = expect(p, tok_ident(), "Expected parameter type");
-        let param_node = alloc_param(p.arena, p_name.sym, p_ty.sym);
+        let p_ty = parse_type(p);
+        let param_node = alloc_param(p.arena, p_name.sym, p_ty);
         vec_push(&mut params, param_node);
 
         while check(p, tok_comma()) {
             advance(p); // consume ,
             let next_p_name = expect(p, tok_ident(), "Expected parameter name");
             expect(p, tok_colon(), "Expected ':' after parameter name");
-            let next_p_ty = expect(p, tok_ident(), "Expected parameter type");
-            let next_node = alloc_param(p.arena, next_p_name.sym, next_p_ty.sym);
+            let next_p_ty = parse_type(p);
+            let next_node = alloc_param(p.arena, next_p_name.sym, next_p_ty);
             vec_push(&mut params, next_node);
         }
     }
@@ -249,8 +459,66 @@ pub fn parse_fn(p: &mut Parser) -> *mut AstFn yields [Diagnostics] {
     let mut ret_ty_sym: i64 = 0;
     if check(p, tok_arrow()) {
         advance(p); // consume ->
-        let ty_tok = expect(p, tok_ident(), "Expected return type after '->'");
-        ret_ty_sym = ty_tok.sym;
+        ret_ty_sym = parse_type(p);
+    }
+    expect(p, tok_semicolon(), "Expected ';' after extern function declaration");
+
+    alloc_extern_fn(p.arena, name_sym, params, ret_ty_sym)
+}
+
+pub fn parse_fn(p: &mut Parser) -> *mut AstFn yields [Diagnostics] {
+    expect(p, tok_kw_fn(), "Expected 'fn'");
+    let name_tok = expect(p, tok_ident(), "Expected function name");
+    let name_sym = name_tok.sym;
+
+    // Optional generic type parameter: <T>
+    if check(p, tok_lt()) {
+        advance(p);
+        while !check(p, tok_gt()) && !check(p, tok_eof()) {
+            advance(p);
+        }
+        expect(p, tok_gt(), "Expected '>' after generic parameter");
+    }
+
+    expect(p, tok_lparen(), "Expected '(' after function name");
+    let mut params: Vec<*mut AstParam> = vec_new_in(p.arena);
+    if !check(p, tok_rparen()) {
+        let p_name = expect(p, tok_ident(), "Expected parameter name");
+        expect(p, tok_colon(), "Expected ':' after parameter name");
+        let p_ty = parse_type(p);
+        let param_node = alloc_param(p.arena, p_name.sym, p_ty);
+        vec_push(&mut params, param_node);
+
+        while check(p, tok_comma()) {
+            advance(p); // consume ,
+            let next_p_name = expect(p, tok_ident(), "Expected parameter name");
+            expect(p, tok_colon(), "Expected ':' after parameter name");
+            let next_p_ty = parse_type(p);
+            let next_node = alloc_param(p.arena, next_p_name.sym, next_p_ty);
+            vec_push(&mut params, next_node);
+        }
+    }
+    expect(p, tok_rparen(), "Expected ')' after parameter list");
+
+    let mut ret_ty_sym: i64 = 0;
+    if check(p, tok_arrow()) {
+        advance(p); // consume ->
+        ret_ty_sym = parse_type(p);
+    }
+
+    // Optional yields clause: yields [ Effect1, Effect2, ... ]
+    if check(p, tok_ident()) {
+        let tok = current_tok(p);
+        let interner_ref = p.interner as &Interner;
+        let s = interner_lookup(interner_ref, tok.sym);
+        if unsafe { strcmp(s as *const u8, "yields" as *const u8) == 0 } {
+            advance(p); // consume yields
+            expect(p, tok_lbracket(), "Expected '[' after yields");
+            while !check(p, tok_rbracket()) && !check(p, tok_eof()) {
+                advance(p);
+            }
+            expect(p, tok_rbracket(), "Expected ']' after effect list");
+        }
     }
 
     let body = parse_block(p);
@@ -267,7 +535,29 @@ pub fn parse_program(tokens: Vec<*mut Token>, interner: &mut Interner, arena: *m
     };
 
     while !check(&p, tok_eof()) {
-        if check(&p, tok_kw_fn()) {
+        if check(&p, tok_kw_pub()) {
+            advance(&mut p); // consume pub
+        }
+
+        if check(&p, tok_kw_import()) {
+            advance(&mut p); // consume import
+            while !check(&p, tok_semicolon()) && !check(&p, tok_eof()) {
+                advance(&mut p);
+            }
+            expect(&mut p, tok_semicolon(), "Expected ';' after import");
+        } else if check(&p, tok_kw_extern()) {
+            advance(&mut p); // consume extern
+            expect(&mut p, tok_str(), "Expected \"C\" after extern");
+            expect(&mut p, tok_lbrace(), "Expected '{' after extern \"C\"");
+            while !check(&p, tok_rbrace()) && !check(&p, tok_eof()) {
+                let ext_f = parse_extern_fn(&mut p);
+                vec_push(&mut prog.extern_fns, ext_f);
+            }
+            expect(&mut p, tok_rbrace(), "Expected '}' after extern block");
+        } else if check(&p, tok_kw_struct()) {
+            let s = parse_struct(&mut p);
+            vec_push(&mut prog.structs, s);
+        } else if check(&p, tok_kw_fn()) {
             let f = parse_fn(&mut p);
             vec_push(&mut prog.functions, f);
         } else {

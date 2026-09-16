@@ -138,6 +138,19 @@ fn prepare_server_binary(port: u16) -> PathBuf {
     exe_path
 }
 
+fn spawn_server_process(exe_path: &std::path::Path) -> Child {
+    for attempt in 0..15 {
+        match Command::new(exe_path).spawn() {
+            Ok(child) => return child,
+            Err(e) if e.raw_os_error() == Some(5) => {
+                thread::sleep(Duration::from_millis(50 * (attempt + 1)));
+            }
+            Err(e) => panic!("Failed to spawn security web service {}: {}", exe_path.display(), e),
+        }
+    }
+    panic!("Failed to spawn security web service {} after retries", exe_path.display());
+}
+
 // -----------------------------------------------------------------------------
 // Fortress Security & Adversarial Test Suite
 // -----------------------------------------------------------------------------
@@ -146,9 +159,7 @@ fn test_fortress_security_suite() {
     let port: u16 = 8092;
     let exe_path = prepare_server_binary(port);
 
-    let mut child = Command::new(&exe_path)
-        .spawn()
-        .expect("Failed to spawn security web service");
+    let mut child = spawn_server_process(&exe_path);
 
     thread::sleep(Duration::from_millis(300));
     assert_healthy(port, &mut child, "Initial Startup");
@@ -529,9 +540,7 @@ fn test_server_restart_lifecycle_stability() {
     println!("\n[Group I / FORT-LIFE] Testing Server Restart & Lifecycle Stability (5 Consecutive Cycles)...");
 
     for cycle in 1..=5 {
-        let mut child = Command::new(&exe_path)
-            .spawn()
-            .expect("Failed to spawn security web service for restart test");
+        let mut child = spawn_server_process(&exe_path);
 
         thread::sleep(Duration::from_millis(200));
         assert_healthy(port, &mut child, &format!("Cycle {} Startup", cycle));
