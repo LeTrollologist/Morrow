@@ -106,6 +106,7 @@ fn test_c100k_concurrency_and_heartbeat() {
         emit_llvm: false,
         emit_asm: false,
         custom_out: None,
+        target: None,
     };
 
     println!("\n========================================================================");

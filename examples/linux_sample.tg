@@ -1,0 +1,36 @@
+// Tungsten Cross-Platform Linux Verification Program
+// Exercises functions, arithmetic, conditionals, loops, and IO
+
+fn add(a: i64, b: i64) -> i64 {
+    return a + b;
+}
+
+fn factorial(n: i64) -> i64 {
+    if (n <= 1) {
+        return 1;
+    }
+    return n * factorial(n - 1);
+}
+
+fn main() -> i64 yields [IO] {
+    let mut sum: i64 = 0;
+    let mut i: i64 = 1;
+
+    while (i <= 10) {
+        sum = sum + i;
+        i = i + 1;
+    }
+
+    // Prints sum of 1..10 = 55
+    println!("{}", sum);
+
+    // Prints 5! = 120
+    let f: i64 = factorial(5);
+    println!("{}", f);
+
+    // Prints 40 + 2 = 42
+    let res: i64 = add(40, 2);
+    println!("{}", res);
+
+    return 0;
+}

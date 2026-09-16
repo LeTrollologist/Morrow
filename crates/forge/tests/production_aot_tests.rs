@@ -29,6 +29,7 @@ fn test_forge_build_debug_and_pdb() {
         emit_llvm: false,
         emit_asm: false,
         custom_out: None,
+        target: None,
     };
 
     let target_str = src_path.to_str().unwrap();
@@ -85,6 +86,7 @@ fn test_forge_build_release_and_lto() {
         emit_llvm: false,
         emit_asm: false,
         custom_out: None,
+        target: None,
     };
 
     let target_str = src_path.to_str().unwrap();
@@ -139,6 +141,7 @@ fn test_forge_build_emit_llvm_and_asm() {
         emit_llvm: true,
         emit_asm: true,
         custom_out: None,
+        target: None,
     };
 
     let target_str = src_path.to_str().unwrap();

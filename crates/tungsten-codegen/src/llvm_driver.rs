@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tungsten_tir::ir::TirModule;
-use crate::llvm_text::emit_llvm_ir;
+use crate::llvm_text::{emit_llvm_ir_with_target, TargetPlatform};
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -16,6 +16,24 @@ fn generate_unique_id() -> String {
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     format!("{}_{}_{}", pid, nanos, counter)
+}
+
+fn to_wsl_path(p: &Path) -> String {
+    let abs_p = if p.is_absolute() {
+        p.to_path_buf()
+    } else if let Ok(curr) = env::current_dir() {
+        curr.join(p)
+    } else {
+        p.to_path_buf()
+    };
+    let clean = abs_p.to_string_lossy().replace('\\', "/");
+    let clean = clean.trim_start_matches("//?/").trim_start_matches("\\\\?\\");
+    if clean.len() >= 2 && clean.as_bytes()[1] == b':' {
+        let drive = (clean.as_bytes()[0] as char).to_ascii_lowercase();
+        format!("/mnt/{}{}", drive, &clean[2..])
+    } else {
+        clean.to_string()
+    }
 }
 
 pub struct LlvmToolchain {
@@ -90,6 +108,7 @@ pub struct AotOptions {
     /// Allows callers to provide the workspace `target/crt` directory when the
     /// process CWD differs from the workspace root (e.g. during `cargo test`).
     pub extra_lib_paths: Vec<PathBuf>,
+    pub target_triple: Option<String>,
 }
 
 impl Default for AotOptions {
@@ -100,6 +119,7 @@ impl Default for AotOptions {
             emit_asm: None,
             extra_libs: Vec::new(),
             extra_lib_paths: Vec::new(),
+            target_triple: None,
         }
     }
 }
@@ -115,6 +135,7 @@ pub fn compile_llvm_aot(
         emit_asm: None,
         extra_libs: Vec::new(),
         extra_lib_paths: Vec::new(),
+        target_triple: None,
     };
     compile_llvm_aot_with_options(module, out_exe, &options)
 }
@@ -125,7 +146,12 @@ pub fn compile_llvm_aot_with_options(
     options: &AotOptions,
 ) -> Result<(), String> {
     let toolchain = LlvmToolchain::discover()?;
-    let ir_text = emit_llvm_ir(module);
+    let target = match options.target_triple.as_deref() {
+        Some(t) if t.contains("linux") => TargetPlatform::LinuxX86_64,
+        _ => TargetPlatform::WindowsX86_64,
+    };
+    let is_linux = target == TargetPlatform::LinuxX86_64;
+    let ir_text = emit_llvm_ir_with_target(module, target);
 
     if let Some(parent) = out_exe.parent() {
         let _ = fs::create_dir_all(parent);
@@ -149,6 +175,11 @@ pub fn compile_llvm_aot_with_options(
         .map_err(|e| format!("Failed to write LLVM IR to {}: {}", ll_path.display(), e))?;
 
     let is_release = options.opt_level == "O3" || options.opt_level == "3";
+    let clang_target = if is_linux {
+        "--target=x86_64-unknown-linux-gnu"
+    } else {
+        "--target=x86_64-pc-windows-gnu"
+    };
 
     // If emit_asm is requested, run clang -S
     if let Some(ref asm_dst) = options.emit_asm {
@@ -157,10 +188,13 @@ pub fn compile_llvm_aot_with_options(
         }
         let clang_opt = format!("-{}", options.opt_level);
         let mut asm_cmd = Command::new(&toolchain.clang_path);
+        asm_cmd.arg(clang_target);
+        if !is_linux {
+            asm_cmd.arg("-g").arg("-gcodeview");
+        } else {
+            asm_cmd.arg("-g");
+        }
         asm_cmd
-            .arg("--target=x86_64-pc-windows-gnu")
-            .arg("-g")
-            .arg("-gcodeview")
             .arg("-S")
             .arg(&ll_path)
             .arg(&clang_opt);
@@ -176,10 +210,13 @@ pub fn compile_llvm_aot_with_options(
     // Compile .ll to .o using clang with optimization and debug symbols
     let clang_opt = format!("-{}", options.opt_level);
     let mut clang_cmd = Command::new(&toolchain.clang_path);
+    clang_cmd.arg(clang_target);
+    if !is_linux {
+        clang_cmd.arg("-g").arg("-gcodeview");
+    } else {
+        clang_cmd.arg("-g");
+    }
     clang_cmd
-        .arg("--target=x86_64-pc-windows-gnu")
-        .arg("-g")
-        .arg("-gcodeview")
         .arg("-c")
         .arg(&ll_path)
         .arg(&clang_opt);
@@ -198,6 +235,109 @@ pub fn compile_llvm_aot_with_options(
         let err = String::from_utf8_lossy(&clang_res.stderr);
         let _ = fs::remove_file(&ll_path);
         return Err(format!("LLVM clang compilation error:\n{}", err));
+    }
+
+    // If target is Linux, link ELF executable
+    if is_linux {
+        let mut linked = false;
+        let mut link_error = None;
+
+        // 1. Try native gcc if present (when running on Linux)
+        if !cfg!(target_os = "windows") {
+            if let Ok(res) = Command::new("gcc").arg("--version").output() {
+                if res.status.success() {
+                    let mut cmd = Command::new("gcc");
+                    cmd.arg(&o_path)
+                        .arg("-o")
+                        .arg(out_exe)
+                        .arg("-lpthread")
+                        .arg("-ldl")
+                        .arg("-lm")
+                        .arg("-Wl,--unresolved-symbols=ignore-all");
+                    for lib in &options.extra_libs {
+                        cmd.arg(format!("-l{}", lib));
+                    }
+                    for extra_path in &options.extra_lib_paths {
+                        cmd.arg(format!("-L{}", extra_path.display()));
+                    }
+                    if let Ok(output) = cmd.output() {
+                        if output.status.success() {
+                            linked = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Try WSL gcc on Windows if available
+        if !linked && cfg!(target_os = "windows") {
+            if let Ok(res) = Command::new("wsl").arg("-e").arg("/bin/bash").arg("-c").arg("gcc --version").output() {
+                if res.status.success() {
+                    let o_wsl = to_wsl_path(&o_path);
+                    let out_wsl = to_wsl_path(out_exe);
+                    let mut gcc_cmd = format!("gcc \"{}\" -o \"{}\" -lpthread -ldl -lm -Wl,--unresolved-symbols=ignore-all", o_wsl, out_wsl);
+                    for lib in &options.extra_libs {
+                        gcc_cmd.push_str(&format!(" -l{}", lib));
+                    }
+                    for extra_path in &options.extra_lib_paths {
+                        let p_wsl = to_wsl_path(extra_path);
+                        gcc_cmd.push_str(&format!(" -L\"{}\"", p_wsl));
+                    }
+                    if let Ok(wsl_res) = Command::new("wsl").arg("-e").arg("/bin/bash").arg("-c").arg(&gcc_cmd).output() {
+                        if wsl_res.status.success() {
+                            linked = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Fallback: rust-lld with -flavor gnu -m elf_x86_64
+        if !linked {
+            let mut lld_cmd = Command::new(&toolchain.lld_path);
+            lld_cmd
+                .arg("-flavor")
+                .arg("gnu")
+                .arg("-m")
+                .arg("elf_x86_64")
+                .arg("-o")
+                .arg(out_exe)
+                .arg(&o_path)
+                .arg("--entry=main")
+                .arg("--dynamic-linker=/lib64/ld-linux-x86-64.so.2")
+                .arg("--unresolved-symbols=ignore-all");
+
+            if is_release {
+                lld_cmd.arg("--gc-sections");
+            }
+            for extra_path in &options.extra_lib_paths {
+                lld_cmd.arg(format!("-L{}", extra_path.display()));
+            }
+            for lib in &options.extra_libs {
+                lld_cmd.arg(format!("-l{}", lib));
+            }
+
+            match lld_cmd.output() {
+                Ok(res) if res.status.success() => {
+                    linked = true;
+                }
+                Ok(res) => {
+                    let err = String::from_utf8_lossy(&res.stderr).to_string();
+                    link_error = Some(format!("LLVM rust-lld Linux ELF linking error:\n{}", err));
+                }
+                Err(e) => {
+                    link_error = Some(format!("Failed to run rust-lld: {}", e));
+                }
+            }
+        }
+
+        let _ = fs::remove_file(&ll_path);
+        let _ = fs::remove_file(&o_path);
+
+        if !linked {
+            return Err(link_error.unwrap_or_else(|| "Failed to link Linux ELF binary".to_string()));
+        }
+        return Ok(());
     }
 
     // Link .o to .exe using rust-lld with CodeView PDB symbols and exponential backoff

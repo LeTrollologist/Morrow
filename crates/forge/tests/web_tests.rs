@@ -42,6 +42,7 @@ fn test_web_service_full_lifecycle() {
         emit_llvm: false,
         emit_asm: false,
         custom_out: None,
+        target: None,
     };
 
     let target_str = src_path.to_str().unwrap();

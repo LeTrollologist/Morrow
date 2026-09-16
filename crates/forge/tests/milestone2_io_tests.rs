@@ -74,6 +74,7 @@ fn test_milestone2_fs_operations() {
         emit_llvm: false,
         emit_asm: false,
         custom_out: Some(temp.path().join("main.exe")),
+        target: None,
     };
 
     let target_str = src_path.to_str().unwrap();
@@ -112,6 +113,7 @@ fn test_milestone2_fs_region_read_zero_copy() {
         emit_llvm: false,
         emit_asm: false,
         custom_out: Some(temp.path().join("main.exe")),
+        target: None,
     };
 
     let target_str = src_path.to_str().unwrap();
@@ -147,6 +149,7 @@ fn test_milestone2_process_execution() {
         emit_llvm: false,
         emit_asm: false,
         custom_out: Some(temp.path().join("main.exe")),
+        target: None,
     };
 
     let target_str = src_path.to_str().unwrap();
@@ -232,6 +235,7 @@ fn test_milestone2_robin_hood_hashmap() {
         emit_llvm: false,
         emit_asm: false,
         custom_out: Some(temp.path().join("main.exe")),
+        target: None,
     };
 
     let target_str = src_path.to_str().unwrap();
@@ -259,6 +263,7 @@ fn test_milestone2_self_hosting_bridge_full_demo() {
         emit_llvm: false,
         emit_asm: false,
         custom_out: None,
+        target: None,
     };
 
     let target_str = script_path.to_str().unwrap();

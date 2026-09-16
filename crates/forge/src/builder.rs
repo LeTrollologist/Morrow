@@ -13,6 +13,7 @@ pub struct BuildOptions {
     pub emit_llvm: bool,
     pub emit_asm: bool,
     pub custom_out: Option<PathBuf>,
+    pub target: Option<String>,
 }
 
 impl Default for BuildOptions {
@@ -22,6 +23,7 @@ impl Default for BuildOptions {
             emit_llvm: false,
             emit_asm: false,
             custom_out: None,
+            target: None,
         }
     }
 }
@@ -234,7 +236,13 @@ pub fn build_target(
     let out_dir = root_dir.join("target").join(profile_dir);
     let _ = fs::create_dir_all(&out_dir);
 
-    let out_exe = options.custom_out.clone().unwrap_or_else(|| out_dir.join(format!("{}.exe", bin_name)));
+    let is_linux = options.target.as_deref().map(|t| t.contains("linux")).unwrap_or(false);
+    let default_bin = if is_linux {
+        out_dir.join(&bin_name)
+    } else {
+        out_dir.join(format!("{}.exe", bin_name))
+    };
+    let out_exe = options.custom_out.clone().unwrap_or(default_bin);
 
     let sqlite_dll_src = if root_dir.join("target").join("sqlite").join("sqlite3.dll").is_file() {
         Some(root_dir.join("target").join("sqlite").join("sqlite3.dll"))
@@ -273,32 +281,36 @@ pub fn build_target(
     let root_target_crt = root_dir.join("target").join("crt");
     let root_target_sqlite = root_dir.join("target").join("sqlite");
 
-    if sqlite_a.is_file() || root_target_crt.join("libsqlite3.a").is_file() || Path::new("target/crt/libsqlite3.a").is_file() {
-        extra_libs.push("sqlite3".to_string());
-    }
+    let is_linux_target = options.target.as_deref().map(|t| t.contains("linux")).unwrap_or(false);
 
-    // Always supply absolute paths derived from the resolved workspace root,
-    // so that `cargo test` (which runs from a different CWD) can still find libsqlite3.a.
-    if crt_dst.is_dir() {
-        extra_lib_paths.push(crt_dst);
-    }
-    if root_target_crt.is_dir() {
-        extra_lib_paths.push(root_target_crt);
-    }
-    if root_target_sqlite.is_dir() {
-        extra_lib_paths.push(root_target_sqlite);
-    }
-    if let Some(ref ws) = workspace_root {
-        let ws_crt = ws.join("target").join("crt");
-        if ws_crt.is_dir() {
-            extra_lib_paths.push(ws_crt);
+    if !is_linux_target {
+        if sqlite_a.is_file() || root_target_crt.join("libsqlite3.a").is_file() || Path::new("target/crt/libsqlite3.a").is_file() {
+            extra_libs.push("sqlite3".to_string());
         }
-        let ws_sqlite = ws.join("target").join("sqlite");
-        if ws_sqlite.is_dir() {
-            extra_lib_paths.push(ws_sqlite);
+
+        // Always supply absolute paths derived from the resolved workspace root,
+        // so that `cargo test` (which runs from a different CWD) can still find libsqlite3.a.
+        if crt_dst.is_dir() {
+            extra_lib_paths.push(crt_dst);
         }
+        if root_target_crt.is_dir() {
+            extra_lib_paths.push(root_target_crt);
+        }
+        if root_target_sqlite.is_dir() {
+            extra_lib_paths.push(root_target_sqlite);
+        }
+        if let Some(ref ws) = workspace_root {
+            let ws_crt = ws.join("target").join("crt");
+            if ws_crt.is_dir() {
+                extra_lib_paths.push(ws_crt);
+            }
+            let ws_sqlite = ws.join("target").join("sqlite");
+            if ws_sqlite.is_dir() {
+                extra_lib_paths.push(ws_sqlite);
+            }
+        }
+        extra_lib_paths.push(root_dir.clone());
     }
-    extra_lib_paths.push(root_dir.clone());
 
     let aot_opts = tungsten_codegen::AotOptions {
         opt_level: opt_level.to_string(),
@@ -306,6 +318,7 @@ pub fn build_target(
         emit_asm: asm_path,
         extra_libs,
         extra_lib_paths,
+        target_triple: options.target.clone(),
     };
 
     if options.release {

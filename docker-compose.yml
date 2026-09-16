@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  fortress:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: tungsten/fortress:v2
+    container_name: tungsten_fortress_v2
+    ports:
+      - "8096:8096"
+    environment:
+      - PORT=8096
+      - TUNGSTEN_ENV=production
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 64M
+    security_opt:
+      - no-new-privileges:true

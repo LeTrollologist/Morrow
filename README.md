@@ -88,14 +88,21 @@ cargo run -p forge -- lsp
 * **Hover Tooltips**: Shows inferred refinement intervals `[min..=max]` and algebraic effect rows `yields [...]`.
 * **Format-on-Save**: Integrated formatting provider.
 
-### 4. Run Standard Library Showcase
+### 4. Cross-Compile for Linux (ELF)
+Cross-compile any Tungsten program or microservice to a 64-bit Linux ELF binary from Windows:
 ```bash
-cargo run -p forge -- run examples/std_demo.tg
+cargo run -p forge -- build --target x86_64-unknown-linux-gnu examples/web_service_v2.tg
 ```
 
-Output:
-```text
-Player PlayerOne has 100 HP
+### 5. Production Docker Deployment
+Deploy the Fortress v2 high-concurrency microservice in a secure, unprivileged (< 80 MB) Docker container:
+```bash
+docker compose up -d --build
+```
+Verify the zero-copy health probe:
+```bash
+curl http://127.0.0.1:8096/health
+# {"status":"ok","server":"tungsten-fortress/2.0-iocp"}
 ```
 
 ---

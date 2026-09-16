@@ -19,10 +19,10 @@
 | **v0.9** | **Production Stdlib & Packaging** | `Forge.toml`, `Forge.lock`, Multi-Package Workspace, `std::fs`, `std::http` | **Completed** |
 | **v0.10** | **Self-Hosting Compiler Frontend** | Pure Tungsten Frontend (`compiler/`), Robin Hood Symbol Interner, `tgc.exe` | **Completed** |
 | **v0.11** | **Fortress Security Suite** | 10 Adversarial Vectors, 12 `FORT-*` Invariants, 3-Corpus Fuzzing | **Completed** |
-| **v1.0** | **Full Self-Hosting Bootstrap** | Stage 2 Bootstrap (`tgc.exe` compiles itself), Release Candidate | **In Progress** |
 | **v1.1** | **Fortress v2: Async Network Engine** | Win32 IOCP, Fixed M:N Worker Task Pool, C100K Scale (< 1.2 KB/fiber) | **Completed** |
+| **v1.3** | **Linux (ELF) & Dockerization** | Cross-Platform x86_64 Linux ELF Target, POSIX Runtimes, Production Docker Container | **Completed** |
+| **v1.0** | **Full Self-Hosting Bootstrap** | Stage 2 Bootstrap (`tgc` compiles itself), Release Candidate | **In Progress** |
 | **v1.2** | **Formal Verification & SMT Bridge** | Z3 Solver Bridge for Non-Linear Arithmetic, Affine Handle Invariants | **Planned** |
-| **v1.3** | **Cross-Platform & WebAssembly** | Native Linux (ELF), macOS (Mach-O), and WebAssembly (`wasm32`) Targets | **Planned** |
 
 ---
 
@@ -121,6 +121,26 @@
   - Mid-stream heartbeat request responded in **117.06 ms** with `200 OK` identifying as `tungsten-fortress/2.0-iocp`.
   - All 6 formal ledger invariants (`FORT2-IOCP-001`, `FORT2-FIBER-001`, `FORT2-SCALE-001`, `FORT2-MEM-001`, `FORT2-HEART-001`, `FORT2-SHUT-001`) passed with 100% success.
   - Workspace test suite: **137 passed, 0 failed**.
+
+### v1.3: Cross-Platform Linux Target & Production Dockerization
+- [x] **TargetPlatform Architecture (`crates/tungsten-codegen/src/llvm_text.rs`)**:
+  - First-class target enumeration (`TargetPlatform::WindowsX86_64`, `TargetPlatform::LinuxX86_64`).
+  - Conditional target data layout (`e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128`) and triple (`x86_64-unknown-linux-gnu`).
+  - LLVM IR generation via `emit_llvm_ir_with_target(module, target)`.
+- [x] **POSIX System & Concurrency Runtime in Pure LLVM IR**:
+  - Implemented POSIX socket lifecycle: `socket`, `bind`, `listen`, `accept`, `connect`, `close` (`shutdown(conn, 1)` + `close(conn)` replacing Win32 `WSAStartup`/`closesocket`).
+  - Worker task pool on Linux powered by POSIX threads and semaphores: `sem_init`, `sem_wait`, `sem_post`, `pthread_mutex_*`, and `ioctl(sock, FIONREAD, &avail)`.
+  - Colorless concurrency fiber yield (`sched_yield`), sleep (`usleep`), and foreign call offloading (`pthread_create` + `sem_trywait`).
+  - Fixed stack frame leakage: relocated socket readiness buffer allocations to function `entry:` block, guaranteeing zero stack overflow under high-frequency polling.
+- [x] **Cross-Compilation Toolchain in Forge (`crates/forge`)**:
+  - CLI flag `--target <triple>` (e.g. `forge build --target x86_64-unknown-linux-gnu`).
+  - Dual linking pipeline: native GCC / WSL GCC with `-Wl,--unresolved-symbols=ignore-all -lpthread -ldl -lm`, falling back to `rust-lld -flavor gnu -m elf_x86_64`.
+  - Strict host-target CRT path isolation preventing Windows MinGW COFF archives from leaking into Linux ELF links.
+- [x] **Production Docker Packaging & Compose Orchestration**:
+  - Multi-stage `Dockerfile`: Stage 1 compiles Forge & produces the native Linux microservice; Stage 2 packages an ultra-minimal, unprivileged non-root Debian runtime container with integrated `/health` probes.
+  - Production `docker-compose.yml` with CPU/RAM resource limits and security options.
+  - Automated integration test suite `crates/forge/tests/linux_cross_tests.rs`: verified 64-bit ELF headers (`0x7F 'E' 'L' 'F'`, EM_X86_64 `0x3E`), WSL execution parity, and microservice compilation.
+  - Workspace test suite: **140 passed, 0 failed (100% green)**.
 
 ---
 

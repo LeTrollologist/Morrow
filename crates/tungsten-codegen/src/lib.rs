@@ -11,7 +11,7 @@ use tungsten_tir::ir::TirModule;
 pub use llvm_driver::{
     compile_llvm_aot, compile_llvm_aot_with_options, run_llvm_aot, AotOptions, LlvmToolchain,
 };
-pub use llvm_text::emit_llvm_ir;
+pub use llvm_text::{emit_llvm_ir, emit_llvm_ir_with_target, TargetPlatform};
 pub use runtime::set_silent_mode;
 
 pub fn compile_and_run(module: &TirModule) -> Result<i64, String> {

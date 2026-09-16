@@ -25,6 +25,7 @@ fn test_milestone3_bootstrap_grand_loop() {
         emit_llvm: false,
         emit_asm: false,
         custom_out: Some(tgc_exe.clone()),
+        target: None,
     };
 
     let built_exe = build_target(Some(compiler_main.to_str().unwrap()), &opts)

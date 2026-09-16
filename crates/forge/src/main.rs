@@ -109,7 +109,7 @@ USAGE:
 SUBCOMMANDS:
     check [file.tg]                       Typecheck project or file, verify refinement bounds & effects
     run [--release] [file.tg]            Incrementally compile and execute project or file (LLVM AOT)
-    build [--release] [--emit-llvm] [--emit-asm] [-o <path>] [file.tg]
+    build [--release] [--emit-llvm] [--emit-asm] [--target <triple>] [-o <path>] [file.tg]
                                           Compile native binary (target/debug/ -O0 or target/release/ -O3)
     clean [path]                          Remove target/ directory and build artifacts
     new <project_name> [--lib]            Create a new Tungsten binary or library package
@@ -168,6 +168,7 @@ fn run_build(args: &[String]) {
     let mut emit_llvm = false;
     let mut emit_asm = false;
     let mut custom_out = None;
+    let mut target_triple = None;
     let mut target = None;
 
     let mut i = 0;
@@ -182,6 +183,9 @@ fn run_build(args: &[String]) {
         } else if (arg == "--out" || arg == "-o") && i + 1 < args.len() {
             custom_out = Some(PathBuf::from(&args[i + 1]));
             i += 1;
+        } else if arg == "--target" && i + 1 < args.len() {
+            target_triple = Some(args[i + 1].clone());
+            i += 1;
         } else if !arg.starts_with('-') && target.is_none() {
             target = Some(arg.as_str());
         }
@@ -193,6 +197,7 @@ fn run_build(args: &[String]) {
         emit_llvm,
         emit_asm,
         custom_out,
+        target: target_triple,
     };
 
     match build_target(target, &options) {
@@ -290,6 +295,7 @@ fn run_file(args: &[String]) {
             emit_llvm: false,
             emit_asm: false,
             custom_out: None,
+            target: None,
         };
         match build_target(target, &options) {
             Ok(p) => p,

@@ -35,6 +35,7 @@ fn test_sqlite_benchmark_execution() {
         emit_llvm: false,
         emit_asm: false,
         custom_out: None,
+        target: None,
     };
 
     let target_str = example_src.to_str().unwrap();

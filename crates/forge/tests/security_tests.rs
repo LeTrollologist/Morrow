@@ -129,6 +129,7 @@ fn prepare_server_binary(port: u16) -> PathBuf {
         emit_llvm: false,
         emit_asm: false,
         custom_out: None,
+        target: None,
     };
 
     let exe_path = build_target(Some(temp_src.to_str().unwrap()), &options)

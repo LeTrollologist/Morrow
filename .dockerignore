@@ -1,0 +1,20 @@
+# Git & metadata
+.git
+.gitignore
+.gemini
+
+# Build artifacts
+target/
+target_linux/
+**/target/
+*.exe
+*.pdb
+*.o
+*.ll
+*.s
+*.tmp
+*.log
+
+# Scratch & development dumps
+scratch/
+test_sample.tir
