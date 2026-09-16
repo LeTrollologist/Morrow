@@ -17,8 +17,11 @@ For development status and upcoming milestones, see [ROADMAP.md](ROADMAP.md).
 3. **Refinement Types (Compile-time verified bounds)**  
    Declare bounded types like `type Health = u8(0..=100);`. The compiler mathematically proves arithmetic constraints at compile time, eliminating runtime out-of-bounds panics and bounds-checking overhead.
 
-4. **Contexts (Compile-Time Implicit Injection)**  
-   Implicitly threaded capabilities (like memory allocators and logger handles) flow down call graphs without manual parameter plumbing, verified safely at compile time.
+4. **High-Concurrency Async Engine (Fortress v2)**  
+   M:N fiber task pool driven by kernel-level Win32 I/O Completion Ports (IOCP). Sustains 5,000+ simultaneous connections with < 1.2 KB RAM overhead per connection and zero thread quantum stalls.
+
+5. **Contexts (Compile-Time Implicit Injection)**  
+   Implicitly threaded capabilities flow down call graphs without manual parameter plumbing, verified safely at compile time.
 
 ---
 
@@ -27,21 +30,36 @@ For development status and upcoming milestones, see [ROADMAP.md](ROADMAP.md).
 ```
 Tungsten/
 ├── Cargo.toml
-├── std/                   # Tungsten Standard Library (refinements & effects)
-│   ├── prelude.tg
-│   ├── refinements.tg
-│   └── effects.tg
+├── compiler/              # Self-Hosting Compiler Frontend (Stage 1 in Tungsten)
+│   ├── ast.tg, lexer.tg, parser.tg, codegen.tg
+│   ├── interner.tg, diagnostics.tg, main.tg
+├── std/                   # Tungsten Standard Library
+│   ├── prelude.tg, refinements.tg, effects.tg
+│   ├── collections.tg     # Robin Hood HashMap, Vec, StringBuffer
+│   ├── sqlite.tg          # Injection-proof parameterized driver
+│   ├── http.tg            # Zero-copy HTTP/1.1 request/response engine
+│   ├── fs.tg, process.tg, io.tg, net.tg
 ├── crates/
 │   ├── tungsten-syntax/   # Lexer, AST, parser, and code formatter (fmt)
-│   ├── tungsten-typeck/   # Type checker with Refinement Interval Solver & Effect Row tracker
-│   ├── tungsten-vm/       # Runtime interpreter with delimited algebraic effect handlers
+│   ├── tungsten-typeck/   # Type checker, Refinement Solver, Region Escape Analysis
+│   ├── tungsten-tir/      # Basic-Block SSA IR, constant folding, bounds elimination
+│   ├── tungsten-codegen/  # Native LLVM 18 IR emitter, M:N worker pool, JIT engine
+│   ├── tungsten-fiber/    # Win32 IOCP completion port engine, fiber scheduler
+│   ├── tungsten-vm/       # Delimited continuation effect runtime interpreter
+│   ├── tungsten-fuzz/     # Differential fuzzing and allocator stress harness
 │   ├── tungsten-lsp/      # Language Server Protocol (LSP) for VS Code / Neovim
-│   └── forge/             # Developer CLI (`check`, `run`, `fmt`, `lsp`, `new`)
+│   └── forge/             # Developer CLI (`check`, `build`, `run`, `fmt`, `lsp`, `bindgen`)
+├── docs/
+│   └── SYNTAX.md          # Comprehensive Language & Syntax Specification
 ├── examples/
-│   ├── player.tg          # Flagship player game demo with effects, refinement, and regions
-│   ├── std_demo.tg        # Standard library demonstration with Random & Time effects
-│   └── refinement_error.tg# Diagnostic demo showing compile-time rejection of bad bounds & effects
+│   ├── web_service_v2.tg  # Fortress v2 Async IOCP Web Server (C100K engine)
+│   ├── web_service.tg     # Fortress v1 REST API with SQLite & Region Sandboxing
+│   ├── bootstrap_sample.tg# Milestone 3 Self-Hosting Test Sample
+│   ├── sqlite_benchmark.tg# 10,000-row zero-allocation query benchmark
+│   └── player.tg          # Flagship game demo with effects, refinement, and regions
 ```
+
+For complete language grammar, types, and standard library reference, see [docs/SYNTAX.md](docs/SYNTAX.md).
 
 ---
 

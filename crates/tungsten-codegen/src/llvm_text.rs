@@ -149,8 +149,10 @@ impl<'a> LlvmTextEmitter<'a> {
         header.push_str("declare i64 @accept(i64, ptr, ptr)\n");
         header.push_str("declare i32 @recv(i64, ptr, i32, i32)\n");
         header.push_str("declare i32 @send(i64, ptr, i32, i32)\n");
+        header.push_str("declare i32 @shutdown(i64, i32)\n");
         header.push_str("declare i32 @closesocket(i64)\n");
         header.push_str("declare i32 @setsockopt(i64, i32, i32, ptr, i32)\n");
+        header.push_str("declare i32 @ioctlsocket(i64, i32, ptr)\n");
         header.push_str("declare i64 @strlen(ptr)\n");
         header.push_str("declare ptr @CreateThread(ptr, i64, ptr, ptr, i32, ptr)\n");
         header.push_str("declare i32 @CloseHandle(ptr)\n");
@@ -183,8 +185,8 @@ impl<'a> LlvmTextEmitter<'a> {
         // Dynamic C declarations from extern_blocks
         let mut declared_c_fns: std::collections::HashSet<String> = [
             "printf", "putchar", "exit", "malloc", "realloc", "free", "Sleep", "fflush",
-            "WSAStartup", "socket", "bind", "listen", "connect", "inet_addr", "accept", "recv", "send",
-            "closesocket", "setsockopt", "strlen", "CreateThread", "CloseHandle",
+            "WSAStartup", "socket", "bind", "listen", "connect", "inet_addr", "accept", "recv", "send", "shutdown",
+            "closesocket", "setsockopt", "ioctlsocket", "strlen", "CreateThread", "CloseHandle",
             "CreateSemaphoreA", "CreateMutexA", "WaitForSingleObject",
             "ReleaseSemaphore", "ReleaseMutex", "fopen", "fread", "fwrite", "fclose",
             "fseek", "ftell", "remove", "system", "strcmp", "memset",
@@ -222,6 +224,13 @@ impl<'a> LlvmTextEmitter<'a> {
         header.push_str("@fmt_io_str = internal constant [9 x i8] c\"[IO] %s\\0A\\00\"\n");
         header.push_str("@fmt_io_empty = internal constant [6 x i8] c\"[IO]\\0A\\00\"\n");
         header.push_str("@panic_fmt = internal constant [57 x i8] c\"\\0A[Tungsten Refinement Panic]: %lld outside [%lld, %lld]\\0A\\00\"\n\n");
+
+        header.push_str("; M:N Fiber Task Pool Globals\n");
+        header.push_str("@tungsten_pool_head = internal global ptr null\n");
+        header.push_str("@tungsten_pool_tail = internal global ptr null\n");
+        header.push_str("@tungsten_pool_mutex = internal global ptr null\n");
+        header.push_str("@tungsten_pool_sem = internal global ptr null\n");
+        header.push_str("@tungsten_pool_init_flag = internal global i32 0\n\n");
 
         // Tungsten Runtime Functions (in pure LLVM IR!)
         header.push_str("; Tungsten Native Runtime Functions\n");
@@ -426,67 +435,153 @@ impl<'a> LlvmTextEmitter<'a> {
         header.push_str("    ret void\n}\n\n");
 
         header.push_str("define void @tungsten_trace_effect(ptr %eff, i64 %elen, ptr %op, i64 %olen) {\n    ret void\n}\n\n");
-        header.push_str("define i32 @tungsten_thread_thunk(ptr %param) {\n");
-        header.push_str("    %fn_slot = getelementptr inbounds i8, ptr %param, i64 0\n");
+
+        header.push_str("; Fixed M:N Worker Loop for Fiber & Nursery Task Execution\n");
+        header.push_str("define i32 @tungsten_worker_loop(ptr %unused) {\nentry:\n    br label %loop\n\n");
+        header.push_str("loop:\n");
+        header.push_str("    %sem = load ptr, ptr @tungsten_pool_sem\n");
+        header.push_str("    call i32 @WaitForSingleObject(ptr %sem, i32 -1)\n");
+        header.push_str("    %mtx = load ptr, ptr @tungsten_pool_mutex\n");
+        header.push_str("    call i32 @WaitForSingleObject(ptr %mtx, i32 -1)\n");
+        header.push_str("    %task = load ptr, ptr @tungsten_pool_head\n");
+        header.push_str("    %is_null = icmp eq ptr %task, null\n");
+        header.push_str("    br i1 %is_null, label %unlock_empty, label %pop_task\n\n");
+        header.push_str("unlock_empty:\n");
+        header.push_str("    call i32 @ReleaseMutex(ptr %mtx)\n");
+        header.push_str("    br label %loop\n\n");
+        header.push_str("pop_task:\n");
+        header.push_str("    %next_slot = getelementptr inbounds i8, ptr %task, i64 32\n");
+        header.push_str("    %next = load ptr, ptr %next_slot\n");
+        header.push_str("    store ptr %next, ptr @tungsten_pool_head\n");
+        header.push_str("    %is_tail = icmp eq ptr %next, null\n");
+        header.push_str("    br i1 %is_tail, label %reset_tail, label %unlock_done\n\n");
+        header.push_str("reset_tail:\n");
+        header.push_str("    store ptr null, ptr @tungsten_pool_tail\n");
+        header.push_str("    br label %unlock_done\n\n");
+        header.push_str("unlock_done:\n");
+        header.push_str("    call i32 @ReleaseMutex(ptr %mtx)\n");
+        header.push_str("    %fn_slot = getelementptr inbounds i8, ptr %task, i64 0\n");
         header.push_str("    %fn_ptr = load ptr, ptr %fn_slot\n");
-        header.push_str("    %a1_slot = getelementptr inbounds i8, ptr %param, i64 8\n");
+        header.push_str("    %a1_slot = getelementptr inbounds i8, ptr %task, i64 8\n");
         header.push_str("    %a1 = load i64, ptr %a1_slot\n");
-        header.push_str("    %a2_slot = getelementptr inbounds i8, ptr %param, i64 16\n");
+        header.push_str("    %a2_slot = getelementptr inbounds i8, ptr %task, i64 16\n");
         header.push_str("    %a2 = load i64, ptr %a2_slot\n");
+        header.push_str("    %nur_slot = getelementptr inbounds i8, ptr %task, i64 24\n");
+        header.push_str("    %nursery = load ptr, ptr %nur_slot\n");
+        header.push_str("    %avail = alloca i32\n");
+        header.push_str("    store i32 0, ptr %avail\n");
+        header.push_str("    %ioctl_res = call i32 @ioctlsocket(i64 %a1, i32 1074030207, ptr %avail)\n");
+        header.push_str("    %is_sock = icmp eq i32 %ioctl_res, 0\n");
+        header.push_str("    br i1 %is_sock, label %check_avail, label %run_task\n\n");
+        header.push_str("check_avail:\n");
+        header.push_str("    %bytes_avail = load i32, ptr %avail\n");
+        header.push_str("    %has_data = icmp sgt i32 %bytes_avail, 0\n");
+        header.push_str("    br i1 %has_data, label %run_task, label %re_enqueue\n\n");
+        header.push_str("re_enqueue:\n");
+        header.push_str("    %re_next_slot = getelementptr inbounds i8, ptr %task, i64 32\n");
+        header.push_str("    store ptr null, ptr %re_next_slot\n");
+        header.push_str("    %re_mtx = load ptr, ptr @tungsten_pool_mutex\n");
+        header.push_str("    call i32 @WaitForSingleObject(ptr %re_mtx, i32 -1)\n");
+        header.push_str("    %re_tail = load ptr, ptr @tungsten_pool_tail\n");
+        header.push_str("    %re_tail_null = icmp eq ptr %re_tail, null\n");
+        header.push_str("    br i1 %re_tail_null, label %re_empty, label %re_append\n\n");
+        header.push_str("re_empty:\n");
+        header.push_str("    store ptr %task, ptr @tungsten_pool_head\n");
+        header.push_str("    store ptr %task, ptr @tungsten_pool_tail\n");
+        header.push_str("    br label %re_unlock\n\n");
+        header.push_str("re_append:\n");
+        header.push_str("    %re_tail_next = getelementptr inbounds i8, ptr %re_tail, i64 32\n");
+        header.push_str("    store ptr %task, ptr %re_tail_next\n");
+        header.push_str("    store ptr %task, ptr @tungsten_pool_tail\n");
+        header.push_str("    br label %re_unlock\n\n");
+        header.push_str("re_unlock:\n");
+        header.push_str("    call i32 @ReleaseMutex(ptr %re_mtx)\n");
+        header.push_str("    %re_sem = load ptr, ptr @tungsten_pool_sem\n");
+        header.push_str("    call i32 @ReleaseSemaphore(ptr %re_sem, i32 1, ptr null)\n");
+        header.push_str("    br label %loop\n\n");
+        header.push_str("run_task:\n");
         header.push_str("    call void %fn_ptr(i64 %a1, i64 %a2)\n");
-        header.push_str("    call void @free(ptr %param)\n");
-        header.push_str("    ret i32 0\n}\n\n");
-        header.push_str("define i64 @tungsten_fiber_spawn(ptr %fn_ptr, i64 %a1, i64 %a2) {\n");
-        header.push_str("    %ctx = call ptr @malloc(i64 24)\n");
-        header.push_str("    %fn_slot = getelementptr inbounds i8, ptr %ctx, i64 0\n");
+        header.push_str("    %has_nur = icmp ne ptr %nursery, null\n");
+        header.push_str("    br i1 %has_nur, label %dec_nur, label %free_task\n\n");
+        header.push_str("dec_nur:\n");
+        header.push_str("    %old = atomicrmw sub ptr %nursery, i64 1 seq_cst, align 8\n");
+        header.push_str("    br label %free_task\n\n");
+        header.push_str("free_task:\n");
+        header.push_str("    call void @free(ptr %task)\n");
+        header.push_str("    br label %loop\n}\n\n");
+        header.push_str("; Initialize M:N Worker Thread Pool (Fixed 4 Threads)\n");
+        header.push_str("define void @tungsten_pool_init() {\nentry:\n");
+        header.push_str("    %flag = load atomic i32, ptr @tungsten_pool_init_flag acquire, align 4\n");
+        header.push_str("    %is_inited = icmp eq i32 %flag, 1\n");
+        header.push_str("    br i1 %is_inited, label %done, label %do_init\n\n");
+        header.push_str("do_init:\n");
+        header.push_str("    %cas = cmpxchg ptr @tungsten_pool_init_flag, i32 0, i32 1 seq_cst seq_cst\n");
+        header.push_str("    %success = extractvalue { i32, i1 } %cas, 1\n");
+        header.push_str("    br i1 %success, label %spawn_threads, label %done\n\n");
+        header.push_str("spawn_threads:\n");
+        header.push_str("    %mtx = call ptr @CreateMutexA(ptr null, i32 0, ptr null)\n");
+        header.push_str("    store ptr %mtx, ptr @tungsten_pool_mutex\n");
+        header.push_str("    %sem = call ptr @CreateSemaphoreA(ptr null, i32 0, i32 2147483647, ptr null)\n");
+        header.push_str("    store ptr %sem, ptr @tungsten_pool_sem\n");
+        header.push_str("    %th1 = call ptr @CreateThread(ptr null, i64 0, ptr @tungsten_worker_loop, ptr null, i32 0, ptr null)\n");
+        header.push_str("    call i32 @CloseHandle(ptr %th1)\n");
+        header.push_str("    %th2 = call ptr @CreateThread(ptr null, i64 0, ptr @tungsten_worker_loop, ptr null, i32 0, ptr null)\n");
+        header.push_str("    call i32 @CloseHandle(ptr %th2)\n");
+        header.push_str("    %th3 = call ptr @CreateThread(ptr null, i64 0, ptr @tungsten_worker_loop, ptr null, i32 0, ptr null)\n");
+        header.push_str("    call i32 @CloseHandle(ptr %th3)\n");
+        header.push_str("    %th4 = call ptr @CreateThread(ptr null, i64 0, ptr @tungsten_worker_loop, ptr null, i32 0, ptr null)\n");
+        header.push_str("    call i32 @CloseHandle(ptr %th4)\n");
+        header.push_str("    br label %done\n\n");
+        header.push_str("done:\n    ret void\n}\n\n");
+
+        header.push_str("define ptr @tungsten_nursery_enter() {\n    call void @tungsten_pool_init()\n    %nur = call ptr @malloc(i64 16)\n    store i64 0, ptr %nur\n    ret ptr %nur\n}\n\n");
+
+        header.push_str("define i64 @tungsten_nursery_spawn(ptr %nursery, ptr %fn_ptr, i64 %a1, i64 %a2) {\n");
+        header.push_str("    call void @tungsten_pool_init()\n");
+        header.push_str("    %has_nur = icmp ne ptr %nursery, null\n");
+        header.push_str("    br i1 %has_nur, label %inc_nur, label %alloc_task\n\n");
+        header.push_str("inc_nur:\n");
+        header.push_str("    %old = atomicrmw add ptr %nursery, i64 1 seq_cst, align 8\n");
+        header.push_str("    br label %alloc_task\n\n");
+        header.push_str("alloc_task:\n");
+        header.push_str("    %task = call ptr @malloc(i64 40)\n");
+        header.push_str("    %fn_slot = getelementptr inbounds i8, ptr %task, i64 0\n");
         header.push_str("    store ptr %fn_ptr, ptr %fn_slot\n");
-        header.push_str("    %a1_slot = getelementptr inbounds i8, ptr %ctx, i64 8\n");
+        header.push_str("    %a1_slot = getelementptr inbounds i8, ptr %task, i64 8\n");
         header.push_str("    store i64 %a1, ptr %a1_slot\n");
-        header.push_str("    %a2_slot = getelementptr inbounds i8, ptr %ctx, i64 16\n");
+        header.push_str("    %a2_slot = getelementptr inbounds i8, ptr %task, i64 16\n");
         header.push_str("    store i64 %a2, ptr %a2_slot\n");
-        header.push_str("    %th = call ptr @CreateThread(ptr null, i64 0, ptr @tungsten_thread_thunk, ptr %ctx, i32 0, ptr null)\n");
-        header.push_str("    %is_null = icmp eq ptr %th, null\n");
-        header.push_str("    br i1 %is_null, label %spawn_done, label %close_th\n");
-        header.push_str("close_th:\n");
-        header.push_str("    call i32 @CloseHandle(ptr %th)\n");
-        header.push_str("    br label %spawn_done\n");
-        header.push_str("spawn_done:\n");
+        header.push_str("    %nur_slot = getelementptr inbounds i8, ptr %task, i64 24\n");
+        header.push_str("    store ptr %nursery, ptr %nur_slot\n");
+        header.push_str("    %next_slot = getelementptr inbounds i8, ptr %task, i64 32\n");
+        header.push_str("    store ptr null, ptr %next_slot\n");
+        header.push_str("    %mtx = load ptr, ptr @tungsten_pool_mutex\n");
+        header.push_str("    call i32 @WaitForSingleObject(ptr %mtx, i32 -1)\n");
+        header.push_str("    %tail = load ptr, ptr @tungsten_pool_tail\n");
+        header.push_str("    %tail_is_null = icmp eq ptr %tail, null\n");
+        header.push_str("    br i1 %tail_is_null, label %empty_queue, label %append_queue\n\n");
+        header.push_str("empty_queue:\n");
+        header.push_str("    store ptr %task, ptr @tungsten_pool_head\n");
+        header.push_str("    store ptr %task, ptr @tungsten_pool_tail\n");
+        header.push_str("    br label %unlock\n\n");
+        header.push_str("append_queue:\n");
+        header.push_str("    %tail_next = getelementptr inbounds i8, ptr %tail, i64 32\n");
+        header.push_str("    store ptr %task, ptr %tail_next\n");
+        header.push_str("    store ptr %task, ptr @tungsten_pool_tail\n");
+        header.push_str("    br label %unlock\n\n");
+        header.push_str("unlock:\n");
+        header.push_str("    call i32 @ReleaseMutex(ptr %mtx)\n");
+        header.push_str("    %sem = load ptr, ptr @tungsten_pool_sem\n");
+        header.push_str("    call i32 @ReleaseSemaphore(ptr %sem, i32 1, ptr null)\n");
         header.push_str("    ret i64 1\n}\n\n");
+
+        header.push_str("define i64 @tungsten_fiber_spawn(ptr %fn_ptr, i64 %a1, i64 %a2) {\n");
+        header.push_str("    %res = call i64 @tungsten_nursery_spawn(ptr null, ptr %fn_ptr, i64 %a1, i64 %a2)\n");
+        header.push_str("    ret i64 %res\n}\n\n");
+
         header.push_str("define void @tungsten_fiber_yield() {\n    call void @Sleep(i32 0)\n    ret void\n}\n\n");
         header.push_str("define void @tungsten_fiber_sleep(i64 %ms) {\n    %trunc = trunc i64 %ms to i32\n    call void @Sleep(i32 %trunc)\n    ret void\n}\n\n");
-        header.push_str("define ptr @tungsten_nursery_enter() {\n    %nur = call ptr @malloc(i64 16)\n    store i64 0, ptr %nur\n    ret ptr %nur\n}\n\n");
-        header.push_str("define i32 @tungsten_nursery_thread_thunk(ptr %param) {\n");
-        header.push_str("    %fn_slot = getelementptr inbounds i8, ptr %param, i64 0\n");
-        header.push_str("    %fn_ptr = load ptr, ptr %fn_slot\n");
-        header.push_str("    %a1_slot = getelementptr inbounds i8, ptr %param, i64 8\n");
-        header.push_str("    %a1 = load i64, ptr %a1_slot\n");
-        header.push_str("    %a2_slot = getelementptr inbounds i8, ptr %param, i64 16\n");
-        header.push_str("    %a2 = load i64, ptr %a2_slot\n");
-        header.push_str("    %nur_slot = getelementptr inbounds i8, ptr %param, i64 24\n");
-        header.push_str("    %nursery = load ptr, ptr %nur_slot\n");
-        header.push_str("    call void %fn_ptr(i64 %a1, i64 %a2)\n");
-        header.push_str("    %old = atomicrmw sub ptr %nursery, i64 1 seq_cst, align 8\n");
-        header.push_str("    call void @free(ptr %param)\n");
-        header.push_str("    ret i32 0\n}\n\n");
-        header.push_str("define i64 @tungsten_nursery_spawn(ptr %nursery, ptr %fn_ptr, i64 %a1, i64 %a2) {\n");
-        header.push_str("    %old = atomicrmw add ptr %nursery, i64 1 seq_cst, align 8\n");
-        header.push_str("    %ctx = call ptr @malloc(i64 32)\n");
-        header.push_str("    %fn_slot = getelementptr inbounds i8, ptr %ctx, i64 0\n");
-        header.push_str("    store ptr %fn_ptr, ptr %fn_slot\n");
-        header.push_str("    %a1_slot = getelementptr inbounds i8, ptr %ctx, i64 8\n");
-        header.push_str("    store i64 %a1, ptr %a1_slot\n");
-        header.push_str("    %a2_slot = getelementptr inbounds i8, ptr %ctx, i64 16\n");
-        header.push_str("    store i64 %a2, ptr %a2_slot\n");
-        header.push_str("    %nur_slot = getelementptr inbounds i8, ptr %ctx, i64 24\n");
-        header.push_str("    store ptr %nursery, ptr %nur_slot\n");
-        header.push_str("    %th = call ptr @CreateThread(ptr null, i64 0, ptr @tungsten_nursery_thread_thunk, ptr %ctx, i32 0, ptr null)\n");
-        header.push_str("    %is_null = icmp eq ptr %th, null\n");
-        header.push_str("    br i1 %is_null, label %spawn_done, label %close_th\n");
-        header.push_str("close_th:\n");
-        header.push_str("    call i32 @CloseHandle(ptr %th)\n");
-        header.push_str("    br label %spawn_done\n");
-        header.push_str("spawn_done:\n");
-        header.push_str("    ret i64 1\n}\n\n");
+
         header.push_str("define void @tungsten_nursery_wait_all(ptr %nursery) {\nentry:\n");
         header.push_str("    %is_null = icmp eq ptr %nursery, null\n");
         header.push_str("    br i1 %is_null, label %done, label %poll_loop\n");
@@ -495,7 +590,7 @@ impl<'a> LlvmTextEmitter<'a> {
         header.push_str("    %is_zero = icmp eq i64 %cnt, 0\n");
         header.push_str("    br i1 %is_zero, label %free_nur, label %yield_sleep\n");
         header.push_str("yield_sleep:\n");
-        header.push_str("    call void @Sleep(i32 0)\n");
+        header.push_str("    call void @Sleep(i32 1)\n");
         header.push_str("    br label %poll_loop\n");
         header.push_str("free_nur:\n");
         header.push_str("    call void @free(ptr %nursery)\n");
@@ -608,7 +703,7 @@ impl<'a> LlvmTextEmitter<'a> {
         header.push_str("    %zero_ptr = getelementptr inbounds i8, ptr %addr, i64 8\n");
         header.push_str("    store i64 0, ptr %zero_ptr\n");
         header.push_str("    call i32 @bind(i64 %sock, ptr %addr, i32 16)\n");
-        header.push_str("    call i32 @listen(i64 %sock, i32 128)\n");
+        header.push_str("    call i32 @listen(i64 %sock, i32 65535)\n");
         header.push_str("    ret i64 %sock\n}\n\n");
 
         header.push_str("define i64 @tungsten_net_accept(i64 %listener) {\n");
@@ -659,6 +754,7 @@ impl<'a> LlvmTextEmitter<'a> {
         header.push_str("    ret i64 %res_i64\n}\n\n");
 
         header.push_str("define void @tungsten_net_close(i64 %conn) {\n");
+        header.push_str("    call i32 @shutdown(i64 %conn, i32 1)\n");
         header.push_str("    call i32 @closesocket(i64 %conn)\n");
         header.push_str("    ret void\n}\n\n");
 

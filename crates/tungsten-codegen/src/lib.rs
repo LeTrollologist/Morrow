@@ -467,6 +467,62 @@ mod tests {
     }
 
     #[test]
+    fn test_llvm_aot_nursery_structured_concurrency() {
+        let code = r#"
+        fn worker(val: i64, multiplier: i64) {
+            println!("Task computed: {}", val * multiplier);
+        }
+
+        fn main() {
+            nursery n {
+                n.spawn(worker, 10, 3);
+                n.spawn(worker, 20, 4);
+                n.spawn(worker, 30, 5);
+            }
+            println!("Nursery join complete!");
+        }
+        "#;
+        let ast = parse(code).unwrap();
+        let module = compile(&ast).unwrap();
+        let (code, stdout) = compile_and_run_llvm(&module).expect("LLVM AOT execution failed");
+        assert_eq!(code, 0);
+        assert!(stdout.contains("30"), "Output was: {}", stdout);
+        assert!(stdout.contains("80"), "Output was: {}", stdout);
+        assert!(stdout.contains("150"), "Output was: {}", stdout);
+        assert!(stdout.contains("Nursery join complete!"), "Output was: {}", stdout);
+    }
+
+    #[test]
+    fn test_llvm_aot_nursery_1000_tasks() {
+        let code = r#"
+        fn worker(id: i64, dummy: i64) {
+            let mut acc = 0;
+            let mut j = 0;
+            while j < 100 {
+                acc = acc + j;
+                j = j + 1;
+            }
+        }
+
+        fn main() {
+            nursery n {
+                let mut i = 0;
+                while i < 1000 {
+                    n.spawn(worker, i, 0);
+                    i = i + 1;
+                }
+            }
+            println!("All 1000 tasks completed successfully!");
+        }
+        "#;
+        let ast = parse(code).unwrap();
+        let module = compile(&ast).unwrap();
+        let (code, stdout) = compile_and_run_llvm(&module).expect("LLVM AOT execution failed");
+        assert_eq!(code, 0);
+        assert!(stdout.contains("All 1000 tasks completed successfully!"), "Output was: {}", stdout);
+    }
+
+    #[test]
     fn test_llvm_text_debug_info() {
         let code = r#"
         fn compute(a: i64) -> i64 {
