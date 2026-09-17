@@ -21,8 +21,9 @@
 | **v0.11** | **Fortress Security Suite** | 10 Adversarial Vectors, 12 `FORT-*` Invariants, 3-Corpus Fuzzing | **Completed** |
 | **v1.0** | **Full Self-Hosting Bootstrap Closure** | 3-Stage Bootstrap Loop, Fixed-Point LLVM IR Identity (`SHA256(S2) == SHA256(S3)`), 100% Green Suite | **Completed** |
 | **v1.1** | **Fortress v2: Async Network Engine** | Win32 IOCP, Fixed M:N Worker Task Pool, C100K Scale (< 1.2 KB/fiber) | **Completed** |
-| **v1.2** | **Formal Verification & SMT Bridge** | Z3 Solver Bridge for Non-Linear Arithmetic, Affine Handle Invariants | **Planned** |
 | **v1.3** | **Multi-Target Codegen & Containerization** | Cross-Platform Linux (ELF) Target & Docker (**Completed**); AArch64, macOS, Wasm (**Planned**) | **Partially Completed** |
+| **v1.4** | **Tungsten Genesis: Full Independence** | 100% Pure Tungsten Compiler (`compiler/*.tg`), De-Rustified Modern Syntax (`var`, `: Type`, `.` imports), Native Test Suites (`tests/*.tg`), Standalone Distribution Binaries (`bin/`), Complete Retirement of Rust Stage-0 Crates | **Completed** |
+| **v1.2** | **Formal Verification & SMT Bridge** | Z3 Solver Bridge for Non-Linear Arithmetic, Affine Handle Invariants | **Planned** |
 
 ---
 
@@ -168,6 +169,46 @@
   - Production `docker-compose.yml` with CPU/RAM resource limits and security options.
   - Automated integration test suite `crates/forge/tests/linux_cross_tests.rs`: verified 64-bit ELF headers (`0x7F 'E' 'L' 'F'`, EM_X86_64 `0x3E`), WSL execution parity, and microservice compilation.
   - Workspace test suite: **140 passed, 0 failed (100% green)**.
+
+### v1.4: Tungsten Genesis — Complete Pure Tungsten Independence & Language De-Rustification
+- [x] **Complete Compiler Ported to Pure Tungsten (`compiler/*.tg`)**:
+  - `compiler/ast.tg`: Compact AST structures and token kinds allocated in scoped bump regions.
+  - `compiler/lexer.tg`: Tokenizer supporting modern keywords and operator tokens.
+  - `compiler/parser.tg`: Recursive descent parser with Pratt operator precedence climbing.
+  - `compiler/typeck.tg`: Typechecker and arithmetic interval constraint refinement solver.
+  - `compiler/tir.tg`: Basic-block SSA typed intermediate representation with register allocation.
+  - `compiler/opt.tg`: Constant folding, dead code elimination, and bounds check elimination passes.
+  - `compiler/codegen.tg`: LLVM IR emitter with 64-bit word vs. byte indexing and C-ABI bridge.
+  - `compiler/fmt.tg`: Canonical, idempotent code formatter.
+  - `compiler/package.tg`: Manifest parser for `Forge.toml` and package dependency resolver.
+  - `compiler/json.tg`: Pure Tungsten JSON serializer and deserializer.
+  - `compiler/lsp.tg`: Language Server Protocol implementation with stdio JSON-RPC.
+  - `compiler/forge.tg`: Unified developer CLI toolchain (`build`, `test`, `check`, `fmt`, `new`, `run`).
+  - `compiler/main.tg`: Compiler driver entry point.
+- [x] **Surface Syntax De-Rustification (Modern Tungsten Syntax)**:
+  - `var` for mutable variables and `let` for immutable bindings (completely eliminating `let mut`).
+  - Colon return type notation (`fn foo(): i64` eliminating thin arrow `->`).
+  - Clean dot notation for imports and namespaces (`import std.collections;` eliminating `::`).
+  - Clean interval bracket notation for refinement constraints (`type Percentage = u8[0..100];`).
+- [x] **Native Test Suites & Testing Framework (`std/test.tg`, `tests/*.tg`)**:
+  - Implemented `std/test.tg` with `assert`, `assert_eq`, `assert_str_eq`.
+  - Replaced all Rust integration tests with native `.tg` suites:
+    - `tests/typeck_refinements.tg`: Type checking and refinement constraints.
+    - `tests/tir_optimizer.tg`: TIR lowering and optimizer constant folding.
+    - `tests/formatter_tests.tg`: Pretty-printer output and idempotency check.
+    - `tests/package_tests.tg`: Package manager and manifest parser.
+    - `tests/bootstrap_tests.tg`: Arithmetic and recursion bootstrap sanity.
+    - `tests/error_handling_tests.tg`: Diagnostic reporting and error handling via algebraic effects.
+  - 100% test pass rate running directly via `forge test`.
+- [x] **Bitwise Fixed-Point Bootstrap Convergence**:
+  - Self-hosting 3-stage bootstrap closure verified: $\text{tgc} \to \text{tgc}_{\text{stage2}} \to \text{tgc}_{\text{stage3}}$.
+  - Exact SHA-256 fixed-point convergence confirmed:
+    $$\mathrm{SHA256}(\mathtt{tgc\_stage2.exe.ll}) \equiv \mathrm{SHA256}(\mathtt{tgc\_stage3.exe.ll}) \equiv \mathtt{dd6c95b2e085bd916e2c6a5ed146a6ddb7b551d77ec4ad2f87debe6b072d36d4}$$
+- [x] **Production Standalone Binaries**:
+  - Distributed standalone native binaries `bin/tgc.exe` and `bin/forge.exe`.
+- [x] **Complete Retirement of Rust Stage-0 Crates**:
+  - All legacy Rust crates (`crates/`) and root `Cargo.toml`/`Cargo.lock` archived to `archive/stage0-rust/`.
+  - The Tungsten workspace is 100% pure Tungsten.
 
 ---
 
