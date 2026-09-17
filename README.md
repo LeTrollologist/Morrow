@@ -2,7 +2,7 @@
 
 > **Tungsten** is a modern systems-level programming language designed to provide fearless concurrency, zero-cost abstractions, and mathematical memory safety without garbage collection, borrow-checker lifetimes, or async function coloring.
 
-[![Release](https://img.shields.io/badge/Release-v1.3.0%20Genesis-blue.svg)](https://github.com/LeTrollologist/Tungsten/releases)
+[![Release](https://img.shields.io/badge/Release-v1.4.0%20Genesis-blue.svg)](https://github.com/LeTrollologist/Tungsten/releases)
 [![Pure Tungsten](https://img.shields.io/badge/Language-Pure%20Tungsten-blue.svg)](compiler/)
 [![Self-Hosting](https://img.shields.io/badge/Self--Hosting-100%25%20Genesis-brightgreen.svg)](bin/)
 [![Convergence](https://img.shields.io/badge/Fixed--Point%20Convergence-Bitwise%20Identical-success.svg)](ROADMAP.md)
