@@ -1,4 +1,4 @@
-# Tungsten Language & Syntax Specification (v1.2)
+# Tungsten Language & Syntax Specification (v1.3 Genesis)
 
 > **Tungsten** is a modern systems-level programming language designed to provide fearless concurrency and zero-cost abstractions, replacing explicit lifetime annotations with **Region-Based Memory Management**, eliminating the async/await function coloring divide through **Algebraic Effects**, and eliminating runtime out-of-bounds panics through **Compile-Time Refinement Types**.
 

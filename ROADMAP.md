@@ -21,9 +21,10 @@
 | **v0.11** | **Fortress Security Suite** | 10 Adversarial Vectors, 12 `FORT-*` Invariants, 3-Corpus Fuzzing | **Completed** |
 | **v1.0** | **Full Self-Hosting Bootstrap Closure** | 3-Stage Bootstrap Loop, Fixed-Point LLVM IR Identity (`SHA256(S2) == SHA256(S3)`), 100% Green Suite | **Completed** |
 | **v1.1** | **Fortress v2: Async Network Engine** | Win32 IOCP, Fixed M:N Worker Task Pool, C100K Scale (< 1.2 KB/fiber) | **Completed** |
-| **v1.3** | **Multi-Target Codegen & Containerization** | Cross-Platform Linux (ELF) Target & Docker (**Completed**); AArch64, macOS, Wasm (**Planned**) | **Partially Completed** |
-| **v1.4** | **Tungsten Genesis: Full Independence** | 100% Pure Tungsten Compiler (`compiler/*.tg`), De-Rustified Modern Syntax (`var`, `: Type`, `.` imports), Native Test Suites (`tests/*.tg`), Standalone Distribution Binaries (`bin/`), Complete Retirement of Rust Stage-0 Crates | **Completed** |
-| **v1.2** | **Formal Verification & SMT Bridge** | Z3 Solver Bridge for Non-Linear Arithmetic, Affine Handle Invariants | **Planned** |
+| **v1.2** | **Cross-Platform Linux & Containerization** | x86_64 Linux (ELF) Target, LLVM POSIX Runtime, Production Multi-Stage Docker | **Completed** |
+| **v1.3** | **Tungsten Genesis: Full Independence** | 100% Pure Tungsten Compiler (`compiler/*.tg`), Modern De-Rustified Syntax (`var`, `: Type`, `.` imports), Native Test Suites (`tests/*.tg`), Standalone Distribution Binaries (`bin/`), Complete Retirement of Rust Stage-0 Crates | **Completed** |
+| **v1.4** | **Formal Verification & SMT Bridge** | Z3 Solver Bridge for Non-Linear Arithmetic, Automated Induction Proofs, Affine Handle Invariants | **Planned** |
+| **v1.5** | **Multi-Target Codegen & WebAssembly** | AArch64 (ARM64), macOS (Mach-O), and WebAssembly (`wasm32-unknown-unknown`) | **Planned** |
 
 ---
 
@@ -104,8 +105,8 @@
 - [x] **Formal Invariant Ledger (`FORT-*`)**: 12/12 invariants passed with 100% success across 134+ workspace tests.
 
 > [!NOTE]
-> **Chronological Execution vs. Canonical Semver Order:**
-> During earlier development sprints, Milestone **v1.1** (Fortress v2 IOCP Engine) and the Linux ELF cross-compilation slice of Milestone **v1.3** were pulled forward to address high-concurrency and container deployment requirements. Milestone **v1.0** (Full Self-Hosting Bootstrap Closure) has now been fully achieved and closed, establishing the bedrock compiler loop with bitwise LLVM IR fixed-point convergence. The roadmap is presented below in canonical semantic version order.
+> **Semantic Versioning Progression:**
+> Milestones **v1.0** through **v1.3** represent the continuous, linear progression of the stabilized self-hosting compiler, high-concurrency runtime, cross-platform Linux deployment, and full independence from Rust. All releases follow strict semantic versioning and correspond directly to tagged git milestones.
 
 ### v1.0: Full Self-Hosting Bootstrap Closure ("The Holy Grail")
 - [x] **Full 3-Stage Bootstrap Architecture**:
@@ -150,7 +151,7 @@
   - All 6 formal ledger invariants (`FORT2-IOCP-001`, `FORT2-FIBER-001`, `FORT2-SCALE-001`, `FORT2-MEM-001`, `FORT2-HEART-001`, `FORT2-SHUT-001`) passed with 100% success.
   - Workspace test suite: **137 passed, 0 failed**.
 
-### v1.3: Cross-Platform Linux Target & Production Dockerization (Multi-Target Codegen Part 1)
+### v1.2: Cross-Platform Linux Target & Production Dockerization
 - [x] **TargetPlatform Architecture (`crates/tungsten-codegen/src/llvm_text.rs`)**:
   - First-class target enumeration (`TargetPlatform::WindowsX86_64`, `TargetPlatform::LinuxX86_64`).
   - Conditional target data layout (`e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128`) and triple (`x86_64-unknown-linux-gnu`).
@@ -170,7 +171,7 @@
   - Automated integration test suite `crates/forge/tests/linux_cross_tests.rs`: verified 64-bit ELF headers (`0x7F 'E' 'L' 'F'`, EM_X86_64 `0x3E`), WSL execution parity, and microservice compilation.
   - Workspace test suite: **140 passed, 0 failed (100% green)**.
 
-### v1.4: Tungsten Genesis — Complete Pure Tungsten Independence & Language De-Rustification
+### v1.3: Tungsten Genesis — Complete Pure Tungsten Independence & Language De-Rustification
 - [x] **Complete Compiler Ported to Pure Tungsten (`compiler/*.tg`)**:
   - `compiler/ast.tg`: Compact AST structures and token kinds allocated in scoped bump regions.
   - `compiler/lexer.tg`: Tokenizer supporting modern keywords and operator tokens.
@@ -212,11 +213,11 @@
 
 ---
 
-## Upcoming Milestones: The Path Forward (v1.2 & v1.3+)
+## Upcoming Milestones: The Path Forward (v1.4 & v1.5)
 
 ---
 
-### Phase 8: Formal Verification & SMT Solver Integration (v1.2)
+### Phase 8: Formal Verification & SMT Solver Integration (v1.4)
 *Target: Mathematically verifiable zero-panic systems programming.*
 
 1. **Z3 SMT Solver Bridge**:
@@ -227,10 +228,10 @@
 
 ---
 
-### Phase 9: Multi-Target Codegen & WebAssembly (v1.3 Extended)
+### Phase 9: Multi-Target Codegen & WebAssembly (v1.5)
 *Target: Universal systems development from bare metal to browsers.*
 
-- [x] **x86_64 Linux (ELF) Target & Docker Container**: Completed in Milestone v1.3.
+- [x] **x86_64 Linux (ELF) Target & Docker Container**: Completed in Milestone v1.2.
 - [ ] **AArch64 & macOS Targets**:
   - ARM64 ELF and Mach-O binary emission via LLVM backend and LLD linker.
   - Apple Silicon / ARM64 POSIX socket and syscall shims in `std/fs` and `std/net`.
