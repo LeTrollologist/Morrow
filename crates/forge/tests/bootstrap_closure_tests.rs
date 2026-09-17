@@ -284,4 +284,96 @@ fn test_pure_tungsten_tir_and_opt() {
     );
 }
 
+#[test]
+fn test_pure_tungsten_forge_and_fmt() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+
+    let bootstrap_dir = root.join("target").join("bootstrap");
+    let stage1_exe = bootstrap_dir.join("tgc_stage1.exe");
+    assert!(stage1_exe.is_file(), "tgc_stage1.exe must exist (run bootstrap closure test first)");
+
+    let fixtures_dir = root.join("target").join("fixtures");
+    fs::create_dir_all(&fixtures_dir).unwrap();
+
+    // 1. Test: forge version
+    let mut cmd_ver = Command::new(&stage1_exe);
+    cmd_ver.current_dir(&root).args(&["version"]);
+    let out_ver = run_command_with_retry(&mut cmd_ver, "forge version");
+    let ver_stdout = String::from_utf8_lossy(&out_ver.stdout);
+    assert!(
+        ver_stdout.contains("forge 0.2.0 (pure tungsten genesis 2026)"),
+        "Version output mismatch: {}",
+        ver_stdout
+    );
+
+    // 2. Test: forge help
+    let mut cmd_help = Command::new(&stage1_exe);
+    cmd_help.current_dir(&root).args(&["help"]);
+    let out_help = run_command_with_retry(&mut cmd_help, "forge help");
+    let help_stdout = String::from_utf8_lossy(&out_help.stdout);
+    assert!(
+        help_stdout.contains("Usage: forge <command> [options]"),
+        "Help output mismatch: {}",
+        help_stdout
+    );
+
+    // 3. Test: forge check on valid refinement file
+    let valid_src = fixtures_dir.join("forge_check_valid.tg");
+    fs::write(
+        &valid_src,
+        "fn main() {\n    let p: Percentage = 99;\n}\n",
+    ).unwrap();
+
+    let mut cmd_chk_ok = Command::new(&stage1_exe);
+    cmd_chk_ok.current_dir(&root).args(&["check", valid_src.to_str().unwrap()]);
+    let out_chk_ok = run_command_with_retry(&mut cmd_chk_ok, "forge check valid");
+    let chk_ok_stdout = String::from_utf8_lossy(&out_chk_ok.stdout);
+    assert!(
+        chk_ok_stdout.contains("forge: check passed: 0 errors"),
+        "forge check should report 0 errors. Stdout: {}",
+        chk_ok_stdout
+    );
+
+    // 4. Test: forge check on invalid refinement file
+    let invalid_src = fixtures_dir.join("forge_check_invalid.tg");
+    fs::write(
+        &invalid_src,
+        "fn main() {\n    let mut p: Percentage = 50;\n    p = 200;\n}\n",
+    ).unwrap();
+
+    let mut cmd_chk_err = Command::new(&stage1_exe);
+    cmd_chk_err.current_dir(&root).args(&["check", invalid_src.to_str().unwrap()]);
+    let out_chk_err = cmd_chk_err.output().expect("Command must produce output");
+    assert!(!out_chk_err.status.success(), "forge check must fail on refinement violation");
+
+    // 5. Test: forge fmt
+    let unformatted_src = fixtures_dir.join("unformatted.tg");
+    fs::write(
+        &unformatted_src,
+        "fn add(a: i64, b: i64) -> i64 { return a + b; }\n",
+    ).unwrap();
+
+    let mut cmd_fmt = Command::new(&stage1_exe);
+    cmd_fmt.current_dir(&root).args(&["fmt", unformatted_src.to_str().unwrap()]);
+    let out_fmt = run_command_with_retry(&mut cmd_fmt, "forge fmt");
+    let fmt_stdout = String::from_utf8_lossy(&out_fmt.stdout);
+    assert!(
+        fmt_stdout.contains("Formatted file"),
+        "forge fmt must format the file. Stdout: {}",
+        fmt_stdout
+    );
+
+    // Verify idempotency: second format reports 'Already formatted'
+    let mut cmd_fmt2 = Command::new(&stage1_exe);
+    cmd_fmt2.current_dir(&root).args(&["fmt", "--check", unformatted_src.to_str().unwrap()]);
+    let out_fmt2 = run_command_with_retry(&mut cmd_fmt2, "forge fmt --check");
+    assert!(out_fmt2.status.success(), "forge fmt --check should succeed on formatted file");
+}
+
+
 

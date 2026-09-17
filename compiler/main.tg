@@ -13,6 +13,9 @@ import compiler::typeck;
 import compiler::tir;
 import compiler::opt;
 import compiler::codegen;
+import compiler::fmt;
+import compiler::package;
+import compiler::forge;
 
 extern "C" {
     fn strlen(s: *const u8) -> usize;
@@ -139,6 +142,24 @@ fn load_source_bundle(src_path: String, arena: *mut u8) -> String yields [FS] {
     string_buffer_push_str(&mut buf, mod_cg as *const u8, len_cg);
     string_buffer_push_byte(&mut buf, 10 as u8);
 
+    // Read and bundle compiler/fmt.tg
+    let mod_fmt = fs_read_to_string_in("compiler/fmt.tg", arena);
+    let len_fmt = unsafe { strlen(mod_fmt as *const u8) } as i64;
+    string_buffer_push_str(&mut buf, mod_fmt as *const u8, len_fmt);
+    string_buffer_push_byte(&mut buf, 10 as u8);
+
+    // Read and bundle compiler/package.tg
+    let mod_pkg = fs_read_to_string_in("compiler/package.tg", arena);
+    let len_pkg = unsafe { strlen(mod_pkg as *const u8) } as i64;
+    string_buffer_push_str(&mut buf, mod_pkg as *const u8, len_pkg);
+    string_buffer_push_byte(&mut buf, 10 as u8);
+
+    // Read and bundle compiler/forge.tg
+    let mod_forge = fs_read_to_string_in("compiler/forge.tg", arena);
+    let len_forge = unsafe { strlen(mod_forge as *const u8) } as i64;
+    string_buffer_push_str(&mut buf, mod_forge as *const u8, len_forge);
+    string_buffer_push_byte(&mut buf, 10 as u8);
+
     // Read and bundle compiler/main.tg
     let mod_main = fs_read_to_string_in("compiler/main.tg", arena);
     let len_main = unsafe { strlen(mod_main as *const u8) } as i64;
@@ -215,6 +236,27 @@ fn main() -> i64 yields [FS, Process, Diagnostics, IO] {
     print_msg("TGC: FIRST LINE OF MAIN");
     region main_reg {
         let args = parse_cli_args(main_reg);
+
+        if args.len > 1 {
+            let a1 = vec_get(&args, 1);
+            let p1 = a1 as *const u8;
+            if unsafe {
+                strcmp(p1, "check" as *const u8) == 0 ||
+                strcmp(p1, "build" as *const u8) == 0 ||
+                strcmp(p1, "run" as *const u8) == 0 ||
+                strcmp(p1, "fmt" as *const u8) == 0 ||
+                strcmp(p1, "new" as *const u8) == 0 ||
+                strcmp(p1, "clean" as *const u8) == 0 ||
+                strcmp(p1, "version" as *const u8) == 0 ||
+                strcmp(p1, "--version" as *const u8) == 0 ||
+                strcmp(p1, "-V" as *const u8) == 0 ||
+                strcmp(p1, "help" as *const u8) == 0 ||
+                strcmp(p1, "--help" as *const u8) == 0 ||
+                strcmp(p1, "-h" as *const u8) == 0
+            } {
+                return forge_main(args, main_reg);
+            }
+        }
 
         let mut src_path = "examples/bootstrap_sample.tg";
         let mut out_ll_path = "examples/bootstrap_sample.ll";

@@ -1,0 +1,454 @@
+// Tungsten Self-Hosting Compiler - Canonical AST Formatter (fmt.tg)
+// Pretty-prints AST structures with standard 4-space indentation and idempotence
+
+import std::collections;
+import std::fs;
+import compiler::diagnostics;
+import compiler::interner;
+import compiler::ast;
+import compiler::lexer;
+import compiler::parser;
+
+extern "C" {
+    fn strlen(s: *const u8) -> usize;
+    fn strcmp(s1: *const u8, s2: *const u8) -> i32;
+    fn puts(s: *const u8) -> i32;
+    fn fflush(f: *const u8) -> i32;
+}
+
+pub fn fmt_append_str(buf: &mut StringBuffer, s: String) {
+    let len = unsafe { strlen(s as *const u8) } as i64;
+    string_buffer_push_str(buf, s as *const u8, len);
+}
+
+fn fmt_i64_helper(buf: &mut StringBuffer, n: i64) {
+    if n >= 10 {
+        fmt_i64_helper(buf, n / 10);
+    }
+    let digit = (n - (n / 10) * 10) as u8 + 48 as u8;
+    string_buffer_push_byte(buf, digit);
+}
+
+pub fn fmt_append_i64(buf: &mut StringBuffer, n: i64) {
+    if n < 0 {
+        string_buffer_push_byte(buf, 45 as u8); // '-'
+        fmt_i64_helper(buf, 0 - n);
+    } else {
+        fmt_i64_helper(buf, n);
+    }
+}
+
+pub fn fmt_indent(buf: &mut StringBuffer, level: i64) {
+    let mut i: i64 = 0;
+    while i < level {
+        fmt_append_str(buf, "    ");
+        i = i + 1;
+    }
+}
+
+pub fn fmt_binop_symbol(buf: &mut StringBuffer, op: i64) {
+    if op == tok_plus() { fmt_append_str(buf, "+"); return; }
+    if op == tok_minus() { fmt_append_str(buf, "-"); return; }
+    if op == tok_star() { fmt_append_str(buf, "*"); return; }
+    if op == tok_slash() { fmt_append_str(buf, "/"); return; }
+    if op == tok_eqeq() { fmt_append_str(buf, "=="); return; }
+    if op == tok_neq() { fmt_append_str(buf, "!="); return; }
+    if op == tok_lt() { fmt_append_str(buf, "<"); return; }
+    if op == tok_lte() { fmt_append_str(buf, "<="); return; }
+    if op == tok_gt() { fmt_append_str(buf, ">"); return; }
+    if op == tok_gte() { fmt_append_str(buf, ">="); return; }
+    if op == tok_and() { fmt_append_str(buf, "&&"); return; }
+    if op == tok_or() { fmt_append_str(buf, "||"); return; }
+    fmt_append_str(buf, "<?>");
+}
+
+pub fn fmt_expr(buf: &mut StringBuffer, expr: *mut AstExpr, interner: &Interner, arena: *mut u8) {
+    if (expr as usize) == 0 {
+        return;
+    }
+
+    if expr.kind == expr_int() {
+        fmt_append_i64(buf, expr.int_val);
+        return;
+    }
+
+    if expr.kind == expr_str() {
+        string_buffer_push_byte(buf, 34 as u8); // '"'
+        fmt_append_str(buf, expr.str_val);
+        string_buffer_push_byte(buf, 34 as u8); // '"'
+        return;
+    }
+
+    if expr.kind == expr_var() {
+        let name = interner_lookup(interner, expr.sym);
+        fmt_append_str(buf, name);
+        return;
+    }
+
+    if expr.kind == expr_binop() {
+        fmt_expr(buf, expr.left, interner, arena);
+        fmt_append_str(buf, " ");
+        fmt_binop_symbol(buf, expr.op);
+        fmt_append_str(buf, " ");
+        fmt_expr(buf, expr.right, interner, arena);
+        return;
+    }
+
+    if expr.kind == expr_call() {
+        let callee = interner_lookup(interner, expr.sym);
+        fmt_append_str(buf, callee);
+        fmt_append_str(buf, "(");
+        let mut i: i64 = 0;
+        while i < expr.args.len {
+            if i > 0 {
+                fmt_append_str(buf, ", ");
+            }
+            let arg = vec_get(&expr.args, i);
+            fmt_expr(buf, arg, interner, arena);
+            i = i + 1;
+        }
+        fmt_append_str(buf, ")");
+        return;
+    }
+
+    if expr.kind == expr_unary() {
+        if expr.op == tok_bang() {
+            fmt_append_str(buf, "!");
+        } else {
+            fmt_append_str(buf, "-");
+        }
+        fmt_expr(buf, expr.left, interner, arena);
+        return;
+    }
+
+    if expr.kind == expr_field() {
+        fmt_expr(buf, expr.left, interner, arena);
+        fmt_append_str(buf, ".");
+        let fld = interner_lookup(interner, expr.sym);
+        fmt_append_str(buf, fld);
+        return;
+    }
+
+    if expr.kind == expr_index() {
+        fmt_expr(buf, expr.left, interner, arena);
+        fmt_append_str(buf, "[");
+        fmt_expr(buf, expr.right, interner, arena);
+        fmt_append_str(buf, "]");
+        return;
+    }
+
+    if expr.kind == expr_cast() {
+        fmt_expr(buf, expr.left, interner, arena);
+        fmt_append_str(buf, " as ");
+        let ty_name = interner_lookup(interner, expr.sym);
+        fmt_append_str(buf, ty_name);
+        return;
+    }
+
+    if expr.kind == expr_struct_init() {
+        let st_name = interner_lookup(interner, expr.sym);
+        fmt_append_str(buf, st_name);
+        fmt_append_str(buf, " { }");
+        return;
+    }
+}
+
+pub fn fmt_stmt(buf: &mut StringBuffer, stmt: *mut AstStmt, interner: &Interner, level: i64, arena: *mut u8) {
+    if (stmt as usize) == 0 {
+        return;
+    }
+
+    if stmt.kind == stmt_let() {
+        fmt_indent(buf, level);
+        fmt_append_str(buf, "let ");
+        let var_name = interner_lookup(interner, stmt.sym);
+        fmt_append_str(buf, var_name);
+        fmt_append_str(buf, " = ");
+        fmt_expr(buf, stmt.expr, interner, arena);
+        fmt_append_str(buf, ";\n");
+        return;
+    }
+
+    if stmt.kind == stmt_assign() {
+        fmt_indent(buf, level);
+        let var_name = interner_lookup(interner, stmt.sym);
+        fmt_append_str(buf, var_name);
+        fmt_append_str(buf, " = ");
+        fmt_expr(buf, stmt.expr, interner, arena);
+        fmt_append_str(buf, ";\n");
+        return;
+    }
+
+    if stmt.kind == stmt_field_assign() {
+        fmt_indent(buf, level);
+        fmt_expr(buf, stmt.left, interner, arena);
+        fmt_append_str(buf, ".");
+        let fld = interner_lookup(interner, stmt.sym);
+        fmt_append_str(buf, fld);
+        fmt_append_str(buf, " = ");
+        fmt_expr(buf, stmt.expr, interner, arena);
+        fmt_append_str(buf, ";\n");
+        return;
+    }
+
+    if stmt.kind == stmt_index_assign() {
+        fmt_indent(buf, level);
+        fmt_expr(buf, stmt.left, interner, arena);
+        fmt_append_str(buf, "[");
+        fmt_expr(buf, stmt.right, interner, arena);
+        fmt_append_str(buf, "] = ");
+        fmt_expr(buf, stmt.expr, interner, arena);
+        fmt_append_str(buf, ";\n");
+        return;
+    }
+
+    if stmt.kind == stmt_return() {
+        fmt_indent(buf, level);
+        fmt_append_str(buf, "return");
+        if (stmt.expr as usize) != 0 {
+            fmt_append_str(buf, " ");
+            fmt_expr(buf, stmt.expr, interner, arena);
+        }
+        fmt_append_str(buf, ";\n");
+        return;
+    }
+
+    if stmt.kind == stmt_if() {
+        fmt_indent(buf, level);
+        fmt_append_str(buf, "if ");
+        fmt_expr(buf, stmt.expr, interner, arena);
+        fmt_append_str(buf, " {\n");
+        let mut i: i64 = 0;
+        while i < stmt.then_stmts.len {
+            let s = vec_get(&stmt.then_stmts, i);
+            fmt_stmt(buf, s, interner, level + 1, arena);
+            i = i + 1;
+        }
+        fmt_indent(buf, level);
+        fmt_append_str(buf, "}");
+        if stmt.else_stmts.len > 0 {
+            fmt_append_str(buf, " else {\n");
+            let mut j: i64 = 0;
+            while j < stmt.else_stmts.len {
+                let s = vec_get(&stmt.else_stmts, j);
+                fmt_stmt(buf, s, interner, level + 1, arena);
+                j = j + 1;
+            }
+            fmt_indent(buf, level);
+            fmt_append_str(buf, "}\n");
+        } else {
+            fmt_append_str(buf, "\n");
+        }
+        return;
+    }
+
+    if stmt.kind == stmt_while() {
+        fmt_indent(buf, level);
+        fmt_append_str(buf, "while ");
+        fmt_expr(buf, stmt.expr, interner, arena);
+        fmt_append_str(buf, " {\n");
+        let mut i: i64 = 0;
+        while i < stmt.then_stmts.len {
+            let s = vec_get(&stmt.then_stmts, i);
+            fmt_stmt(buf, s, interner, level + 1, arena);
+            i = i + 1;
+        }
+        fmt_indent(buf, level);
+        fmt_append_str(buf, "}\n");
+        return;
+    }
+
+    if stmt.kind == stmt_break() {
+        fmt_indent(buf, level);
+        fmt_append_str(buf, "break;\n");
+        return;
+    }
+
+    if stmt.kind == stmt_block() {
+        fmt_indent(buf, level);
+        if stmt.sym == 0 {
+            fmt_append_str(buf, "unsafe {\n");
+        } else {
+            fmt_append_str(buf, "region ");
+            let r_name = interner_lookup(interner, stmt.sym);
+            fmt_append_str(buf, r_name);
+            fmt_append_str(buf, " {\n");
+        }
+        let mut i: i64 = 0;
+        while i < stmt.then_stmts.len {
+            let s = vec_get(&stmt.then_stmts, i);
+            fmt_stmt(buf, s, interner, level + 1, arena);
+            i = i + 1;
+        }
+        fmt_indent(buf, level);
+        fmt_append_str(buf, "}\n");
+        return;
+    }
+
+    if stmt.kind == stmt_expr() {
+        fmt_indent(buf, level);
+        fmt_expr(buf, stmt.expr, interner, arena);
+        fmt_append_str(buf, ";\n");
+        return;
+    }
+}
+
+pub fn fmt_fn(buf: &mut StringBuffer, f: *mut AstFn, interner: &Interner, arena: *mut u8) {
+    fmt_append_str(buf, "fn ");
+    let fname = interner_lookup(interner, f.name_sym);
+    fmt_append_str(buf, fname);
+    fmt_append_str(buf, "(");
+    let mut i: i64 = 0;
+    while i < f.params.len {
+        if i > 0 {
+            fmt_append_str(buf, ", ");
+        }
+        let p = vec_get(&f.params, i);
+        let pname = interner_lookup(interner, p.name_sym);
+        let pty = interner_lookup(interner, p.ty_sym);
+        fmt_append_str(buf, pname);
+        fmt_append_str(buf, ": ");
+        fmt_append_str(buf, pty);
+        i = i + 1;
+    }
+    fmt_append_str(buf, ")");
+    if f.ret_ty_sym != 0 {
+        fmt_append_str(buf, " -> ");
+        let rty = interner_lookup(interner, f.ret_ty_sym);
+        fmt_append_str(buf, rty);
+    }
+    fmt_append_str(buf, " {\n");
+
+    let mut j: i64 = 0;
+    while j < f.body.len {
+        let stmt = vec_get(&f.body, j);
+        fmt_stmt(buf, stmt, interner, 1, arena);
+        j = j + 1;
+    }
+    fmt_append_str(buf, "}\n\n");
+}
+
+pub fn fmt_struct(buf: &mut StringBuffer, s: *mut AstStruct, interner: &Interner) {
+    fmt_append_str(buf, "struct ");
+    let sname = interner_lookup(interner, s.name_sym);
+    fmt_append_str(buf, sname);
+    fmt_append_str(buf, " {\n");
+
+    let mut i: i64 = 0;
+    while i < s.fields.len {
+        let fld = vec_get(&s.fields, i);
+        let fname = interner_lookup(interner, fld.name_sym);
+        let fty = interner_lookup(interner, fld.ty_sym);
+        fmt_append_str(buf, "    ");
+        fmt_append_str(buf, fname);
+        fmt_append_str(buf, ": ");
+        fmt_append_str(buf, fty);
+        fmt_append_str(buf, ",\n");
+        i = i + 1;
+    }
+    fmt_append_str(buf, "}\n\n");
+}
+
+pub fn fmt_extern_fn(buf: &mut StringBuffer, ef: *mut AstExternFn, interner: &Interner) {
+    fmt_append_str(buf, "    fn ");
+    let fname = interner_lookup(interner, ef.name_sym);
+    fmt_append_str(buf, fname);
+    fmt_append_str(buf, "(");
+    let mut i: i64 = 0;
+    while i < ef.params.len {
+        if i > 0 {
+            fmt_append_str(buf, ", ");
+        }
+        let p = vec_get(&ef.params, i);
+        let pname = interner_lookup(interner, p.name_sym);
+        let pty = interner_lookup(interner, p.ty_sym);
+        fmt_append_str(buf, pname);
+        fmt_append_str(buf, ": ");
+        fmt_append_str(buf, pty);
+        i = i + 1;
+    }
+    fmt_append_str(buf, ")");
+    if ef.ret_ty_sym != 0 {
+        fmt_append_str(buf, " -> ");
+        let rty = interner_lookup(interner, ef.ret_ty_sym);
+        fmt_append_str(buf, rty);
+    }
+    fmt_append_str(buf, ";\n");
+}
+
+pub fn fmt_program(prog: *mut AstProgram, interner: &Interner, arena: *mut u8) -> String {
+    let mut buf = string_buffer_new_in(arena);
+
+    if prog.extern_fns.len > 0 {
+        fmt_append_str(&mut buf, "extern \"C\" {\n");
+        let mut i: i64 = 0;
+        while i < prog.extern_fns.len {
+            let ef = vec_get(&prog.extern_fns, i);
+            fmt_extern_fn(&mut buf, ef, interner);
+            i = i + 1;
+        }
+        fmt_append_str(&mut buf, "}\n\n");
+    }
+
+    let mut j: i64 = 0;
+    while j < prog.structs.len {
+        let s = vec_get(&prog.structs, j);
+        fmt_struct(&mut buf, s, interner);
+        j = j + 1;
+    }
+
+    let mut k: i64 = 0;
+    while k < prog.functions.len {
+        let f = vec_get(&prog.functions, k);
+        fmt_fn(&mut buf, f, interner, arena);
+        k = k + 1;
+    }
+
+    string_buffer_push_byte(&mut buf, 0 as u8);
+    string_as_ptr(&buf) as String
+}
+
+pub fn format_file_source(src_path: String, check_only: bool, arena: *mut u8) -> i64 yields [FS, Diagnostics, IO] {
+    let src = fs_read_to_string_in(src_path, arena);
+    let src_len = unsafe { strlen(src as *const u8) } as i64;
+    if src_len == 0 {
+        report_err("File not found or empty", 1, 1);
+        return 1;
+    }
+
+    let mut interner = interner_new_in(arena);
+    let tokens = tokenize(src, &mut interner, arena);
+    let prog = parse_program(tokens, &mut interner, arena);
+    let formatted = fmt_program(prog, &interner, arena);
+
+    let is_same = unsafe { strcmp(src as *const u8, formatted as *const u8) == 0 };
+    if is_same {
+        if !check_only {
+            unsafe {
+                puts("Already formatted" as *const u8);
+                fflush(0 as *const u8);
+            }
+        }
+        return 0;
+    }
+
+    if check_only {
+        unsafe {
+            puts("File is unformatted" as *const u8);
+            fflush(0 as *const u8);
+        }
+        return 1;
+    }
+
+    let ok_write = fs_write_string(src_path, formatted);
+    if !ok_write {
+        report_err("Failed to write formatted file", 1, 1);
+        return 1;
+    }
+
+    unsafe {
+        puts("Formatted file" as *const u8);
+        fflush(0 as *const u8);
+    }
+    0
+}
