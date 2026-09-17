@@ -9,6 +9,7 @@ import compiler::interner;
 import compiler::ast;
 import compiler::lexer;
 import compiler::parser;
+import compiler::typeck;
 import compiler::codegen;
 
 extern "C" {
@@ -16,11 +17,13 @@ extern "C" {
     fn strcmp(s1: *const u8, s2: *const u8) -> i32;
     fn GetCommandLineA() -> *const u8;
     fn puts(s: *const u8) -> i32;
+    fn fflush(f: *const u8) -> i32;
 }
 
 fn print_msg(msg: String) {
     unsafe {
         puts(msg as *const u8);
+        fflush(0 as *const u8);
     }
 }
 
@@ -110,6 +113,12 @@ fn load_source_bundle(src_path: String, arena: *mut u8) -> String yields [FS] {
     string_buffer_push_str(&mut buf, mod_parse as *const u8, len_parse);
     string_buffer_push_byte(&mut buf, 10 as u8);
 
+    // Read and bundle compiler/typeck.tg
+    let mod_tc = fs_read_to_string_in("compiler/typeck.tg", arena);
+    let len_tc = unsafe { strlen(mod_tc as *const u8) } as i64;
+    string_buffer_push_str(&mut buf, mod_tc as *const u8, len_tc);
+    string_buffer_push_byte(&mut buf, 10 as u8);
+
     // Read and bundle compiler/codegen.tg
     let mod_cg = fs_read_to_string_in("compiler/codegen.tg", arena);
     let len_cg = unsafe { strlen(mod_cg as *const u8) } as i64;
@@ -143,38 +152,40 @@ pub fn compile_file(src_path: String, out_ll_path: String, out_exe_path: String)
             let mut tokens = tokenize(src, &mut interner, comp_reg);
             print_msg("TGC: Parsing...");
             let prog = parse_program(tokens, &mut interner, comp_reg);
-            print_msg("TGC: Emitting LLVM IR...");
-            let mut ir_buf = emit_llvm_ir(prog, &mut interner, comp_reg);
-            string_buffer_push_byte(&mut ir_buf, 0 as u8);
-            let ir_str = string_as_ptr(&ir_buf) as String;
-
-            print_msg("TGC: Writing LLVM IR to disk...");
-            let ok_write = fs_write_string(out_ll_path, ir_str);
-            if !ok_write {
-                report_err("Failed to write LLVM IR file", 1, 1);
-                exit_code = 2;
+            print_msg("TGC: Type checking & solving refinements...");
+            let tc_ok = typecheck_program(prog, &mut interner, comp_reg);
+            if !tc_ok {
+                report_err("Type checking failed", 1, 1);
+                exit_code = 1;
             } else {
-                print_msg("TGC: Invoking clang...");
-                let mut cmd_args = string_buffer_new_in(comp_reg);
-                let opt_prefix = "--target=x86_64-pc-windows-gnu -nostartfiles -o ";
-                let opt_suffix = " target/crt/crt2.o -Ltarget/crt -lmingw32 -lmingwex -lmsvcrt -lkernel32 -luser32 -lws2_32 -lgcc";
-                string_buffer_push_str(&mut cmd_args, opt_prefix as *const u8, unsafe { strlen(opt_prefix as *const u8) } as i64);
-                string_buffer_push_str(&mut cmd_args, out_exe_path as *const u8, unsafe { strlen(out_exe_path as *const u8) } as i64);
-                string_buffer_push_byte(&mut cmd_args, 32 as u8);
-                string_buffer_push_str(&mut cmd_args, out_ll_path as *const u8, unsafe { strlen(out_ll_path as *const u8) } as i64);
-                string_buffer_push_str(&mut cmd_args, opt_suffix as *const u8, unsafe { strlen(opt_suffix as *const u8) } as i64);
-                string_buffer_push_byte(&mut cmd_args, 0 as u8);
-                let args_str = string_as_ptr(&cmd_args) as String;
+                print_msg("TGC: Emitting LLVM IR...");
+                let mut ir_buf = emit_llvm_ir(prog, &mut interner, comp_reg);
+                string_buffer_push_byte(&mut ir_buf, 0 as u8);
+                let ir_str = string_as_ptr(&ir_buf) as String;
 
-                let mut status: i64 = 0;
-                if fs_exists("C:\\Program Files\\LLVM\\bin\\clang.exe") {
-                    status = process_exec("\"C:\\Program Files\\LLVM\\bin\\clang.exe\"", args_str);
+                print_msg("TGC: Writing LLVM IR to disk...");
+                let ok_write = fs_write_string(out_ll_path, ir_str);
+                if !ok_write {
+                    report_err("Failed to write LLVM IR file", 1, 1);
+                    exit_code = 2;
                 } else {
-                    status = process_exec("clang", args_str);
-                }
-                if status != 0 {
-                    report_err("Clang failed to link executable", 1, 1);
-                    exit_code = 3;
+                    print_msg("TGC: Invoking clang...");
+                    let mut cmd_args = string_buffer_new_in(comp_reg);
+                    let opt_prefix = "--target=x86_64-pc-windows-gnu -nostartfiles -o ";
+                    let opt_suffix = " target/crt/crt2.o -Ltarget/crt -lmingw32 -lmingwex -lmsvcrt -lkernel32 -luser32 -lws2_32 -lgcc";
+                    string_buffer_push_str(&mut cmd_args, opt_prefix as *const u8, unsafe { strlen(opt_prefix as *const u8) } as i64);
+                    string_buffer_push_str(&mut cmd_args, out_exe_path as *const u8, unsafe { strlen(out_exe_path as *const u8) } as i64);
+                    string_buffer_push_byte(&mut cmd_args, 32 as u8);
+                    string_buffer_push_str(&mut cmd_args, out_ll_path as *const u8, unsafe { strlen(out_ll_path as *const u8) } as i64);
+                    string_buffer_push_str(&mut cmd_args, opt_suffix as *const u8, unsafe { strlen(opt_suffix as *const u8) } as i64);
+                    string_buffer_push_byte(&mut cmd_args, 0 as u8);
+                    let args_str = string_as_ptr(&cmd_args) as String;
+
+                    let status = process_exec("clang", args_str);
+                    if status != 0 {
+                        report_err("Clang failed to link executable", 1, 1);
+                        exit_code = 3;
+                    }
                 }
             }
         }

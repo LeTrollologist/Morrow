@@ -173,3 +173,65 @@ fn test_milestone1_full_self_hosting_bootstrap_closure() {
 
     println!("[Bootstrap] Milestone v1.0 Self-Hosting Bootstrap Closure COMPLETE!");
 }
+
+#[test]
+fn test_pure_tungsten_typeck_refinements() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+
+    let bootstrap_dir = root.join("target").join("bootstrap");
+    let stage1_exe = bootstrap_dir.join("tgc_stage1.exe");
+    assert!(stage1_exe.is_file(), "tgc_stage1.exe must exist (run bootstrap closure test first)");
+
+    let fixtures_dir = root.join("target").join("fixtures");
+    fs::create_dir_all(&fixtures_dir).unwrap();
+
+    // 1. Positive Refinement Test: in-bounds values compile cleanly
+    let valid_src = fixtures_dir.join("valid_refinement.tg");
+    fs::write(
+        &valid_src,
+        "fn main() {\n    let p: Percentage = 85;\n    let port: Port = 8080;\n}\n",
+    ).unwrap();
+    let valid_exe = fixtures_dir.join("valid_refinement.exe");
+
+    let mut cmd_valid = Command::new(&stage1_exe);
+    cmd_valid.current_dir(&root).args(&[
+        valid_src.to_str().unwrap(),
+        "-o",
+        valid_exe.to_str().unwrap(),
+    ]);
+    let out_valid = run_command_with_retry(&mut cmd_valid, "tgc_stage1 -> valid_refinement.exe");
+    assert!(out_valid.status.success(), "Valid refinement must compile successfully");
+
+    // 2. Negative Refinement Test: out-of-bounds assignment triggers typecheck error
+    let invalid_src = fixtures_dir.join("invalid_refinement.tg");
+    fs::write(
+        &invalid_src,
+        "fn main() {\n    let mut p: Percentage = 50;\n    p = 150;\n}\n",
+    ).unwrap();
+    let invalid_exe = fixtures_dir.join("invalid_refinement.exe");
+
+    let mut cmd_invalid = Command::new(&stage1_exe);
+    cmd_invalid.current_dir(&root).args(&[
+        invalid_src.to_str().unwrap(),
+        "-o",
+        invalid_exe.to_str().unwrap(),
+    ]);
+    let out_invalid = cmd_invalid.output().expect("Execution must produce output");
+    assert!(!out_invalid.status.success(), "Out-of-bounds refinement must fail compilation");
+    let output_invalid = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&out_invalid.stdout),
+        String::from_utf8_lossy(&out_invalid.stderr)
+    );
+    assert!(
+        output_invalid.contains("Refinement Constraint Violation") || output_invalid.contains("Type checking failed"),
+        "Must report refinement constraint violation! Output: {}",
+        output_invalid
+    );
+}
+

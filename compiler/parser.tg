@@ -306,12 +306,16 @@ pub fn parse_stmt(p: &mut Parser) -> *mut AstStmt yields [Diagnostics] {
         }
         let name_tok = expect(p, tok_ident(), "Expected variable name after 'let'");
         let sym = name_tok.sym;
+        let mut ty_sym: i64 = 0;
         if check(p, tok_colon()) {
             advance(p); // consume :
-            parse_type(p);
+            ty_sym = parse_type(p);
         }
         expect(p, tok_eq(), "Expected '=' in let binding");
-        let init_expr = parse_expr(p);
+        let mut init_expr = parse_expr(p);
+        if ty_sym != 0 {
+            init_expr = alloc_expr_cast(p.arena, init_expr, ty_sym);
+        }
         expect(p, tok_semicolon(), "Expected ';' after let statement");
         return alloc_stmt_let(p.arena, sym, init_expr);
     }

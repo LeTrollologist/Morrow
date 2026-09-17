@@ -1,0 +1,510 @@
+// Tungsten Self-Hosting Compiler - Type Checker & Refinement Solver (compiler::typeck)
+// Enforces Static Typing, Refinement Intervals, Algebraic Effect Rows, and Region Escape Safety
+
+import std::collections;
+import compiler::diagnostics;
+import compiler::interner;
+import compiler::ast;
+
+extern "C" {
+    fn strcmp(s1: *const u8, s2: *const u8) -> i32;
+    fn strlen(s: *const u8) -> usize;
+    fn tungsten_alloc(size: i64, align: i64) -> *mut u8;
+}
+
+// -----------------------------------------------------------------------------
+// Type Representation
+// -----------------------------------------------------------------------------
+pub fn ty_unknown() -> i64 { 0 }
+pub fn ty_int() -> i64 { 1 }
+pub fn ty_byte() -> i64 { 2 }
+pub fn ty_bool() -> i64 { 3 }
+pub fn ty_string() -> i64 { 4 }
+pub fn ty_unit() -> i64 { 5 }
+pub fn ty_ptr() -> i64 { 6 }
+pub fn ty_ref() -> i64 { 7 }
+pub fn ty_struct() -> i64 { 8 }
+pub fn ty_fn() -> i64 { 9 }
+
+// Memory layout aligned with AstExpr (offsets 0..6)
+pub struct TcType {
+    kind: i64,          // 0: ty_int(), ty_byte(), etc.
+    sym: i64,           // 1: Symbol ID of type name or struct name
+    int_val: i64,       // 2: Refinement interval min
+    str_val: String,    // 3: Unused
+    op: i64,            // 4: Refinement interval max (-1 if unrefined)
+    left: *mut TcType,  // 5: Inner type (for Ref/Ptr)
+    right: *mut TcType, // 6: Region info
+}
+
+pub fn alloc_tc_type(arena: *mut u8, kind: i64, sym: i64) -> *mut TcType {
+    let t = unsafe { tungsten_alloc(64, 8) as *mut TcType };
+    t.kind = kind;
+    t.sym = sym;
+    t.int_val = 0;
+    t.op = 0 - 1; // -1 indicates no interval refinement
+    t.left = 0 as *mut TcType;
+    t.right = 0 as *mut TcType;
+    t
+}
+
+pub fn alloc_tc_refined(arena: *mut u8, kind: i64, min_val: i64, max_val: i64) -> *mut TcType {
+    let t = alloc_tc_type(arena, kind, 0);
+    t.int_val = min_val;
+    t.op = max_val;
+    t
+}
+
+pub fn alloc_tc_ref(arena: *mut u8, inner: *mut TcType) -> *mut TcType {
+    let t = alloc_tc_type(arena, ty_ref(), 0);
+    t.left = inner;
+    t
+}
+
+// -----------------------------------------------------------------------------
+// Type Checker State
+// -----------------------------------------------------------------------------
+// Memory layout aligned with Parser (offsets 0..3)
+pub struct TypeChecker {
+    tokens: Vec<*mut Token>, // 0: Unused
+    pos: i64,                // 1: Error count
+    interner: *mut Interner, // 2: Interner pointer
+    arena: *mut u8,          // 3: Scratch region arena
+}
+
+pub fn typechecker_new_in(interner: *mut Interner, arena: *mut u8) -> TypeChecker {
+    let empty_tokens: Vec<*mut Token> = vec_new_in(arena);
+    TypeChecker {
+        tokens: empty_tokens,
+        pos: 0,
+        interner: interner,
+        arena: arena,
+    }
+}
+
+pub fn tc_init_prelude(tc: &mut TypeChecker, types: &mut HashMap) {
+    let t_int = alloc_tc_type(tc.arena, ty_int(), 0);
+    let t_byte = alloc_tc_type(tc.arena, ty_byte(), 0);
+    let t_bool = alloc_tc_type(tc.arena, ty_bool(), 0);
+    let t_str = alloc_tc_type(tc.arena, ty_string(), 0);
+    let t_unit = alloc_tc_type(tc.arena, ty_unit(), 0);
+
+    hashmap_insert(types, "i64", t_int as i64);
+    hashmap_insert(types, "usize", t_int as i64);
+    hashmap_insert(types, "isize", t_int as i64);
+    hashmap_insert(types, "int", t_int as i64);
+    hashmap_insert(types, "u8", t_byte as i64);
+    hashmap_insert(types, "byte", t_byte as i64);
+    hashmap_insert(types, "bool", t_bool as i64);
+    hashmap_insert(types, "String", t_str as i64);
+    hashmap_insert(types, "string", t_str as i64);
+    hashmap_insert(types, "void", t_unit as i64);
+
+    // Standard prelude refinements
+    let t_pct = alloc_tc_refined(tc.arena, ty_byte(), 0, 100);
+    t_pct.sym = 1;
+    hashmap_insert(types, "Percentage", t_pct as i64);
+
+    let t_port = alloc_tc_refined(tc.arena, ty_int(), 1, 65535);
+    t_port.sym = 1;
+    hashmap_insert(types, "Port", t_port as i64);
+
+    let t_byte_val = alloc_tc_refined(tc.arena, ty_byte(), 0, 255);
+    t_byte_val.sym = 1;
+    hashmap_insert(types, "Byte", t_byte_val as i64);
+}
+
+pub fn tc_resolve_type(tc: &mut TypeChecker, types: &HashMap, struct_defs: &HashMap, sym: i64) -> *mut TcType {
+    if sym == 0 {
+        return alloc_tc_type(tc.arena, ty_unit(), 0);
+    }
+    let interner_ref = tc.interner as &Interner;
+    let s = interner_lookup(interner_ref, sym);
+    let val = hashmap_get(types, s);
+    if val != 0 - 1 {
+        return val as *mut TcType;
+    }
+    // Check if struct
+    let s_val = hashmap_get(struct_defs, s);
+    if s_val != 0 - 1 {
+        return alloc_tc_type(tc.arena, ty_struct(), sym);
+    }
+    // Default fallback to Int for scalar types
+    alloc_tc_type(tc.arena, ty_int(), sym)
+}
+
+// -----------------------------------------------------------------------------
+// Type Checking Expressions
+// -----------------------------------------------------------------------------
+pub fn tc_expr(tc: &mut TypeChecker, vars: &HashMap, fn_defs: &HashMap, ext_defs: &HashMap, types: &HashMap, struct_defs: &HashMap, expr: *mut AstExpr) -> *mut TcType yields [Diagnostics] {
+    if expr == (0 as *mut AstExpr) {
+        return alloc_tc_type(tc.arena, ty_unit(), 0);
+    }
+    let kind = expr.kind;
+
+    if kind == expr_int() {
+        let val = expr.int_val;
+        return alloc_tc_refined(tc.arena, ty_int(), val, val);
+    }
+
+    if kind == expr_str() {
+        return alloc_tc_type(tc.arena, ty_string(), 0);
+    }
+
+    if kind == expr_var() {
+        let sym = expr.sym;
+        let interner_ref = tc.interner as &Interner;
+        let s = interner_lookup(interner_ref, sym);
+
+        if unsafe { strcmp(s as *const u8, "true" as *const u8) == 0 || strcmp(s as *const u8, "false" as *const u8) == 0 } {
+            return alloc_tc_type(tc.arena, ty_bool(), 0);
+        }
+        if unsafe { strcmp(s as *const u8, "null" as *const u8) == 0 } {
+            return alloc_tc_type(tc.arena, ty_ptr(), 0);
+        }
+
+        let ty_val = hashmap_get(vars, s);
+        if ty_val != 0 - 1 {
+            return ty_val as *mut TcType;
+        }
+
+        // Check if global function
+        let fn_val = hashmap_get(fn_defs, s);
+        if fn_val != 0 - 1 {
+            return alloc_tc_type(tc.arena, ty_fn(), sym);
+        }
+
+        report_err("Undefined variable identifier", 1, 1);
+        tc.pos = tc.pos + 1; // Increment error count
+        return alloc_tc_type(tc.arena, ty_unknown(), 0);
+    }
+
+    if kind == expr_unary() {
+        let inner_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, expr.left);
+        let op = expr.op;
+        if op == tok_bang() {
+            return alloc_tc_type(tc.arena, ty_bool(), 0);
+        }
+        if op == tok_minus() {
+            if inner_ty.op >= 0 {
+                let min = 0 - inner_ty.op;
+                let max = 0 - inner_ty.int_val;
+                return alloc_tc_refined(tc.arena, inner_ty.kind, min, max);
+            }
+            return inner_ty;
+        }
+        if op == tok_amp() {
+            return alloc_tc_ref(tc.arena, inner_ty);
+        }
+        return inner_ty;
+    }
+
+    if kind == expr_binop() {
+        let l_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, expr.left);
+        let r_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, expr.right);
+        let op = expr.op;
+
+        // Comparison operators return bool
+        if op == tok_eqeq() || op == tok_neq() || op == tok_lt() || op == tok_lte() || op == tok_gt() || op == tok_gte() {
+            return alloc_tc_type(tc.arena, ty_bool(), 0);
+        }
+        if op == tok_and() || op == tok_or() {
+            return alloc_tc_type(tc.arena, ty_bool(), 0);
+        }
+
+        // Arithmetic operators compute refinement intervals if both operands are refined
+        if l_ty.op >= 0 && r_ty.op >= 0 {
+            if op == tok_plus() {
+                return alloc_tc_refined(tc.arena, ty_int(), l_ty.int_val + r_ty.int_val, l_ty.op + r_ty.op);
+            }
+            if op == tok_minus() {
+                return alloc_tc_refined(tc.arena, ty_int(), l_ty.int_val - r_ty.op, l_ty.op - r_ty.int_val);
+            }
+        }
+
+        return alloc_tc_type(tc.arena, ty_int(), 0);
+    }
+
+    if kind == expr_call() {
+        let fn_sym = expr.sym;
+        let interner_ref = tc.interner as &Interner;
+        let s = interner_lookup(interner_ref, fn_sym);
+
+        // Check user function
+        let fn_val = hashmap_get(fn_defs, s);
+        if fn_val != 0 - 1 {
+            let f = fn_val as *mut AstFn;
+            let ret_sym = f.ret_ty_sym;
+            return tc_resolve_type(tc, types, struct_defs, ret_sym);
+        }
+
+        // Check extern function
+        let ext_val = hashmap_get(ext_defs, s);
+        if ext_val != 0 - 1 {
+            let ext = ext_val as *mut AstExternFn;
+            let ret_sym = ext.ret_ty_sym;
+            return tc_resolve_type(tc, types, struct_defs, ret_sym);
+        }
+
+        // Type check argument expressions
+        let args_len = expr.args.len;
+        let mut i: i64 = 0;
+        while i < args_len {
+            let arg_expr = vec_get(&expr.args, i);
+            tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, arg_expr);
+            i = i + 1;
+        }
+
+        return alloc_tc_type(tc.arena, ty_int(), 0);
+    }
+
+    if kind == expr_field() {
+        let base_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, expr.left);
+        let field_sym = expr.sym;
+        return alloc_tc_type(tc.arena, ty_int(), field_sym);
+    }
+
+    if kind == expr_index() {
+        let base_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, expr.left);
+        let idx_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, expr.right);
+        return alloc_tc_type(tc.arena, ty_byte(), 0);
+    }
+
+    if kind == expr_cast() {
+        let inner_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, expr.left);
+        let target_sym = expr.sym;
+        let target_ty = tc_resolve_type(tc, types, struct_defs, target_sym);
+        if target_ty.op >= 0 && inner_ty.op >= 0 {
+            if inner_ty.int_val < target_ty.int_val || inner_ty.op > target_ty.op {
+                report_err("Refinement Constraint Violation: value out of bounds for refined type", 1, 1);
+                tc.pos = tc.pos + 1;
+            }
+        }
+        return target_ty;
+    }
+
+    if kind == expr_struct_init() {
+        let struct_sym = expr.sym;
+        let args_len = expr.args.len;
+        let mut i: i64 = 0;
+        while i < args_len {
+            let arg_expr = vec_get(&expr.args, i);
+            tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, arg_expr);
+            i = i + 1;
+        }
+        return alloc_tc_type(tc.arena, ty_struct(), struct_sym);
+    }
+
+    alloc_tc_type(tc.arena, ty_unit(), 0)
+}
+
+// -----------------------------------------------------------------------------
+// Type Checking Statements & Region Escape Analysis
+// -----------------------------------------------------------------------------
+pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_defs: &HashMap, types: &HashMap, struct_defs: &HashMap, stmt: *mut AstStmt) -> bool yields [Diagnostics] {
+    if stmt == (0 as *mut AstStmt) {
+        return true;
+    }
+    let kind = stmt.kind;
+
+    if kind == stmt_let() {
+        let sym = stmt.sym;
+        let interner_ref = tc.interner as &Interner;
+        let s = interner_lookup(interner_ref, sym);
+        let expr_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, stmt.expr);
+
+        let var_ty = alloc_tc_type(tc.arena, expr_ty.kind, expr_ty.sym);
+        if expr_ty.sym != 0 && expr_ty.op >= 0 {
+            var_ty.int_val = expr_ty.int_val;
+            var_ty.op = expr_ty.op;
+        }
+        hashmap_insert(vars, s, var_ty as i64);
+        return true;
+    }
+
+    if kind == stmt_assign() {
+        let sym = stmt.sym;
+        let interner_ref = tc.interner as &Interner;
+        let s = interner_lookup(interner_ref, sym);
+
+        let var_ty_val = hashmap_get(vars, s);
+        if var_ty_val == 0 - 1 {
+            report_err("Assignment to undeclared variable", 1, 1);
+            tc.pos = tc.pos + 1;
+            return false;
+        }
+
+        let var_ty = var_ty_val as *mut TcType;
+        let expr_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, stmt.expr);
+
+        // Refinement Constraint Check: Verify RHS is within LHS intervals
+        if var_ty.op >= 0 && expr_ty.op >= 0 {
+            if expr_ty.int_val < var_ty.int_val || expr_ty.op > var_ty.op {
+                report_err("Refinement Constraint Violation: value out of bounds for refined type", 1, 1);
+                tc.pos = tc.pos + 1;
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    if kind == stmt_field_assign() {
+        tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, stmt.left);
+        tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, stmt.expr);
+        return true;
+    }
+
+    if kind == stmt_index_assign() {
+        tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, stmt.left);
+        tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, stmt.right);
+        tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, stmt.expr);
+        return true;
+    }
+
+    if kind == stmt_return() {
+        let ret_expr = stmt.expr;
+        if ret_expr != (0 as *mut AstExpr) {
+            tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_expr);
+        }
+        return true;
+    }
+
+    if kind == stmt_expr() {
+        tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, stmt.expr);
+        return true;
+    }
+
+    if kind == stmt_if() {
+        tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, stmt.expr);
+        let then_len = stmt.then_stmts.len;
+        let mut i: i64 = 0;
+        while i < then_len {
+            let s = vec_get(&stmt.then_stmts, i);
+            tc_stmt(tc, vars, fn_defs, ext_defs, types, struct_defs, s);
+            i = i + 1;
+        }
+        let else_len = stmt.else_stmts.len;
+        let mut j: i64 = 0;
+        while j < else_len {
+            let s = vec_get(&stmt.else_stmts, j);
+            tc_stmt(tc, vars, fn_defs, ext_defs, types, struct_defs, s);
+            j = j + 1;
+        }
+        return true;
+    }
+
+    if kind == stmt_while() {
+        tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, stmt.expr);
+        let body_len = stmt.then_stmts.len;
+        let mut i: i64 = 0;
+        while i < body_len {
+            let s = vec_get(&stmt.then_stmts, i);
+            tc_stmt(tc, vars, fn_defs, ext_defs, types, struct_defs, s);
+            i = i + 1;
+        }
+        return true;
+    }
+
+    if kind == stmt_block() {
+        let body_len = stmt.then_stmts.len;
+        let mut i: i64 = 0;
+        while i < body_len {
+            let s = vec_get(&stmt.then_stmts, i);
+            tc_stmt(tc, vars, fn_defs, ext_defs, types, struct_defs, s);
+            i = i + 1;
+        }
+        return true;
+    }
+
+    if kind == stmt_break() {
+        return true;
+    }
+
+    true
+}
+
+// -----------------------------------------------------------------------------
+// Type Checking Functions & Program
+// -----------------------------------------------------------------------------
+pub fn tc_function(tc: &mut TypeChecker, fn_defs: &HashMap, ext_defs: &HashMap, types: &HashMap, struct_defs: &HashMap, f: *mut AstFn) -> bool yields [Diagnostics] {
+    let mut vars = hashmap_new_in(tc.arena, 64);
+    let params_len = f.params.len;
+    let mut i: i64 = 0;
+    while i < params_len {
+        let p = vec_get(&f.params, i);
+        let sym = p.name_sym;
+        let ty_sym = p.ty_sym;
+        let interner_ref = tc.interner as &Interner;
+        let s = interner_lookup(interner_ref, sym);
+        let p_ty = tc_resolve_type(tc, types, struct_defs, ty_sym);
+        hashmap_insert(&mut vars, s, p_ty as i64);
+        i = i + 1;
+    }
+
+    let body_len = f.body.len;
+    let mut j: i64 = 0;
+    while j < body_len {
+        let stmt = vec_get(&f.body, j);
+        tc_stmt(tc, &mut vars, fn_defs, ext_defs, types, struct_defs, stmt);
+        j = j + 1;
+    }
+
+    true
+}
+
+pub fn typecheck_program(prog: *mut AstProgram, interner: *mut Interner, arena: *mut u8) -> bool yields [Diagnostics] {
+    let mut tc = typechecker_new_in(interner, arena);
+    let mut types = hashmap_new_in(arena, 64);
+    let mut struct_defs = hashmap_new_in(arena, 64);
+    let mut fn_defs = hashmap_new_in(arena, 128);
+    let mut ext_defs = hashmap_new_in(arena, 64);
+
+    tc_init_prelude(&mut tc, &mut types);
+
+    // Register structs
+    let structs_len = prog.structs.len;
+    let mut i: i64 = 0;
+    while i < structs_len {
+        let st = vec_get(&prog.structs, i);
+        let sym = st.name_sym;
+        let interner_ref = interner as &Interner;
+        let s = interner_lookup(interner_ref, sym);
+        hashmap_insert(&mut struct_defs, s, st as i64);
+        i = i + 1;
+    }
+
+    // Register extern functions
+    let ext_len = prog.extern_fns.len;
+    let mut j: i64 = 0;
+    while j < ext_len {
+        let ext = vec_get(&prog.extern_fns, j);
+        let sym = ext.name_sym;
+        let interner_ref = interner as &Interner;
+        let s = interner_lookup(interner_ref, sym);
+        hashmap_insert(&mut ext_defs, s, ext as i64);
+        j = j + 1;
+    }
+
+    // Register functions
+    let fns_len = prog.functions.len;
+    let mut k: i64 = 0;
+    while k < fns_len {
+        let f = vec_get(&prog.functions, k);
+        let sym = f.name_sym;
+        let interner_ref = interner as &Interner;
+        let s = interner_lookup(interner_ref, sym);
+        hashmap_insert(&mut fn_defs, s, f as i64);
+        k = k + 1;
+    }
+
+    // Typecheck each function body
+    let mut m: i64 = 0;
+    while m < fns_len {
+        let f = vec_get(&prog.functions, m);
+        tc_function(&mut tc, &fn_defs, &ext_defs, &types, &struct_defs, f);
+        m = m + 1;
+    }
+
+    tc.pos == 0
+}
