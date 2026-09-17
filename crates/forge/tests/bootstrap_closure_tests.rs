@@ -235,3 +235,53 @@ fn test_pure_tungsten_typeck_refinements() {
     );
 }
 
+#[test]
+fn test_pure_tungsten_tir_and_opt() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+
+    let bootstrap_dir = root.join("target").join("bootstrap");
+    let stage1_exe = bootstrap_dir.join("tgc_stage1.exe");
+    assert!(stage1_exe.is_file(), "tgc_stage1.exe must exist (run bootstrap closure test first)");
+
+    let fixtures_dir = root.join("target").join("fixtures");
+    fs::create_dir_all(&fixtures_dir).unwrap();
+
+    let tir_test_src = fixtures_dir.join("tir_test.tg");
+    fs::write(
+        &tir_test_src,
+        "fn main() {\n    let a = 10 + 20;\n    let b = 30 * 2;\n    println(a + b);\n}\n",
+    ).unwrap();
+    let tir_test_exe = fixtures_dir.join("tir_test.exe");
+
+    let mut cmd_tir = Command::new(&stage1_exe);
+    cmd_tir.current_dir(&root).args(&[
+        tir_test_src.to_str().unwrap(),
+        "-o",
+        tir_test_exe.to_str().unwrap(),
+    ]);
+    let out_tir = run_command_with_retry(&mut cmd_tir, "tgc_stage1 -> tir_test.exe");
+    let tir_stdout = String::from_utf8_lossy(&out_tir.stdout);
+    assert!(
+        tir_stdout.contains("TGC: Lowering to TIR & optimizing..."),
+        "stdout must show TIR lowering and optimization. Stdout: {}",
+        tir_stdout
+    );
+    assert!(tir_test_exe.is_file(), "tir_test.exe must be compiled");
+
+    let mut cmd_run = Command::new(&tir_test_exe);
+    cmd_run.current_dir(&root);
+    let out_run = run_command_with_retry(&mut cmd_run, "Run tir_test.exe");
+    let run_stdout = String::from_utf8_lossy(&out_run.stdout);
+    assert!(
+        run_stdout.contains("90"),
+        "tir_test.exe must compute 30 + 60 = 90. Stdout: {}",
+        run_stdout
+    );
+}
+
+

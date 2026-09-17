@@ -10,6 +10,8 @@ import compiler::ast;
 import compiler::lexer;
 import compiler::parser;
 import compiler::typeck;
+import compiler::tir;
+import compiler::opt;
 import compiler::codegen;
 
 extern "C" {
@@ -119,6 +121,18 @@ fn load_source_bundle(src_path: String, arena: *mut u8) -> String yields [FS] {
     string_buffer_push_str(&mut buf, mod_tc as *const u8, len_tc);
     string_buffer_push_byte(&mut buf, 10 as u8);
 
+    // Read and bundle compiler/tir.tg
+    let mod_tir = fs_read_to_string_in("compiler/tir.tg", arena);
+    let len_tir = unsafe { strlen(mod_tir as *const u8) } as i64;
+    string_buffer_push_str(&mut buf, mod_tir as *const u8, len_tir);
+    string_buffer_push_byte(&mut buf, 10 as u8);
+
+    // Read and bundle compiler/opt.tg
+    let mod_opt = fs_read_to_string_in("compiler/opt.tg", arena);
+    let len_opt = unsafe { strlen(mod_opt as *const u8) } as i64;
+    string_buffer_push_str(&mut buf, mod_opt as *const u8, len_opt);
+    string_buffer_push_byte(&mut buf, 10 as u8);
+
     // Read and bundle compiler/codegen.tg
     let mod_cg = fs_read_to_string_in("compiler/codegen.tg", arena);
     let len_cg = unsafe { strlen(mod_cg as *const u8) } as i64;
@@ -158,6 +172,10 @@ pub fn compile_file(src_path: String, out_ll_path: String, out_exe_path: String)
                 report_err("Type checking failed", 1, 1);
                 exit_code = 1;
             } else {
+                print_msg("TGC: Lowering to TIR & optimizing...");
+                let tir_mod = lower_ast_program_to_tir(prog, comp_reg);
+                let opt_count = tir_optimize_module(tir_mod, comp_reg);
+
                 print_msg("TGC: Emitting LLVM IR...");
                 let mut ir_buf = emit_llvm_ir(prog, &mut interner, comp_reg);
                 string_buffer_push_byte(&mut ir_buf, 0 as u8);

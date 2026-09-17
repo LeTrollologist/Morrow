@@ -1,0 +1,210 @@
+// Tungsten Self-Hosting Compiler - Intermediate Representation Optimizer (compiler::opt)
+// Constant Folding, Dead Code Elimination, and Redundant Bounds-Check Elimination
+
+import std::collections;
+import compiler::ast;
+import compiler::tir;
+
+extern "C" {
+    fn puts(s: *const u8) -> i32;
+}
+
+pub fn tir_fold_binop_int(op: i64, l: i64, r: i64) -> i64 {
+    if op == tok_plus() { return l + r; }
+    if op == tok_minus() { return l - r; }
+    if op == tok_star() { return l * r; }
+    if op == tok_slash() {
+        if r != 0 { return l / r; }
+        return 0;
+    }
+    if op == tok_eqeq() {
+        if l == r { return 1; }
+        return 0;
+    }
+    if op == tok_neq() {
+        if l != r { return 1; }
+        return 0;
+    }
+    if op == tok_lt() {
+        if l < r { return 1; }
+        return 0;
+    }
+    if op == tok_lte() {
+        if l <= r { return 1; }
+        return 0;
+    }
+    if op == tok_gt() {
+        if l > r { return 1; }
+        return 0;
+    }
+    if op == tok_gte() {
+        if l >= r { return 1; }
+        return 0;
+    }
+    0
+}
+
+pub fn tir_is_foldable_op(op: i64) -> bool {
+    op == tok_plus() || op == tok_minus() || op == tok_star() ||
+    op == tok_slash() || op == tok_eqeq() || op == tok_neq() ||
+    op == tok_lt() || op == tok_lte() || op == tok_gt() || op == tok_gte()
+}
+
+pub fn tir_const_fold_fn(f: *mut TirFunction, arena: *mut u8) -> i64 {
+    let mut folds: i64 = 0;
+    let blocks_len = f.args.len;
+    let mut bi: i64 = 0;
+
+    while bi < blocks_len {
+        let blk = vec_get(&f.args, bi);
+        let insts_len = blk.args.len;
+        let mut ii: i64 = 0;
+
+        while ii < insts_len {
+            let inst = vec_get(&blk.args, ii);
+            if inst.kind == tir_inst_assign() {
+                let op = inst.op;
+                let left_op = inst.left;
+                let right_op = inst.right;
+
+                if left_op != (0 as *mut TirOperand) && right_op != (0 as *mut TirOperand) {
+                    if left_op.kind == tir_op_int() && right_op.kind == tir_op_int() {
+                        if tir_is_foldable_op(op) {
+                            let folded_val = tir_fold_binop_int(op, left_op.int_val, right_op.int_val);
+                            let new_left = alloc_tir_op_int(arena, folded_val);
+                            inst.left = new_left;
+                            inst.right = 0 as *mut TirOperand;
+                            inst.op = 0;
+                            folds = folds + 1;
+                        }
+                    }
+                }
+            }
+            ii = ii + 1;
+        }
+
+        // Fold conditional branches on known constants
+        if blk.sym == tir_term_branch_cond() {
+            let cond = blk.left;
+            if cond != (0 as *mut TirOperand) && cond.kind == tir_op_int() {
+                if cond.int_val != 0 {
+                    tir_block_set_branch(blk, blk.int_val);
+                    folds = folds + 1;
+                } else {
+                    tir_block_set_branch(blk, blk.op);
+                    folds = folds + 1;
+                }
+            }
+        }
+
+        bi = bi + 1;
+    }
+
+    folds
+}
+
+pub fn tir_bounds_elim_fn(f: *mut TirFunction, arena: *mut u8) -> i64 {
+    let mut eliminated: i64 = 0;
+    let blocks_len = f.args.len;
+    let mut bi: i64 = 0;
+
+    while bi < blocks_len {
+        let blk = vec_get(&f.args, bi);
+        let insts_len = blk.args.len;
+        let mut ii: i64 = 0;
+
+        while ii < insts_len {
+            let inst = vec_get(&blk.args, ii);
+            if inst.kind == tir_inst_bounds_check() {
+                let operand = inst.left;
+                let min_val = inst.int_val;
+                let max_val = inst.op;
+
+                if operand != (0 as *mut TirOperand) && operand.kind == tir_op_int() {
+                    let val = operand.int_val;
+                    if val >= min_val && val <= max_val {
+                        // Statically proven within refinement interval! Turn into NOP.
+                        inst.kind = tir_inst_nop();
+                        inst.left = 0 as *mut TirOperand;
+                        inst.right = 0 as *mut TirOperand;
+                        eliminated = eliminated + 1;
+                    }
+                }
+            }
+            ii = ii + 1;
+        }
+
+        bi = bi + 1;
+    }
+
+    eliminated
+}
+
+pub fn tir_dce_fn(f: *mut TirFunction, arena: *mut u8) -> i64 {
+    let mut pruned: i64 = 0;
+    let blocks_len = f.args.len;
+    let mut bi: i64 = 0;
+
+    while bi < blocks_len {
+        let blk = vec_get(&f.args, bi);
+        let insts_len = blk.args.len;
+        let mut clean_insts: Vec<*mut TirInst> = vec_new_in(arena);
+        let mut ii: i64 = 0;
+
+        while ii < insts_len {
+            let inst = vec_get(&blk.args, ii);
+            if inst.kind != tir_inst_nop() {
+                vec_push(&mut clean_insts, inst);
+            } else {
+                pruned = pruned + 1;
+            }
+            ii = ii + 1;
+        }
+
+        blk.args = clean_insts;
+        bi = bi + 1;
+    }
+
+    pruned
+}
+
+pub fn tir_optimize_fn(f: *mut TirFunction, arena: *mut u8) -> i64 {
+    let mut total_changes: i64 = 0;
+    let mut iter: i64 = 0;
+
+    while iter < 5 {
+        let mut iter_changes: i64 = 0;
+
+        let cf = tir_const_fold_fn(f, arena);
+        iter_changes = iter_changes + cf;
+
+        let be = tir_bounds_elim_fn(f, arena);
+        iter_changes = iter_changes + be;
+
+        let dce = tir_dce_fn(f, arena);
+        iter_changes = iter_changes + dce;
+
+        total_changes = total_changes + iter_changes;
+        if iter_changes == 0 {
+            return total_changes;
+        }
+        iter = iter + 1;
+    }
+
+    total_changes
+}
+
+pub fn tir_optimize_module(m: *mut TirModule, arena: *mut u8) -> i64 {
+    let mut total: i64 = 0;
+    let fns_len = m.args.len;
+    let mut i: i64 = 0;
+
+    while i < fns_len {
+        let f = vec_get(&m.args, i);
+        let changes = tir_optimize_fn(f, arena);
+        total = total + changes;
+        i = i + 1;
+    }
+
+    total
+}
