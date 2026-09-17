@@ -373,6 +373,41 @@ fn test_pure_tungsten_forge_and_fmt() {
     cmd_fmt2.current_dir(&root).args(&["fmt", "--check", unformatted_src.to_str().unwrap()]);
     let out_fmt2 = run_command_with_retry(&mut cmd_fmt2, "forge fmt --check");
     assert!(out_fmt2.status.success(), "forge fmt --check should succeed on formatted file");
+
+    // 6. Test: forge build
+    let build_out_exe = fixtures_dir.join("forge_check_valid.exe");
+    let mut cmd_build = Command::new(&stage1_exe);
+    cmd_build.current_dir(&root).args(&[
+        "build",
+        valid_src.to_str().unwrap(),
+        "-o",
+        build_out_exe.to_str().unwrap(),
+    ]);
+    let out_build = run_command_with_retry(&mut cmd_build, "forge build");
+    let build_stdout = String::from_utf8_lossy(&out_build.stdout);
+    assert!(
+        build_stdout.contains("forge: build succeeded"),
+        "forge build must report success. Stdout: {}",
+        build_stdout
+    );
+    assert!(build_out_exe.is_file(), "Built executable must exist");
+
+    // 7. Test: forge new
+    let new_project_dir = fixtures_dir.join("test_scaffold_project");
+    fs::create_dir_all(&new_project_dir).unwrap();
+    let mut cmd_new = Command::new(&stage1_exe);
+    cmd_new.current_dir(&new_project_dir).args(&["new", "sample_pkg"]);
+    let out_new = run_command_with_retry(&mut cmd_new, "forge new sample_pkg");
+    let new_stdout = String::from_utf8_lossy(&out_new.stdout);
+    assert!(
+        new_stdout.contains("forge: created Forge.toml"),
+        "forge new must report Forge.toml creation. Stdout: {}",
+        new_stdout
+    );
+    assert!(
+        new_project_dir.join("Forge.toml").is_file(),
+        "Forge.toml must exist in scaffolded directory"
+    );
 }
 
 
