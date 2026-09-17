@@ -280,12 +280,30 @@ pub fn emit_expr(cg: &mut Codegen, expr_ptr: *mut AstExpr) -> i64 {
     }
 
     if expr_ptr.kind == expr_var() {
+        let mut is_local = false;
+        let mut vi: i64 = 0;
+        while vi < cg.allocated_vars.len {
+            if vec_get(&cg.allocated_vars, vi) == expr_ptr.sym {
+                is_local = true;
+                break;
+            }
+            vi = vi + 1;
+        }
+
         let r = alloc_reg(cg);
-        emit_str(cg, "    %t");
-        emit_i64(cg, r);
-        emit_str(cg, " = load i64, ptr %v_");
-        emit_sym(cg, expr_ptr.sym);
-        emit_str(cg, "\n");
+        if is_local {
+            emit_str(cg, "    %t");
+            emit_i64(cg, r);
+            emit_str(cg, " = load i64, ptr %v_");
+            emit_sym(cg, expr_ptr.sym);
+            emit_str(cg, "\n");
+        } else {
+            emit_str(cg, "    %t");
+            emit_i64(cg, r);
+            emit_str(cg, " = ptrtoint ptr @");
+            emit_sym(cg, expr_ptr.sym);
+            emit_str(cg, " to i64\n");
+        }
         return r;
     }
 

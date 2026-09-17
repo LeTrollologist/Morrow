@@ -1,0 +1,51 @@
+import std.test;
+
+extern "C" {
+    fn timeGetTime(): i64;
+    fn GetStockObject(i: i64): i64;
+}
+
+struct CallbackHolder {
+    cb: i64,
+}
+
+fn sample_wnd_proc(hwnd: i64, msg: i64, wparam: i64, lparam: i64): i64 {
+    hwnd + msg + wparam + lparam
+}
+
+fn verify_callback(p: i64): i64 {
+    if p != 0 {
+        return 1;
+    }
+    0
+}
+
+fn main(): i64 {
+    println("=== Running Win32 Callback & GDI/Multimedia Test ===");
+
+    // 1. Function symbol address resolution to variable
+    var fn_ptr = sample_wnd_proc;
+    assert(fn_ptr != 0, "Function symbol resolved to non-zero address");
+
+    // 2. Function symbol address resolution in struct field
+    var holder = CallbackHolder {
+        cb: sample_wnd_proc,
+    };
+    assert(holder.cb != 0, "Function symbol in struct field is non-zero");
+    assert(holder.cb == fn_ptr, "Struct field callback matches variable callback address");
+
+    // 3. Passing function symbol directly to a function
+    var direct_res = verify_callback(sample_wnd_proc);
+    assert_eq(direct_res, 1, "Direct function identifier passed as argument");
+
+    // 4. Verify WinMM -lwinmm link (timeGetTime)
+    var t = timeGetTime();
+    assert(t >= 0, "timeGetTime from winmm returned valid tick count");
+
+    // 5. Verify GDI32 -lgdi32 link (GetStockObject: 0 = WHITE_BRUSH)
+    var brush = GetStockObject(0);
+    assert(brush != 0, "GetStockObject from gdi32 returned valid GDI handle");
+
+    println("All Win32 Callback, GDI, and Multimedia tests passed!");
+    0
+}
