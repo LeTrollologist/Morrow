@@ -8,6 +8,7 @@ Thumbs.db
 
 # Build & Compilation Artifacts
 *.exe
+!bin/*.exe
 *.dll
 *.pdb
 *.o

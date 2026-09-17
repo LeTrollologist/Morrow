@@ -1,0 +1,399 @@
+// Tungsten Self-Hosting Compiler - JSON Parser & Serializer for JSON-RPC (json.tg)
+// High-speed, region-allocated JSON parser conforming to 8-field layout
+
+import std::collections;
+
+extern "C" {
+    fn strlen(s: *const u8) -> usize;
+    fn strcmp(s1: *const u8, s2: *const u8) -> i32;
+    fn tungsten_region_alloc(arena: *mut u8, size: usize, align: usize) -> *mut u8;
+}
+
+pub fn json_null() -> i64 { 0 }
+pub fn json_bool() -> i64 { 1 }
+pub fn json_int() -> i64 { 2 }
+pub fn json_str() -> i64 { 3 }
+pub fn json_array() -> i64 { 4 }
+pub fn json_object() -> i64 { 5 }
+
+pub struct JsonValue {
+    kind: i64,
+    sym: i64,
+    int_val: i64,
+    str_val: String,
+    op: i64,
+    left: *mut JsonValue,
+    right: *mut JsonValue,
+    args: Vec<*mut JsonValue>,
+}
+
+pub fn alloc_json_val(arena: *mut u8, kind: i64) -> *mut JsonValue {
+    let p = unsafe {
+        tungsten_region_alloc(arena, 64, 8) as *mut JsonValue
+    };
+    let null_val = 0 as *mut JsonValue;
+    let empty_vec: Vec<*mut JsonValue> = vec_new_in(arena);
+    unsafe {
+        p.kind = kind;
+        p.sym = 0;
+        p.int_val = 0;
+        p.str_val = "";
+        p.op = 0;
+        p.left = null_val;
+        p.right = null_val;
+        p.args = empty_vec;
+    }
+    p
+}
+
+pub fn json_create_str(arena: *mut u8, s: String) -> *mut JsonValue {
+    let val = alloc_json_val(arena, json_str());
+    unsafe {
+        val.str_val = s;
+    }
+    val
+}
+
+pub fn json_create_int(arena: *mut u8, n: i64) -> *mut JsonValue {
+    let val = alloc_json_val(arena, json_int());
+    unsafe {
+        val.int_val = n;
+    }
+    val
+}
+
+pub fn json_create_bool(arena: *mut u8, b: bool) -> *mut JsonValue {
+    let val = alloc_json_val(arena, json_bool());
+    unsafe {
+        if b {
+            val.int_val = 1;
+        } else {
+            val.int_val = 0;
+        }
+    }
+    val
+}
+
+pub fn json_create_object(arena: *mut u8) -> *mut JsonValue {
+    alloc_json_val(arena, json_object())
+}
+
+pub fn json_create_array(arena: *mut u8) -> *mut JsonValue {
+    alloc_json_val(arena, json_array())
+}
+
+pub fn json_set_field(obj: *mut JsonValue, key: String, val: *mut JsonValue, arena: *mut u8) {
+    if (val as usize) != 0 {
+        unsafe {
+            // Store key string in val.left's str_val or separate node
+            let key_node = alloc_json_val(arena, json_str());
+            key_node.str_val = key;
+            val.left = key_node;
+            vec_push(&mut obj.args, val);
+        }
+    }
+}
+
+pub fn json_get_field(obj: *mut JsonValue, key: String) -> *mut JsonValue {
+    let null_val = 0 as *mut JsonValue;
+    if (obj as usize) == 0 {
+        return null_val;
+    }
+    if obj.kind != json_object() {
+        return null_val;
+    }
+    let mut i: i64 = 0;
+    while i < obj.args.len {
+        let child = vec_get(&obj.args, i);
+        if (child.left as usize) != 0 {
+            let mut matches = false;
+            unsafe {
+                if strcmp(child.left.str_val as *const u8, key as *const u8) == 0 {
+                    matches = true;
+                }
+            }
+            if matches {
+                return child;
+            }
+        }
+        i = i + 1;
+    }
+    null_val
+}
+
+pub fn json_get_str(obj: *mut JsonValue, key: String) -> String {
+    let fld = json_get_field(obj, key);
+    if (fld as usize) == 0 {
+        return "";
+    }
+    if fld.kind == json_str() {
+        return fld.str_val;
+    }
+    ""
+}
+
+pub fn json_get_int(obj: *mut JsonValue, key: String) -> i64 {
+    let fld = json_get_field(obj, key);
+    if (fld as usize) == 0 {
+        return 0;
+    }
+    if fld.kind == json_int() {
+        return fld.int_val;
+    }
+    0
+}
+
+fn json_skip_ws(src: *const u8, start_pos: i64, len: i64) -> i64 {
+    let mut pos = start_pos;
+    while pos < len {
+        let b = unsafe { src[pos] };
+        if b == 32 || b == 9 || b == 10 || b == 13 {
+            pos = pos + 1;
+        } else {
+            break;
+        }
+    }
+    pos
+}
+
+fn json_parse_string(src: *const u8, start_pos: i64, len: i64, arena: *mut u8) -> *mut JsonValue {
+    let mut pos = start_pos + 1; // skip initial quote
+    let start = pos;
+    while pos < len && unsafe { src[pos] } != 34 {
+        if unsafe { src[pos] } == 92 && pos + 1 < len { // escape \
+            pos = pos + 2;
+        } else {
+            pos = pos + 1;
+        }
+    }
+    let slen = pos - start;
+    let sptr = (src as usize + start as usize) as *const u8;
+    let mut sbuf = string_buffer_from_utf8_in(arena, sptr, slen);
+    string_buffer_push_byte(&mut sbuf, 0 as u8);
+    let s = string_as_ptr(&sbuf) as String;
+    let val = json_create_str(arena, s);
+    val.op = pos + 1; // store end pos in op
+    val
+}
+
+fn json_parse_number(src: *const u8, start_pos: i64, len: i64, arena: *mut u8) -> *mut JsonValue {
+    let mut pos = start_pos;
+    let mut is_neg = false;
+    if pos < len {
+        if unsafe { src[pos] } == 45 { // '-'
+            is_neg = true;
+            pos = pos + 1;
+        }
+    }
+    let mut num: i64 = 0;
+    while pos < len {
+        let b = unsafe { src[pos] };
+        if b >= 48 && b <= 57 {
+            num = num * 10 + (b - 48) as i64;
+            pos = pos + 1;
+        } else {
+            break;
+        }
+    }
+    if is_neg {
+        num = 0 - num;
+    }
+    let val = json_create_int(arena, num);
+    val.op = pos;
+    val
+}
+
+pub fn json_parse_value(src: *const u8, start_pos: i64, len: i64, arena: *mut u8) -> *mut JsonValue {
+    let mut pos = json_skip_ws(src, start_pos, len);
+    if pos >= len {
+        return alloc_json_val(arena, json_null());
+    }
+
+    let b = unsafe { src[pos] };
+
+    // String
+    if b == 34 {
+        return json_parse_string(src, pos, len, arena);
+    }
+
+    // Number
+    if b >= 48 && b <= 57 {
+        return json_parse_number(src, pos, len, arena);
+    }
+    if b == 45 {
+        return json_parse_number(src, pos, len, arena);
+    }
+
+    // Object: { ... }
+    if b == 123 {
+        pos = pos + 1;
+        let obj = json_create_object(arena);
+        loop {
+            pos = json_skip_ws(src, pos, len);
+            if pos >= len || unsafe { src[pos] } == 125 { // '}'
+                pos = pos + 1;
+                break;
+            }
+
+            // Parse key
+            if unsafe { src[pos] } == 34 {
+                let key_val = json_parse_string(src, pos, len, arena);
+                pos = json_skip_ws(src, key_val.op, len);
+                if pos < len && unsafe { src[pos] } == 58 { // ':'
+                    pos = pos + 1;
+                    let val = json_parse_value(src, pos, len, arena);
+                    json_set_field(obj, key_val.str_val, val, arena);
+                    pos = json_skip_ws(src, val.op, len);
+                    if pos < len && unsafe { src[pos] } == 44 { // ','
+                        pos = pos + 1;
+                    }
+                }
+            } else {
+                pos = pos + 1;
+            }
+        }
+        obj.op = pos;
+        return obj;
+    }
+
+    // Array: [ ... ]
+    if b == 91 {
+        pos = pos + 1;
+        let arr = json_create_array(arena);
+        loop {
+            pos = json_skip_ws(src, pos, len);
+            if pos >= len || unsafe { src[pos] } == 93 { // ']'
+                pos = pos + 1;
+                break;
+            }
+            let elem = json_parse_value(src, pos, len, arena);
+            vec_push(&mut arr.args, elem);
+            pos = json_skip_ws(src, elem.op, len);
+            if pos < len && unsafe { src[pos] } == 44 { // ','
+                pos = pos + 1;
+            }
+        }
+        arr.op = pos;
+        return arr;
+    }
+
+    // Boolean or null
+    if b == 116 { // 't' (true)
+        let v = json_create_bool(arena, true);
+        v.op = pos + 4;
+        return v;
+    }
+    if b == 102 { // 'f' (false)
+        let v = json_create_bool(arena, false);
+        v.op = pos + 5;
+        return v;
+    }
+
+    let null_val = alloc_json_val(arena, json_null());
+    null_val.op = pos + 1;
+    null_val
+}
+
+pub fn json_parse(src: String, arena: *mut u8) -> *mut JsonValue {
+    let p = src as *const u8;
+    let len = unsafe { strlen(p) } as i64;
+    json_parse_value(p, 0, len, arena)
+}
+
+fn json_emit_digits(b: &mut StringBuffer, num: i64) {
+    if num >= 10 {
+        json_emit_digits(b, num / 10);
+    }
+    let d = (num - (num / 10) * 10) as u8 + 48 as u8;
+    string_buffer_push_byte(b, d);
+}
+
+fn json_serialize_helper(buf: &mut StringBuffer, val: *mut JsonValue) {
+    if (val as usize) == 0 {
+        let s = "null";
+        string_buffer_push_str(buf, s as *const u8, 4);
+        return;
+    }
+    if val.kind == json_null() {
+        let s = "null";
+        string_buffer_push_str(buf, s as *const u8, 4);
+        return;
+    }
+
+    if val.kind == json_bool() {
+        if val.int_val == 1 {
+            let s = "true";
+            string_buffer_push_str(buf, s as *const u8, 4);
+        } else {
+            let s = "false";
+            string_buffer_push_str(buf, s as *const u8, 5);
+        }
+        return;
+    }
+
+    if val.kind == json_int() {
+        if val.int_val == 0 {
+            string_buffer_push_byte(buf, 48 as u8);
+            return;
+        }
+        let mut n = val.int_val;
+        if n < 0 {
+            string_buffer_push_byte(buf, 45 as u8);
+            n = 0 - n;
+        }
+        json_emit_digits(buf, n);
+        return;
+    }
+
+    if val.kind == json_str() {
+        string_buffer_push_byte(buf, 34 as u8);
+        let s_len = unsafe { strlen(val.str_val as *const u8) } as i64;
+        string_buffer_push_str(buf, val.str_val as *const u8, s_len);
+        string_buffer_push_byte(buf, 34 as u8);
+        return;
+    }
+
+    if val.kind == json_object() {
+        string_buffer_push_byte(buf, 123 as u8); // '{'
+        let mut i: i64 = 0;
+        while i < val.args.len {
+            if i > 0 {
+                string_buffer_push_byte(buf, 44 as u8); // ','
+            }
+            let child = vec_get(&val.args, i);
+            if (child.left as usize) != 0 {
+                string_buffer_push_byte(buf, 34 as u8);
+                let k_len = unsafe { strlen(child.left.str_val as *const u8) } as i64;
+                string_buffer_push_str(buf, child.left.str_val as *const u8, k_len);
+                string_buffer_push_byte(buf, 34 as u8);
+                string_buffer_push_byte(buf, 58 as u8); // ':'
+                json_serialize_helper(buf, child);
+            }
+            i = i + 1;
+        }
+        string_buffer_push_byte(buf, 125 as u8); // '}'
+        return;
+    }
+
+    if val.kind == json_array() {
+        string_buffer_push_byte(buf, 91 as u8); // '['
+        let mut i: i64 = 0;
+        while i < val.args.len {
+            if i > 0 {
+                string_buffer_push_byte(buf, 44 as u8); // ','
+            }
+            let child = vec_get(&val.args, i);
+            json_serialize_helper(buf, child);
+            i = i + 1;
+        }
+        string_buffer_push_byte(buf, 93 as u8); // ']'
+        return;
+    }
+}
+
+pub fn json_serialize(val: *mut JsonValue, arena: *mut u8) -> String {
+    let mut buf = string_buffer_new_in(arena);
+    json_serialize_helper(&mut buf, val);
+    string_buffer_push_byte(&mut buf, 0 as u8);
+    string_as_ptr(&buf) as String
+}

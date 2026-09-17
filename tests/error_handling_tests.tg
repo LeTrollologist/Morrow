@@ -1,0 +1,33 @@
+// Pure Tungsten Test Suite: Diagnostic Reporting & Error Handling
+import std::test;
+import compiler::diagnostics;
+
+fn test_diagnostic_reporting() yields [Diagnostics] {
+    let ok_err = report_err("Sample expected test error diagnostic", 42, 10);
+    assert(ok_err, "report_err returns true on dispatched diagnostic");
+
+    let ok_warn = report_warn("Sample expected test warning diagnostic", 42, 15);
+    assert(ok_warn, "report_warn returns true on dispatched warning");
+}
+
+fn safe_div(a: i64, b: i64) -> i64 yields [Diagnostics] {
+    if b == 0 {
+        report_err("Division by zero prevented", 1, 1);
+        return 0;
+    }
+    a / b
+}
+
+fn main() yields [Diagnostics] {
+    test_print("=== Running Error Handling & Diagnostics Test Suite ===");
+
+    test_diagnostic_reporting();
+
+    let d1 = safe_div(100, 5);
+    assert_eq(d1, 20, "Safe division non-zero");
+
+    let d2 = safe_div(100, 0);
+    assert_eq(d2, 0, "Safe division zero-divisor handling");
+
+    test_print("All error handling tests passed!");
+}

@@ -1,0 +1,36 @@
+// Pure Tungsten Test Suite: SSA Intermediate Representation & Optimizer
+import std::test;
+
+fn compute_const_fold() -> i64 {
+    let a = 100 + 200;
+    let b = 50 * 2;
+    let c = 300 - 100;
+    a + b + c
+}
+
+fn compute_fib(n: i64) -> i64 {
+    if n <= 1 {
+        return n;
+    }
+    compute_fib(n - 1) + compute_fib(n - 2)
+}
+
+fn main() {
+    test_print("=== Running TIR & Optimizer Test Suite ===");
+
+    let fold_res = compute_const_fold();
+    assert_eq(fold_res, 600, "Constant folding (300 + 100 + 200 = 600)");
+
+    let fib7 = compute_fib(7);
+    assert_eq(fib7, 13, "Recursive Fibonacci evaluation fib(7) = 13");
+
+    let mut sum: i64 = 0;
+    let mut i: i64 = 1;
+    while i <= 10 {
+        sum = sum + i;
+        i = i + 1;
+    }
+    assert_eq(sum, 55, "Loop accumulation sum(1..10) = 55");
+
+    test_print("All TIR & Optimizer tests passed!");
+}

@@ -8,6 +8,7 @@ import compiler::interner;
 extern "C" {
     fn strlen(s: *const u8) -> usize;
     fn strcmp(s1: *const u8, s2: *const u8) -> i32;
+    fn strncmp(s1: *const u8, s2: *const u8, n: usize) -> i32;
 }
 
 pub struct Codegen {
@@ -205,10 +206,16 @@ fn is_byte_indexing(cg: &mut Codegen, left: *mut AstExpr) -> bool {
     if left.kind == expr_var() {
         let s = interner_lookup(interner_ref, left.sym);
         let p = s as *const u8;
-        if unsafe { strcmp(p, "ptr" as *const u8) == 0 } { return true; }
-        if unsafe { strcmp(p, "text" as *const u8) == 0 } { return true; }
-        if unsafe { strcmp(p, "cmd" as *const u8) == 0 } { return true; }
-        return false;
+        if unsafe {
+            strcmp(p, "old_keys" as *const u8) == 0 ||
+            strcmp(p, "old_vals" as *const u8) == 0 ||
+            strcmp(p, "old_occ" as *const u8) == 0 ||
+            strcmp(p, "ptr_slot" as *const u8) == 0 ||
+            strcmp(p, "stmt_slot" as *const u8) == 0
+        } {
+            return false;
+        }
+        return true;
     }
     true
 }
@@ -1523,6 +1530,7 @@ pub fn emit_llvm_ir(prog_ptr: *mut AstProgram, interner: &mut Interner, arena: *
     emit_str(&mut cg, "declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)\n");
     emit_str(&mut cg, "declare i64 @strlen(ptr)\n");
     emit_str(&mut cg, "declare i32 @strcmp(ptr, ptr)\n");
+    emit_str(&mut cg, "declare i32 @strncmp(ptr, ptr, i64)\n");
     emit_str(&mut cg, "declare ptr @fopen(ptr, ptr)\n");
     emit_str(&mut cg, "declare i32 @fclose(ptr)\n");
     emit_str(&mut cg, "declare i64 @fread(ptr, i64, i64, ptr)\n");
@@ -1534,6 +1542,74 @@ pub fn emit_llvm_ir(prog_ptr: *mut AstProgram, interner: &mut Interner, arena: *
     emit_str(&mut cg, "declare i32 @printf(ptr, ...)\n");
     emit_str(&mut cg, "declare i32 @puts(ptr)\n");
     emit_str(&mut cg, "declare i32 @fflush(ptr)\n\n");
+
+    // User / Library External Function Declarations
+    let mut declared_syms: Vec<i64> = vec_new_in(arena);
+    let mut ei: i64 = 0;
+    while ei < prog_ptr.extern_fns.len {
+        let ef = vec_get(&prog_ptr.extern_fns, ei);
+        let ef_name = interner_lookup(interner, ef.name_sym);
+        let mut is_builtin = false;
+        let pef = ef_name as *const u8;
+        let l = unsafe { strlen(pef) } as i64;
+        if l >= 9 {
+            if unsafe { strncmp(pef, "tungsten_" as *const u8, 9) == 0 } {
+                is_builtin = true;
+            }
+        }
+        if !is_builtin {
+            unsafe {
+                if strcmp(pef, "malloc" as *const u8) == 0 ||
+                   strcmp(pef, "realloc" as *const u8) == 0 ||
+                   strcmp(pef, "free" as *const u8) == 0 ||
+                   strcmp(pef, "memset" as *const u8) == 0 ||
+                   strcmp(pef, "strlen" as *const u8) == 0 ||
+                   strcmp(pef, "strcmp" as *const u8) == 0 ||
+                   strcmp(pef, "strncmp" as *const u8) == 0 ||
+                   strcmp(pef, "fopen" as *const u8) == 0 ||
+                   strcmp(pef, "fclose" as *const u8) == 0 ||
+                   strcmp(pef, "fread" as *const u8) == 0 ||
+                   strcmp(pef, "fwrite" as *const u8) == 0 ||
+                   strcmp(pef, "fseek" as *const u8) == 0 ||
+                   strcmp(pef, "ftell" as *const u8) == 0 ||
+                   strcmp(pef, "system" as *const u8) == 0 ||
+                   strcmp(pef, "GetCommandLineA" as *const u8) == 0 ||
+                   strcmp(pef, "printf" as *const u8) == 0 ||
+                   strcmp(pef, "puts" as *const u8) == 0 ||
+                   strcmp(pef, "fflush" as *const u8) == 0 {
+                    is_builtin = true;
+                }
+            }
+        }
+        if !is_builtin {
+            let mut already_declared = false;
+            let mut di: i64 = 0;
+            while di < declared_syms.len {
+                if vec_get(&declared_syms, di) == ef.name_sym {
+                    already_declared = true;
+                    break;
+                }
+                di = di + 1;
+            }
+            if !already_declared {
+                vec_push(&mut declared_syms, ef.name_sym);
+                emit_str(&mut cg, "declare i64 @");
+                emit_str(&mut cg, ef_name);
+                emit_str(&mut cg, "(");
+                let mut pi: i64 = 0;
+                while pi < ef.params.len {
+                    if pi > 0 {
+                        emit_str(&mut cg, ", ");
+                    }
+                    emit_str(&mut cg, "i64");
+                    pi = pi + 1;
+                }
+                emit_str(&mut cg, ")\n");
+            }
+        }
+        ei = ei + 1;
+    }
+    emit_str(&mut cg, "\n");
 
     // Constants & Strings
     emit_str(&mut cg, "@fmt_int = internal constant [6 x i8] c\"%lld\\0A\\00\"\n");

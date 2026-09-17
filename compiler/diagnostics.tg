@@ -9,7 +9,7 @@ extern "C" {
 
 pub fn report_err(msg: String, line: i64, col: i64) -> bool yields [Diagnostics] {
     unsafe {
-        printf("[PARSER ERROR] %s (line %lld, col %lld)\n" as *const u8, msg as *const u8, line, col);
+        printf("[ERROR] %s (line %lld, col %lld)\n" as *const u8, msg as *const u8, line, col);
         fflush(0 as *const u8);
     }
     true
@@ -17,7 +17,7 @@ pub fn report_err(msg: String, line: i64, col: i64) -> bool yields [Diagnostics]
 
 pub fn report_warn(msg: String, line: i64, col: i64) -> bool yields [Diagnostics] {
     unsafe {
-        printf("[PARSER WARN] %s (line %lld, col %lld)\n" as *const u8, msg as *const u8, line, col);
+        printf("[WARN] %s (line %lld, col %lld)\n" as *const u8, msg as *const u8, line, col);
         fflush(0 as *const u8);
     }
     true

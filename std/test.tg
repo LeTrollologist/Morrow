@@ -1,0 +1,61 @@
+// Tungsten Standard Library - Native Test Framework (test.tg)
+// Pure Tungsten test runner and assertion utilities
+
+extern "C" {
+    fn strcmp(s1: *const u8, s2: *const u8) -> i32;
+    fn puts(s: *const u8) -> i32;
+    fn fflush(f: *const u8) -> i32;
+    fn exit(status: i32);
+}
+
+pub fn test_print(msg: String) {
+    unsafe {
+        puts(msg as *const u8);
+        fflush(0 as *const u8);
+    }
+}
+
+pub fn assert(cond: bool, test_name: String) {
+    if !cond {
+        test_print("[FAIL] Assertion failed: ");
+        test_print(test_name);
+        unsafe {
+            exit(1);
+        }
+    } else {
+        test_print("  test ");
+        test_print(test_name);
+        test_print(" ... ok");
+    }
+}
+
+pub fn assert_eq(actual: i64, expected: i64, test_name: String) {
+    if actual != expected {
+        test_print("[FAIL] Assertion equality failed: ");
+        test_print(test_name);
+        unsafe {
+            exit(1);
+        }
+    } else {
+        test_print("  test ");
+        test_print(test_name);
+        test_print(" ... ok");
+    }
+}
+
+pub fn assert_str_eq(actual: String, expected: String, test_name: String) {
+    let matches = unsafe {
+        strcmp(actual as *const u8, expected as *const u8) == 0
+    };
+    if !matches {
+        test_print("[FAIL] String equality assertion failed: ");
+        test_print(test_name);
+        unsafe {
+            exit(1);
+        }
+    } else {
+        test_print("  test ");
+        test_print(test_name);
+        test_print(" ... ok");
+    }
+}

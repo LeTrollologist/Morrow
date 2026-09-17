@@ -16,6 +16,8 @@ import compiler::codegen;
 import compiler::fmt;
 import compiler::package;
 import compiler::forge;
+import compiler::json;
+import compiler::lsp;
 
 extern "C" {
     fn strlen(s: *const u8) -> usize;
@@ -71,169 +73,9 @@ fn parse_cli_args(arena: *mut u8) -> Vec<String> {
     args
 }
 
-fn load_source_bundle(src_path: String, arena: *mut u8) -> String yields [FS] {
-    let is_compiler = unsafe {
-        strcmp(src_path as *const u8, "compiler/main.tg" as *const u8) == 0 ||
-        strcmp(src_path as *const u8, "compiler\\main.tg" as *const u8) == 0
-    };
-    if !is_compiler {
-        return fs_read_to_string_in(src_path, arena);
-    }
 
-    let mut buf = string_buffer_new_in(arena);
-
-    // Read and bundle std/collections.tg
-    let mod_coll = fs_read_to_string_in("std/collections.tg", arena);
-    let len_coll = unsafe { strlen(mod_coll as *const u8) } as i64;
-    string_buffer_push_str(&mut buf, mod_coll as *const u8, len_coll);
-    string_buffer_push_byte(&mut buf, 10 as u8);
-
-    // Read and bundle compiler/diagnostics.tg
-    let mod_diag = fs_read_to_string_in("compiler/diagnostics.tg", arena);
-    let len_diag = unsafe { strlen(mod_diag as *const u8) } as i64;
-    string_buffer_push_str(&mut buf, mod_diag as *const u8, len_diag);
-    string_buffer_push_byte(&mut buf, 10 as u8);
-
-    // Read and bundle compiler/interner.tg
-    let mod_intern = fs_read_to_string_in("compiler/interner.tg", arena);
-    let len_intern = unsafe { strlen(mod_intern as *const u8) } as i64;
-    string_buffer_push_str(&mut buf, mod_intern as *const u8, len_intern);
-    string_buffer_push_byte(&mut buf, 10 as u8);
-
-    // Read and bundle compiler/ast.tg
-    let mod_ast = fs_read_to_string_in("compiler/ast.tg", arena);
-    let len_ast = unsafe { strlen(mod_ast as *const u8) } as i64;
-    string_buffer_push_str(&mut buf, mod_ast as *const u8, len_ast);
-    string_buffer_push_byte(&mut buf, 10 as u8);
-
-    // Read and bundle compiler/lexer.tg
-    let mod_lex = fs_read_to_string_in("compiler/lexer.tg", arena);
-    let len_lex = unsafe { strlen(mod_lex as *const u8) } as i64;
-    string_buffer_push_str(&mut buf, mod_lex as *const u8, len_lex);
-    string_buffer_push_byte(&mut buf, 10 as u8);
-
-    // Read and bundle compiler/parser.tg
-    let mod_parse = fs_read_to_string_in("compiler/parser.tg", arena);
-    let len_parse = unsafe { strlen(mod_parse as *const u8) } as i64;
-    string_buffer_push_str(&mut buf, mod_parse as *const u8, len_parse);
-    string_buffer_push_byte(&mut buf, 10 as u8);
-
-    // Read and bundle compiler/typeck.tg
-    let mod_tc = fs_read_to_string_in("compiler/typeck.tg", arena);
-    let len_tc = unsafe { strlen(mod_tc as *const u8) } as i64;
-    string_buffer_push_str(&mut buf, mod_tc as *const u8, len_tc);
-    string_buffer_push_byte(&mut buf, 10 as u8);
-
-    // Read and bundle compiler/tir.tg
-    let mod_tir = fs_read_to_string_in("compiler/tir.tg", arena);
-    let len_tir = unsafe { strlen(mod_tir as *const u8) } as i64;
-    string_buffer_push_str(&mut buf, mod_tir as *const u8, len_tir);
-    string_buffer_push_byte(&mut buf, 10 as u8);
-
-    // Read and bundle compiler/opt.tg
-    let mod_opt = fs_read_to_string_in("compiler/opt.tg", arena);
-    let len_opt = unsafe { strlen(mod_opt as *const u8) } as i64;
-    string_buffer_push_str(&mut buf, mod_opt as *const u8, len_opt);
-    string_buffer_push_byte(&mut buf, 10 as u8);
-
-    // Read and bundle compiler/codegen.tg
-    let mod_cg = fs_read_to_string_in("compiler/codegen.tg", arena);
-    let len_cg = unsafe { strlen(mod_cg as *const u8) } as i64;
-    string_buffer_push_str(&mut buf, mod_cg as *const u8, len_cg);
-    string_buffer_push_byte(&mut buf, 10 as u8);
-
-    // Read and bundle compiler/fmt.tg
-    let mod_fmt = fs_read_to_string_in("compiler/fmt.tg", arena);
-    let len_fmt = unsafe { strlen(mod_fmt as *const u8) } as i64;
-    string_buffer_push_str(&mut buf, mod_fmt as *const u8, len_fmt);
-    string_buffer_push_byte(&mut buf, 10 as u8);
-
-    // Read and bundle compiler/package.tg
-    let mod_pkg = fs_read_to_string_in("compiler/package.tg", arena);
-    let len_pkg = unsafe { strlen(mod_pkg as *const u8) } as i64;
-    string_buffer_push_str(&mut buf, mod_pkg as *const u8, len_pkg);
-    string_buffer_push_byte(&mut buf, 10 as u8);
-
-    // Read and bundle compiler/forge.tg
-    let mod_forge = fs_read_to_string_in("compiler/forge.tg", arena);
-    let len_forge = unsafe { strlen(mod_forge as *const u8) } as i64;
-    string_buffer_push_str(&mut buf, mod_forge as *const u8, len_forge);
-    string_buffer_push_byte(&mut buf, 10 as u8);
-
-    // Read and bundle compiler/main.tg
-    let mod_main = fs_read_to_string_in("compiler/main.tg", arena);
-    let len_main = unsafe { strlen(mod_main as *const u8) } as i64;
-    string_buffer_push_str(&mut buf, mod_main as *const u8, len_main);
-    string_buffer_push_byte(&mut buf, 10 as u8);
-    string_buffer_push_byte(&mut buf, 0 as u8);
-
-    string_as_ptr(&buf) as String
-}
-
-pub fn compile_file(src_path: String, out_ll_path: String, out_exe_path: String) -> i64 yields [FS, Process, Diagnostics, IO] {
-    let mut exit_code: i64 = 0;
-    print_msg("TGC: Entering compile_file region...");
-    region comp_reg {
-        print_msg("TGC: Reading source file...");
-        let src = load_source_bundle(src_path, comp_reg);
-        let src_len = unsafe { strlen(src as *const u8) } as i64;
-        if src_len == 0 {
-            report_err("Failed to read source file", 1, 1);
-            exit_code = 1;
-        } else {
-            print_msg("TGC: Creating interner...");
-            let mut interner = interner_new_in(comp_reg);
-            print_msg("TGC: Tokenizing...");
-            let mut tokens = tokenize(src, &mut interner, comp_reg);
-            print_msg("TGC: Parsing...");
-            let prog = parse_program(tokens, &mut interner, comp_reg);
-            print_msg("TGC: Type checking & solving refinements...");
-            let tc_ok = typecheck_program(prog, &mut interner, comp_reg);
-            if !tc_ok {
-                report_err("Type checking failed", 1, 1);
-                exit_code = 1;
-            } else {
-                print_msg("TGC: Lowering to TIR & optimizing...");
-                let tir_mod = lower_ast_program_to_tir(prog, comp_reg);
-                let opt_count = tir_optimize_module(tir_mod, comp_reg);
-
-                print_msg("TGC: Emitting LLVM IR...");
-                let mut ir_buf = emit_llvm_ir(prog, &mut interner, comp_reg);
-                string_buffer_push_byte(&mut ir_buf, 0 as u8);
-                let ir_str = string_as_ptr(&ir_buf) as String;
-
-                print_msg("TGC: Writing LLVM IR to disk...");
-                let ok_write = fs_write_string(out_ll_path, ir_str);
-                if !ok_write {
-                    report_err("Failed to write LLVM IR file", 1, 1);
-                    exit_code = 2;
-                } else {
-                    print_msg("TGC: Invoking clang...");
-                    let mut cmd_args = string_buffer_new_in(comp_reg);
-                    let opt_prefix = "--target=x86_64-pc-windows-gnu -nostartfiles -o ";
-                    let opt_suffix = " target/crt/crt2.o -Ltarget/crt -lmingw32 -lmingwex -lmsvcrt -lkernel32 -luser32 -lws2_32 -lgcc";
-                    string_buffer_push_str(&mut cmd_args, opt_prefix as *const u8, unsafe { strlen(opt_prefix as *const u8) } as i64);
-                    string_buffer_push_str(&mut cmd_args, out_exe_path as *const u8, unsafe { strlen(out_exe_path as *const u8) } as i64);
-                    string_buffer_push_byte(&mut cmd_args, 32 as u8);
-                    string_buffer_push_str(&mut cmd_args, out_ll_path as *const u8, unsafe { strlen(out_ll_path as *const u8) } as i64);
-                    string_buffer_push_str(&mut cmd_args, opt_suffix as *const u8, unsafe { strlen(opt_suffix as *const u8) } as i64);
-                    string_buffer_push_byte(&mut cmd_args, 0 as u8);
-                    let args_str = string_as_ptr(&cmd_args) as String;
-
-                    let status = process_exec("clang", args_str);
-                    if status != 0 {
-                        report_err("Clang failed to link executable", 1, 1);
-                        exit_code = 3;
-                    }
-                }
-            }
-        }
-    }
-    return exit_code;
-}
 
 fn main() -> i64 yields [FS, Process, Diagnostics, IO] {
-    print_msg("TGC: FIRST LINE OF MAIN");
     region main_reg {
         let args = parse_cli_args(main_reg);
 
@@ -244,7 +86,9 @@ fn main() -> i64 yields [FS, Process, Diagnostics, IO] {
                 strcmp(p1, "check" as *const u8) == 0 ||
                 strcmp(p1, "build" as *const u8) == 0 ||
                 strcmp(p1, "run" as *const u8) == 0 ||
+                strcmp(p1, "test" as *const u8) == 0 ||
                 strcmp(p1, "fmt" as *const u8) == 0 ||
+                strcmp(p1, "lsp" as *const u8) == 0 ||
                 strcmp(p1, "new" as *const u8) == 0 ||
                 strcmp(p1, "clean" as *const u8) == 0 ||
                 strcmp(p1, "version" as *const u8) == 0 ||
