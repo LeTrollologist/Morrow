@@ -115,6 +115,18 @@ pub fn parse_type(p: &mut Parser) -> i64 {
                 }
                 advance(p);
             }
+        } else if check(p, tok_lbracket()) {
+            advance(p); // consume [
+            while !check(p, tok_rbracket()) && !check(p, tok_eof()) {
+                advance(p);
+            }
+            expect(p, tok_rbracket(), "Expected ']' after refinement interval");
+        } else if check(p, tok_lparen()) {
+            advance(p); // consume (
+            while !check(p, tok_rparen()) && !check(p, tok_eof()) {
+                advance(p);
+            }
+            expect(p, tok_rparen(), "Expected ')' after refinement");
         }
         return sym;
     }
@@ -299,24 +311,24 @@ fn parse_block(p: &mut Parser) -> Vec<*mut AstStmt> yields [Diagnostics] {
 pub fn parse_stmt(p: &mut Parser) -> *mut AstStmt yields [Diagnostics] {
     let kind = current_kind(p);
 
-    if kind == tok_kw_let() {
-        advance(p); // consume let
+    if kind == tok_kw_let() || kind == tok_kw_var() {
+        advance(p); // consume let or var
         if check(p, tok_kw_mut()) {
             advance(p); // consume mut
         }
-        let name_tok = expect(p, tok_ident(), "Expected variable name after 'let'");
+        let name_tok = expect(p, tok_ident(), "Expected variable name");
         let sym = name_tok.sym;
         let mut ty_sym: i64 = 0;
         if check(p, tok_colon()) {
             advance(p); // consume :
             ty_sym = parse_type(p);
         }
-        expect(p, tok_eq(), "Expected '=' in let binding");
+        expect(p, tok_eq(), "Expected '=' in variable declaration");
         let mut init_expr = parse_expr(p);
         if ty_sym != 0 {
             init_expr = alloc_expr_cast(p.arena, init_expr, ty_sym);
         }
-        expect(p, tok_semicolon(), "Expected ';' after let statement");
+        expect(p, tok_semicolon(), "Expected ';' after variable declaration");
         return alloc_stmt_let(p.arena, sym, init_expr);
     }
 
@@ -461,8 +473,8 @@ pub fn parse_extern_fn(p: &mut Parser) -> *mut AstExternFn yields [Diagnostics] 
     expect(p, tok_rparen(), "Expected ')' after parameter list");
 
     let mut ret_ty_sym: i64 = 0;
-    if check(p, tok_arrow()) {
-        advance(p); // consume ->
+    if check(p, tok_arrow()) || check(p, tok_colon()) {
+        advance(p); // consume -> or :
         ret_ty_sym = parse_type(p);
     }
     expect(p, tok_semicolon(), "Expected ';' after extern function declaration");
@@ -505,8 +517,8 @@ pub fn parse_fn(p: &mut Parser) -> *mut AstFn yields [Diagnostics] {
     expect(p, tok_rparen(), "Expected ')' after parameter list");
 
     let mut ret_ty_sym: i64 = 0;
-    if check(p, tok_arrow()) {
-        advance(p); // consume ->
+    if check(p, tok_arrow()) || check(p, tok_colon()) {
+        advance(p); // consume -> or :
         ret_ty_sym = parse_type(p);
     }
 

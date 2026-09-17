@@ -1,14 +1,14 @@
 // Tungsten Standard Library - Refinement Types
 // Bounded types mathematically proved at compile-time
 
-// Percentage value guaranteed to be within [0..=100]
-type Percentage = u8(0..=100);
+// Percentage value guaranteed to be within [0..100]
+type Percentage = u8[0..100];
 
-// TCP/UDP network port number [1..=65535]
-type Port = u16(1..=65535);
+// TCP/UDP network port number [1..65535]
+type Port = u16[1..65535];
 
-// Non-zero 32-bit unsigned integer [1..=4294967295]
-type NonZeroU32 = u32(1..=4294967295);
+// Non-zero 32-bit unsigned integer [1..4294967295]
+type NonZeroU32 = u32[1..4294967295];
 
-// Normalized byte range [0..=255]
-type Byte = u8(0..=255);
+// Normalized byte range [0..255]
+type Byte = u8[0..255];

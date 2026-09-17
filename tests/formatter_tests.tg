@@ -1,28 +1,28 @@
 // Pure Tungsten Test Suite: Formatter & Canonical Style
-import std::test;
-import compiler::fmt;
-import compiler::interner;
-import compiler::ast;
-import compiler::lexer;
-import compiler::parser;
+import std.test;
+import compiler.fmt;
+import compiler.interner;
+import compiler.ast;
+import compiler.lexer;
+import compiler.parser;
 
 fn main() {
     test_print("=== Running Formatter Test Suite ===");
 
     region test_reg {
-        let code = "fn add(a: i64, b: i64) -> i64 { return a + b; }\n";
-        let mut interner = interner_new_in(test_reg);
-        let tokens = tokenize(code, &mut interner, test_reg);
-        let prog = parse_program(tokens, &mut interner, test_reg);
-        let formatted1 = fmt_program(prog, &interner, test_reg);
+        var code = "fn add(a: i64, b: i64): i64 { return a + b; }\n";
+        var interner = interner_new_in(test_reg);
+        var tokens = tokenize(code, &mut interner, test_reg);
+        var prog = parse_program(tokens, &mut interner, test_reg);
+        var formatted1 = fmt_program(prog, &interner, test_reg);
 
         assert(unsafe { strlen(formatted1 as *const u8) } > 0, "Formatter produced output");
 
         // Format again to verify idempotency: fmt(fmt(x)) == fmt(x)
-        let mut interner2 = interner_new_in(test_reg);
-        let tokens2 = tokenize(formatted1, &mut interner2, test_reg);
-        let prog2 = parse_program(tokens2, &mut interner2, test_reg);
-        let formatted2 = fmt_program(prog2, &interner2, test_reg);
+        var interner2 = interner_new_in(test_reg);
+        var tokens2 = tokenize(formatted1, &mut interner2, test_reg);
+        var prog2 = parse_program(tokens2, &mut interner2, test_reg);
+        var formatted2 = fmt_program(prog2, &interner2, test_reg);
 
         assert_str_eq(formatted1, formatted2, "Formatter idempotency check (fmt(fmt(x)) == fmt(x))");
     }

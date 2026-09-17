@@ -120,6 +120,8 @@ pub fn tokenize(src: String, interner: &mut Interner, arena: *mut u8) -> Vec<*mu
                 kind = tok_kw_loop();
             } else if unsafe { strcmp(s as *const u8, "break" as *const u8) == 0 } {
                 kind = tok_kw_break();
+            } else if unsafe { strcmp(s as *const u8, "var" as *const u8) == 0 } {
+                kind = tok_kw_var();
             }
 
             let sym = interner_intern(interner, s);

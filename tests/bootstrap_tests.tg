@@ -1,9 +1,9 @@
 // Pure Tungsten Test Suite: Self-Hosting Bootstrap Sanity
-import std::test;
+import std.test;
 
-fn sum_iterative(n: i64) -> i64 {
-    let mut total: i64 = 0;
-    let mut i: i64 = 1;
+fn sum_iterative(n: i64): i64 {
+    var total: i64 = 0;
+    var i: i64 = 1;
     while i <= n {
         total = total + i;
         i = i + 1;
@@ -11,7 +11,7 @@ fn sum_iterative(n: i64) -> i64 {
     total
 }
 
-fn factorial(n: i64) -> i64 {
+fn factorial(n: i64): i64 {
     if n <= 1 {
         return 1;
     }
@@ -21,13 +21,13 @@ fn factorial(n: i64) -> i64 {
 fn main() {
     test_print("=== Running Bootstrap Sanity Test Suite ===");
 
-    let s10 = sum_iterative(10);
+    var s10 = sum_iterative(10);
     assert_eq(s10, 55, "Sum 1..10 = 55");
 
-    let fact5 = factorial(5);
+    var fact5 = factorial(5);
     assert_eq(fact5, 120, "Factorial 5! = 120");
 
-    let fact6 = factorial(6);
+    var fact6 = factorial(6);
     assert_eq(fact6, 720, "Factorial 6! = 720");
 
     test_print("All bootstrap sanity tests passed!");

@@ -1,28 +1,28 @@
 // Pure Tungsten Test Suite: Package Manifest & Resolver
-import std::test;
-import compiler::interner;
-import compiler::package;
+import std.test;
+import compiler.interner;
+import compiler.package;
 
 fn main() {
     test_print("=== Running Package Resolver Test Suite ===");
 
     region test_reg {
-        let toml_sample = "[package]\nname = \"my_pkg\"\nversion = \"1.2.3\"\nedition = \"2026\"\n\n[dependencies]\nmath_lib = { version = \"2.0.0\", path = \"../math_lib\" }\n";
-        let mut interner = interner_new_in(test_reg);
-        let manifest = parse_manifest(toml_sample, &mut interner, test_reg);
+        var toml_sample = "[package]\nname = \"my_pkg\"\nversion = \"1.2.3\"\nedition = \"2026\"\n\n[dependencies]\nmath_lib = { version = \"2.0.0\", path = \"../math_lib\" }\n";
+        var interner = interner_new_in(test_reg);
+        var manifest = parse_manifest(toml_sample, &mut interner, test_reg);
 
-        let pkg_name = interner_lookup(&interner, manifest.sym);
+        var pkg_name = interner_lookup(&interner, manifest.sym);
         assert_str_eq(pkg_name, "my_pkg", "Package name parsing");
 
         assert_str_eq(manifest.str_val, "1.2.3", "Package version parsing");
 
-        let edition_name = interner_lookup(&interner, manifest.op);
+        var edition_name = interner_lookup(&interner, manifest.op);
         assert_str_eq(edition_name, "2026", "Package edition parsing");
 
         assert_eq(manifest.args.len, 1, "Dependency count");
 
-        let dep = vec_get(&manifest.args, 0);
-        let dep_name = interner_lookup(&interner, dep.sym);
+        var dep = vec_get(&manifest.args, 0);
+        var dep_name = interner_lookup(&interner, dep.sym);
         assert_str_eq(dep_name, "math_lib", "Dependency name parsing");
         assert_str_eq(dep.str_val, "../math_lib", "Dependency path parsing");
     }

@@ -160,7 +160,7 @@ pub fn fmt_stmt(buf: &mut StringBuffer, stmt: *mut AstStmt, interner: &Interner,
 
     if stmt.kind == stmt_let() {
         fmt_indent(buf, level);
-        fmt_append_str(buf, "let ");
+        fmt_append_str(buf, "var ");
         let var_name = interner_lookup(interner, stmt.sym);
         fmt_append_str(buf, var_name);
         fmt_append_str(buf, " = ");
@@ -313,7 +313,7 @@ pub fn fmt_fn(buf: &mut StringBuffer, f: *mut AstFn, interner: &Interner, arena:
     }
     fmt_append_str(buf, ")");
     if f.ret_ty_sym != 0 {
-        fmt_append_str(buf, " -> ");
+        fmt_append_str(buf, ": ");
         let rty = interner_lookup(interner, f.ret_ty_sym);
         fmt_append_str(buf, rty);
     }
@@ -369,7 +369,7 @@ pub fn fmt_extern_fn(buf: &mut StringBuffer, ef: *mut AstExternFn, interner: &In
     }
     fmt_append_str(buf, ")");
     if ef.ret_ty_sym != 0 {
-        fmt_append_str(buf, " -> ");
+        fmt_append_str(buf, ": ");
         let rty = interner_lookup(interner, ef.ret_ty_sym);
         fmt_append_str(buf, rty);
     }

@@ -1,6 +1,6 @@
-# Tungsten Language & Syntax Specification (v1.1)
+# Tungsten Language & Syntax Specification (v1.2)
 
-> **Tungsten** is a systems-level programming language designed to provide fearless concurrency and zero-cost abstractions, replacing explicit `<'a>` lifetime annotations with **Region-Based Memory Management**, eliminating the async/await function coloring divide through **Algebraic Effects**, and eliminating runtime out-of-bounds panics through **Refinement Types**.
+> **Tungsten** is a modern systems-level programming language designed to provide fearless concurrency and zero-cost abstractions, replacing explicit lifetime annotations with **Region-Based Memory Management**, eliminating the async/await function coloring divide through **Algebraic Effects**, and eliminating runtime out-of-bounds panics through **Compile-Time Refinement Types**.
 
 ---
 
@@ -32,7 +32,7 @@
 ### Identifiers
 Identifiers must start with an ASCII letter or underscore, followed by any alphanumeric character or underscore:
 ```tungsten
-let count = 0;
+var count = 0;
 let user_id = 42;
 let _scratch = "temp";
 ```
@@ -46,7 +46,7 @@ let _scratch = "temp";
 
 ### Keywords
 ```text
-fn        let       mut       if        else      while     for       in
+fn        var       let       if        else      while     for       in
 return    match     struct    enum      type      import    const
 region    nursery   effect    yields    handle    with      resume
 extern    unsafe    true      false     null      as
@@ -69,24 +69,24 @@ Tungsten is statically typed with bidirectional type inference and a compile-tim
 | `void` | 0 bytes | Unit / empty return type |
 
 ### Refinement Types
-Refinement types decorate primitive integers with mathematically verified invariant intervals `[min..=max]`. The compiler mathematically proves bounds at compile time, eliminating runtime bounds checks in generated machine code:
+Refinement types decorate primitive integers with mathematically verified invariant intervals `[min..max]`. The compiler mathematically proves bounds at compile time, eliminating runtime bounds checks in generated machine code:
 
 ```tungsten
 // Range interval refinements:
-type Percentage = u8(0..=100);
-type Port = u16(1..=65535);
-type HttpStatusCode = u16(100..=599);
+type Percentage = u8[0..100];
+type Port = u16[1..65535];
+type HttpStatusCode = u16[100..599];
 
 // Compile-time verified instantiation:
-let valid_port: Port = 8080 as Port; // OK: 8080 in [1..=65535]
-let bad_port: Port = 70000 as Port;  // Compile-time error: 70000 outside [1..=65535]
+var valid_port: Port = 8080 as Port; // OK: 8080 in [1..65535]
+var bad_port: Port = 70000 as Port;  // Compile-time error: 70000 outside [1..65535]
 ```
 
 #### Relational Refinements
 Refinement intervals can reference other variables in scope to enforce relational contracts:
 ```tungsten
 // Enforces that 'end' must be greater than or equal to 'start'
-fn subslice_len(start: usize, end: usize(>= start)) -> usize {
+fn subslice_len(start: usize, end: usize(>= start)): usize {
     end - start // Guaranteed non-negative, zero bounds check emitted
 }
 ```
@@ -106,7 +106,7 @@ struct Pair<T, U> {
     second: U,
 }
 
-fn identity<T>(item: T) -> T {
+fn identity<T>(item: T): T {
     item
 }
 ```
@@ -115,14 +115,14 @@ fn identity<T>(item: T) -> T {
 
 ## 3. Memory Model: Scoped Regions
 
-Tungsten replaces explicit lifetime annotations (`'a`, `'b`) with **Lexical Memory Regions**.
+Tungsten replaces explicit lifetime annotations with **Lexical Memory Regions**.
 
 ### The `region` Expression
 ```tungsten
 region r {
-    let buf = string_buffer_new_in(r);
+    var buf = string_buffer_new_in(r);
     string_buffer_push_str(buf, "Allocated in bump arena 'r'");
-    println!("{}", string_buffer_as_ptr(buf));
+    println("{}", string_buffer_as_ptr(buf));
 } // O(1) Bulk Teardown: Entire arena memory reclaimed instantly here
 ```
 
@@ -134,51 +134,46 @@ Standard library collections support dual allocation strategies:
 ```tungsten
 region r {
     // 10,000 table rows allocated inside region 'r'
-    let users = sqlite_query_in(db, "SELECT id, name FROM users", r);
-    println!("Fetched {} users without heap fragmentation", sqlite_row_count(users));
+    var users = sqlite_query_in(db, "SELECT id, name FROM users", r);
+    println("Fetched {} users without heap fragmentation", sqlite_row_count(users));
 } // All rows and string buffers dropped in 0.00ms
 ```
 
 ### Linear Escape Analysis
 Tungsten's compiler enforces strict lexical safety. References to data within a region cannot outlive that region:
 ```tungsten
-fn illegal_escape() -> &String {
+fn illegal_escape(): &String {
     region r {
-        let s = string_new_in(r, "hello");
+        var s = string_new_in(r, "hello");
         &s // COMPILE ERROR: Reference to region 'r' escapes local scope
     }
 }
 ```
-The typechecker verifies that:
-- A reference allocated in region `r` cannot be returned from `r`.
-- A reference in `r` cannot be assigned to an outer variable.
-- An inner reference cannot be stored in an outer struct or collection.
-- Raw pointer casts cannot circumvent region escape rules.
 
 ---
 
 ## 4. Colorless Algebraic Effects
 
-Tungsten eliminates the `async`/`await` and `Result`/`Option` function coloring problems by using **Delimited Algebraic Effects**.
+Tungsten eliminates the `async`/`await` and `Result`/`Option` function coloring divide by using **Delimited Algebraic Effects**.
 
 ### Effect Declarations
 ```tungsten
 effect Database {
-    fn query(sql: String) -> String;
-    fn execute(sql: String) -> i64;
+    fn query(sql: String): String;
+    fn execute(sql: String): i64;
 }
 
 effect Logger {
-    fn log(msg: String) -> void;
+    fn log(msg: String): void;
 }
 ```
 
 ### Effect Capability Annotations (`yields [...]`)
 Functions declare which effects they may yield during execution:
 ```tungsten
-fn find_user(id: i64) -> String yields [Database, Logger] {
-    Logger::log("Searching database...");
-    Database::query("SELECT name FROM users WHERE id = " + int_to_string(id))
+fn find_user(id: i64): String yields [Database, Logger] {
+    Logger.log("Searching database...");
+    Database.query("SELECT name FROM users WHERE id = " + int_to_string(id))
 }
 ```
 
@@ -187,13 +182,13 @@ Callers handle effects explicitly, choosing between real production drivers, in-
 ```tungsten
 fn main() {
     handle {
-        let name = find_user(101);
-        println!("Found user: {}", name);
+        var name = find_user(101);
+        println("Found user: {}", name);
     } with Database {
         query(sql) => "Alice",
         execute(sql) => 1,
     } with Logger {
-        log(msg) => println!("[LOG] {}", msg),
+        log(msg) => println("[LOG] {}", msg),
     }
 }
 ```
@@ -208,7 +203,7 @@ Tungsten provides native structured concurrency through **Nurseries** and **Fibe
 A nursery defines a deterministic lexical lifecycle for concurrent tasks. When execution exits the nursery block, it waits for all spawned fibers to complete before continuing:
 ```tungsten
 fn task_worker(task_id: i64, dummy: i64) yields [IO] {
-    println!("Executing fiber task #{}", task_id);
+    println("Executing fiber task #{}", task_id);
 }
 
 fn main() yields [Async, IO] {
@@ -218,16 +213,16 @@ fn main() yields [Async, IO] {
         n.spawn(task_worker, 3, 0);
     } // Deterministic join: Blocks until all 3 tasks terminate
 
-    println!("All concurrent fibers completed successfully");
+    println("All concurrent fibers completed successfully");
 }
 ```
 
 ### Channels & Message Passing
 ```tungsten
-let ch = channel_open(10); // Bounded channel with capacity 10
+var ch = channel_open(10); // Bounded channel with capacity 10
 
 channel_send_msg(ch, 42);
-let val = channel_recv_msg(ch); // val == 42
+var val = channel_recv_msg(ch); // val == 42
 ```
 
 ---
@@ -236,13 +231,13 @@ let val = channel_recv_msg(ch); // val == 42
 
 ### Functions
 ```tungsten
-fn add(a: i64, b: i64) -> i64 {
+fn add(a: i64, b: i64): i64 {
     a + b
 }
 
-fn procedure(flag: bool) -> void {
+fn procedure(flag: bool): void {
     if flag {
-        println!("True");
+        println("True");
     }
 }
 ```
@@ -256,14 +251,14 @@ struct User {
 }
 
 // Instantiation:
-let u = User {
+var u = User {
     id: 1,
     name: "Tungsten Admin",
     is_admin: true,
 };
 
 // Field access:
-let uid = u.id;
+var uid = u.id;
 ```
 
 ### Enums & Pattern Matching
@@ -274,11 +269,11 @@ enum HttpResponse {
     NotFound,
 }
 
-fn render(resp: HttpResponse) -> void {
+fn render(resp: HttpResponse): void {
     match resp {
-        HttpResponse::Ok(body) => println!("200: {}", body),
-        HttpResponse::BadRequest(err) => println!("400: {}", err),
-        HttpResponse::NotFound => println!("404: Not Found"),
+        HttpResponse.Ok(body) => println("200: {}", body),
+        HttpResponse.BadRequest(err) => println("400: {}", err),
+        HttpResponse.NotFound => println("404: Not Found"),
     }
 }
 ```
@@ -286,18 +281,18 @@ fn render(resp: HttpResponse) -> void {
 ### Type Aliases
 ```tungsten
 type UserId = i64;
-type Port = u16(1..=65535);
+type Port = u16[1..65535];
 type StringList = Vec;
 ```
 
 ### Imports
 ```tungsten
-import std::net;
-import std::http;
-import std::sqlite;
-import std::collections;
-import std::fs;
-import std::process;
+import std.net;
+import std.http;
+import std.sqlite;
+import std.collections;
+import std.fs;
+import std.process;
 ```
 
 ---
@@ -309,25 +304,25 @@ import std::process;
 let immutable_x = 10;
 // immutable_x = 20; // Compile-time error
 
-let mut counter = 0;
+var counter = 0;
 counter = counter + 1; // OK
 ```
 
 ### Conditional Branches (`if / else`)
 ```tungsten
 if x > 100 {
-    println!("Large");
+    println("Large");
 } else if x > 50 {
-    println!("Medium");
+    println("Medium");
 } else {
-    println!("Small");
+    println("Small");
 }
 ```
 
 ### Loops
 ```tungsten
 // While loop:
-let mut i = 0;
+var i = 0;
 while i < 10 {
     i = i + 1;
 }
@@ -347,10 +342,10 @@ Tungsten seamlessly binds to native C libraries without runtime wrappers using `
 ### C-ABI Declarations
 ```tungsten
 extern "C" {
-    fn malloc(size: i64) -> *mut u8;
-    fn free(ptr: *mut u8) -> void;
-    fn exit(code: i32) -> void;
-    fn sqlite3_open(filename: *const u8, ppDb: *mut *mut u8) -> i32;
+    fn malloc(size: i64): *mut u8;
+    fn free(ptr: *mut u8): void;
+    fn exit(code: i32): void;
+    fn sqlite3_open(filename: *const u8, ppDb: *mut *mut u8): i32;
 }
 ```
 
@@ -358,7 +353,7 @@ extern "C" {
 Operations involving raw pointer dereferencing or C-ABI function calls require an `unsafe` block:
 ```tungsten
 unsafe {
-    let ptr = malloc(64);
+    var ptr = malloc(64);
     // Perform low-level C memory operations
     free(ptr);
 }
@@ -368,34 +363,34 @@ unsafe {
 
 ## 9. Standard Library Reference
 
-### 1. `std::collections`
+### 1. `std.collections`
 - **`HashMap`**: Cache-conscious Robin Hood hash map using Structure-of-Arrays (SoA) layout and FNV-1a hashing. Supports dual allocators (`hashmap_new` / `hashmap_new_in`).
 - **`Vec`**: Contiguous dynamic array (`vec_new`, `vec_new_in`, `vec_push`, `vec_pop`, `vec_get`, `vec_set`, `vec_len`).
 - **`StringBuffer`**: Region-backed mutable string builder (`string_buffer_new_in`, `string_buffer_push_str`, `string_buffer_as_ptr`).
 
-### 2. `std::http`
-- **Request Parsing**: `http_parse_request_in(raw, arena) -> HttpRequest`.
+### 2. `std.http`
+- **Request Parsing**: `http_parse_request_in(raw, arena): HttpRequest`.
 - **Response Formatters**:
-  - `http_response_ok(body, content_type) -> HttpResponse`
-  - `http_response_created(body, content_type) -> HttpResponse`
-  - `http_response_bad_request(body) -> HttpResponse`
-  - `http_response_not_found() -> HttpResponse`
-- **Wire Serialization**: `http_format_response_in(resp, arena) -> *mut u8`.
+  - `http_response_ok(body, content_type): HttpResponse`
+  - `http_response_created(body, content_type): HttpResponse`
+  - `http_response_bad_request(body): HttpResponse`
+  - `http_response_not_found(): HttpResponse`
+- **Wire Serialization**: `http_format_response_in(resp, arena): *mut u8`.
 
-### 3. `std::sqlite`
-- **Connection**: `sqlite_open(path) -> SqliteDb`, `sqlite_close(db)`.
-- **Parameterized Execution**: `sqlite_execute_prepared(db, sql, param1, param2) -> bool` (Zero SQL injection risk).
-- **Region Queries**: `sqlite_query_in(db, sql, arena) -> SqliteRow` (Zero per-row heap allocations).
+### 3. `std.sqlite`
+- **Connection**: `sqlite_open(path): SqliteDb`, `sqlite_close(db)`.
+- **Parameterized Execution**: `sqlite_execute_prepared(db, sql, param1, param2): bool` (Zero SQL injection risk).
+- **Region Queries**: `sqlite_query_in(db, sql, arena): SqliteRow` (Zero per-row heap allocations).
 
-### 4. `std::net`
-- **Listener**: `tcp_listen(port: Port) -> TcpListener`.
-- **Accept**: `tcp_accept(listener: &TcpListener) -> TcpStream`.
-- **I/O**: `tcp_read(stream: &TcpStream, max_len: i64) -> *mut u8`, `tcp_write(stream: &TcpStream, data: *mut u8) -> i64`.
-- **Close**: `tcp_close(stream: &TcpStream) -> void`.
+### 4. `std.net`
+- **Listener**: `tcp_listen(port: Port): TcpListener`.
+- **Accept**: `tcp_accept(listener: &TcpListener): TcpStream`.
+- **I/O**: `tcp_read(stream: &TcpStream, max_len: i64): *mut u8`, `tcp_write(stream: &TcpStream, data: *mut u8): i64`.
+- **Close**: `tcp_close(stream: &TcpStream): void`.
 
-### 5. `std::fs` & `std::process`
+### 5. `std.fs` & `std.process`
 - **Filesystem**: `fs_read_to_string_in(arena, path)`, `fs_write_string(path, content)`, `fs_exists(path)`, `fs_delete(path)`.
-- **Process Orchestration**: `command_new(prog)`, `command_arg(cmd, arg)`, `command_status(cmd) -> i32`.
+- **Process Orchestration**: `command_new(prog)`, `command_arg(cmd, arg)`, `command_status(cmd): i32`.
 
 ---
 
@@ -405,29 +400,29 @@ unsafe {
 Combines structured concurrency nurseries, fixed M:N worker task pools, Win32 IOCP, and scoped request memory regions:
 
 ```tungsten
-import std::net;
-import std::http;
-import std::collections;
+import std.net;
+import std.http;
+import std.collections;
 
 fn client_worker(conn_id: i64, dummy: i64) yields [Net] {
-    let stream = TcpStream {
+    var stream = TcpStream {
         socket_id: conn_id,
     };
     region req_r {
-        let raw = tcp_read(&stream, 4096);
-        let req = http_parse_request_in(raw, req_r);
+        var raw = tcp_read(&stream, 4096);
+        var req = http_parse_request_in(raw, req_r);
 
         if !req.is_valid {
-            let bad = http_response_bad_request("{\"error\":\"Invalid HTTP Request\"}");
-            let wire = http_format_response_in(&bad, req_r);
+            var bad = http_response_bad_request("{\"error\":\"Invalid HTTP Request\"}");
+            var wire = http_format_response_in(&bad, req_r);
             tcp_write(&stream, wire);
         } else if req.method == "GET" && req.path == "/health" {
-            let resp = http_response_ok("{\"status\":\"ok\"}", "application/json");
-            let wire = http_format_response_in(&resp, req_r);
+            var resp = http_response_ok("{\"status\":\"ok\"}", "application/json");
+            var wire = http_format_response_in(&resp, req_r);
             tcp_write(&stream, wire);
         } else {
-            let not_found = http_response_not_found();
-            let wire = http_format_response_in(&not_found, req_r);
+            var not_found = http_response_not_found();
+            var wire = http_format_response_in(&not_found, req_r);
             tcp_write(&stream, wire);
         }
         tcp_close(&stream);
@@ -435,13 +430,13 @@ fn client_worker(conn_id: i64, dummy: i64) yields [Net] {
 }
 
 fn main() yields [Net, IO, Async] {
-    println!("=== Starting Fortress v2 Server ===");
-    let port: Port = 8080 as Port;
-    let listener = tcp_listen(port);
+    println("=== Starting Fortress v2 Server ===");
+    var port: Port = 8080 as Port;
+    var listener = tcp_listen(port);
 
     nursery server_n {
         while true {
-            let stream = tcp_accept(&listener);
+            var stream = tcp_accept(&listener);
             if stream.socket_id > 0 {
                 server_n.spawn(client_worker, stream.socket_id, 0);
             }
@@ -452,20 +447,20 @@ fn main() yields [Net, IO, Async] {
 
 ### Pattern B: SQL-Injection-Proof Region Query Pipeline
 ```tungsten
-import std::sqlite;
-import std::collections;
+import std.sqlite;
+import std.collections;
 
 fn query_users_safe(db_path: String) yields [Database, IO] {
-    let db = sqlite_open(db_path);
+    var db = sqlite_open(db_path);
 
     // 1. Parameterized execution (immune to SQL injection)
     sqlite_execute_prepared(db, "INSERT INTO users (name, role) VALUES (?, ?)", "Alice", "Admin");
 
     // 2. Region-scoped bulk query
     region query_r {
-        let rows = sqlite_query_in(db, "SELECT id, name, role FROM users", query_r);
-        let count = sqlite_row_count(rows);
-        println!("Fetched {} users in region", count);
+        var rows = sqlite_query_in(db, "SELECT id, name, role FROM users", query_r);
+        var count = sqlite_row_count(rows);
+        println("Fetched {} users in region", count);
     } // All rows dropped instantly without heap fragmentation
 
     sqlite_close(db);

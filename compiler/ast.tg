@@ -54,6 +54,7 @@ pub fn tok_kw_import() -> i64 { 44 }
 pub fn tok_kw_pub() -> i64 { 45 }
 pub fn tok_kw_loop() -> i64 { 46 }
 pub fn tok_kw_break() -> i64 { 47 }
+pub fn tok_kw_var() -> i64 { 48 }
 
 pub fn tok_lbracket() -> i64 { 50 }
 pub fn tok_rbracket() -> i64 { 51 }

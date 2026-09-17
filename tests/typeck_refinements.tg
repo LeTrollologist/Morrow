@@ -1,29 +1,29 @@
 // Pure Tungsten Test Suite: Typechecking & Refinement Constraints
-import std::test;
+import std.test;
 
-fn verify_percentage(p: Percentage) -> i64 {
+fn verify_percentage(p: Percentage): i64 {
     p as i64
 }
 
-fn verify_port(port: Port) -> i64 {
+fn verify_port(port: Port): i64 {
     port as i64
 }
 
 fn main() {
     test_print("=== Running Typecheck & Refinement Test Suite ===");
 
-    let p: Percentage = 85;
-    let res_p = verify_percentage(p);
+    var p: Percentage = 85;
+    var res_p = verify_percentage(p);
     assert_eq(res_p, 85, "Percentage refinement value preservation");
 
-    let port: Port = 8080;
-    let res_port = verify_port(port);
+    var port: Port = 8080;
+    var res_port = verify_port(port);
     assert_eq(res_port, 8080, "Port refinement value preservation");
 
-    let min_p: Percentage = 0;
+    var min_p: Percentage = 0;
     assert_eq(min_p as i64, 0, "Percentage lower bound (0)");
 
-    let max_p: Percentage = 100;
+    var max_p: Percentage = 100;
     assert_eq(max_p as i64, 100, "Percentage upper bound (100)");
 
     test_print("All refinement tests passed!");
