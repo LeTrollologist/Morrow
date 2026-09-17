@@ -22,11 +22,10 @@
 | **v1.0** | **Full Self-Hosting Bootstrap Closure** | 3-Stage Bootstrap Loop, Fixed-Point LLVM IR Identity (`SHA256(S2) == SHA256(S3)`), 100% Green Suite | **Completed** |
 | **v1.1** | **Fortress v2: Async Network Engine** | Win32 IOCP, Fixed M:N Worker Task Pool, C100K Scale (< 1.2 KB/fiber) (Stage-0 Rust) | **Completed** |
 | **v1.2** | **Cross-Platform Linux & Containerization** | x86_64 Linux (ELF) Target, LLVM POSIX Runtime, Production Multi-Stage Docker (Stage-0 Rust) | **Completed** |
-| **v1.3** | **Tungsten Genesis: Core Independence** | Pure Tungsten Self-Hosting Core (`compiler/*.tg`), Native Bump Arena, Standalone Binaries (`bin/`). *Technical Audit identified architectural debt (see AUDIT.md)* | **Completed** |
-| **v1.4** | **Compiler Integrity & Architecture Remediation** | Dynamic Struct Layouts, Type-Directed Indexing, TIR-Codegen Integration, Real Module Resolution, Error Propagation | **In Progress** |
-| **v1.5** | **Language Feature Realization** | User-Defined Refinement Syntax, Region Escape Analysis, Monomorphic Generics, Algebraic Effect Lowering | **Planned** |
-| **v1.6** | **Formal Verification & SMT Bridge** | Z3 Solver Bridge for Non-Linear Arithmetic, Automated Induction Proofs, Affine Handle Invariants | **Planned** |
-| **v1.7** | **Multi-Target Codegen & WebAssembly** | AArch64 (ARM64), macOS (Mach-O), and WebAssembly (`wasm32-unknown-unknown`) | **Planned** |
+| **v1.4** | **Compiler Integrity & Architecture Remediation** | Dynamic Struct Layouts, Type-Directed Indexing, Real Module Resolution, Error Propagation, CRT Isolation | **Completed** |
+| **v1.5** | **Direct TIR Codegen & Optimization Pipeline** | Direct TIR-to-LLVM IR Emission, Dynamic Element Strides, SSA Constant Folding & DCE, Bitwise Bootstrap Parity | **Completed** |
+| **v1.6** | **Language Feature Realization** | User-Defined Refinement Syntax, Region Escape Analysis, Monomorphic Generics, Algebraic Effect Lowering | **Planned** |
+| **v1.7** | **Formal Verification & SMT Bridge** | Z3 Solver Bridge for Non-Linear Arithmetic, Automated Induction Proofs, Affine Handle Invariants | **Planned** |
 
 ---
 
@@ -236,10 +235,12 @@
    - Implemented centralized diagnostic tracking via runtime globals `@tungsten_diag_errors`, `tungsten_diag_reset`, `tungsten_diag_inc_error`, and `tungsten_diag_get_errors`.
    - Wired `report_err` and `tungsten_report_error` to increment error counts across all pipeline stages (lexing, parsing, typechecking).
    - Updated `compile_file` and `forge check` to halt immediately on error and return exit code 1, eliminating false-positive "check passed: 0 errors" reports on broken ASTs.
-   - Verified with unit test suite `tests/error_handling_tests.tg` and negative test sample `tests/invalid_syntax_sample.tg`.
-- [ ] **Connect TIR Intermediate Representation to Codegen**:
-   - Update `emit_llvm_ir` to consume `TirModule` rather than the unoptimized `AstProgram`.
-   - Ensure constant folding, dead code elimination, and redundant bounds check elimination passes directly optimize generated machine code.
+- [x] **Connect TIR Intermediate Representation to Codegen**:
+   - Updated `emit_llvm_ir` in `compiler/codegen.tg` to directly consume `TirModule` from `lower_ast_program_to_tir` and `tir_optimize_module`.
+   - Lowered TIR basic blocks, SSA instructions (`alloca`, `load`, `store`, `binop`, `icmp`, `call`, `br`, `cond_br`, `ret`, `gep`), dynamic struct field offsets, and type-directed indexing.
+   - Implemented `determine_index_stride` in `compiler/tir.tg` to dynamically determine element byte widths (1-byte string buffers vs 8-byte pointer tables), ensuring Robin Hood hash table correctness under SSA optimization.
+   - Validated full constant folding, dead code elimination, and arithmetic simplification passes on the self-hosted compiler.
+   - Reached 3-stage self-hosting fixed point with bitwise identical LLVM IR (`SHA256(S2) == SHA256(S3)`).
 - [x] **AST-Level Module & Import Resolution**:
    - Retired the monolithic 30,000-line string-concatenation hack in `load_source_bundle`.
    - Extended `AstProgram` in `compiler/ast.tg` and `compiler/codegen.tg` with `imports: Vec<String>`.
@@ -257,7 +258,7 @@
 
 ---
 
-### Phase 9: Language Feature Realization (v1.5)
+### Phase 9: Language Feature Realization (v1.6)
 *Target: Implement headline language capabilities in the self-hosted compiler frontend and runtime.*
 
 1. **User-Defined Refinement Types**:

@@ -228,8 +228,8 @@ Because `target/` is gitignored, a fresh clone on a machine without `clang` or `
 ### Phase A: Compiler Foundation & Correctness (Milestone v1.4)
 * [x] **Dynamic Struct Layout:** In `compiler/typeck.tg`, computed struct field offsets based on field declaration order and size. Replaced the `get_field_offset` string comparison table in `codegen.tg` with dynamic symbol offset resolution.
 * [x] **Type-Directed Indexing:** Emits GEP stride based on the base pointer's resolved type rather than variable name checks.
-* [ ] **Connect TIR Pipeline:** Change `emit_llvm_ir` to lower from `TirModule` instead of `AstProgram`, activating constant folding, DCE, and bounds elimination.
-* [ ] **Real Module Resolution:** Replace `load_source_bundle` with an AST-level import resolver that traverses `import <path>;` and loads referenced `.tg` files into the compilation unit.
+* [x] **Connect TIR Pipeline:** Changed `emit_llvm_ir` to lower directly from `TirModule` instead of `AstProgram`, activating constant folding, DCE, and bounds elimination with 3-stage bootstrap fixed-point parity.
+* [x] **Real Module Resolution:** Replaced `load_source_bundle` with an AST-level import resolver that traverses `import <path>;` and loads referenced `.tg` files into the compilation unit.
 * [x] **Strict Error Propagation:** `forge check`, `forge build`, and `tgc` fail immediately with exit code 1 if lexer, parser, or typechecker report errors.
 * [x] **Real `forge clean`:** Implemented filesystem removal of build artifacts in `target/`.
 * [x] **Vendor CRT / Toolchain Prerequisites:** Moved `crt2.o`, `dllcrt2.o`, and MinGW static libraries into committed `lib/crt/` tree, eliminating dependencies on uncommitted `target/crt/`.
