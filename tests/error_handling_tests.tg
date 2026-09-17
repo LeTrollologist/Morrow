@@ -3,11 +3,22 @@ import std.test;
 import compiler.diagnostics;
 
 fn test_diagnostic_reporting() yields [Diagnostics] {
+    diag_reset();
+    assert_eq(diag_errors(), 0, "diag_errors initially 0");
+    assert(!diag_has_errors(), "diag_has_errors initially false");
+
     var ok_err = report_err("Sample expected test error diagnostic", 42, 10);
     assert(ok_err, "report_err returns true on dispatched diagnostic");
+    assert_eq(diag_errors(), 1, "diag_errors is 1 after report_err");
+    assert(diag_has_errors(), "diag_has_errors is true after report_err");
 
     var ok_warn = report_warn("Sample expected test warning diagnostic", 42, 15);
     assert(ok_warn, "report_warn returns true on dispatched warning");
+    assert_eq(diag_errors(), 1, "warnings do not increment error count");
+
+    diag_reset();
+    assert_eq(diag_errors(), 0, "diag_reset resets errors to 0");
+    assert(!diag_has_errors(), "diag_has_errors false after reset");
 }
 
 fn safe_div(a: i64, b: i64): i64 yields [Diagnostics] {

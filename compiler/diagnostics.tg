@@ -5,10 +5,32 @@ extern "C" {
     fn puts(s: *const u8): i32;
     fn printf(fmt: *const u8, msg: *const u8, line: i64, col: i64): i32;
     fn fflush(f: *const u8): i32;
+    fn tungsten_diag_reset(): i64;
+    fn tungsten_diag_inc_error(): i64;
+    fn tungsten_diag_get_errors(): i64;
+}
+
+pub fn diag_reset() {
+    unsafe {
+        tungsten_diag_reset();
+    }
+}
+
+pub fn diag_errors(): i64 {
+    unsafe {
+        tungsten_diag_get_errors()
+    }
+}
+
+pub fn diag_has_errors(): bool {
+    unsafe {
+        tungsten_diag_get_errors() > 0
+    }
 }
 
 pub fn report_err(msg: String, line: i64, col: i64): bool yields [Diagnostics] {
     unsafe {
+        tungsten_diag_inc_error();
         printf("[ERROR] %s (line %lld, col %lld)\n" as *const u8, msg as *const u8, line, col);
         fflush(0 as *const u8);
     }

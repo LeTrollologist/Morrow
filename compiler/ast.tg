@@ -149,6 +149,7 @@ pub struct AstProgram {
     structs: Vec<*mut AstStruct>,
     extern_fns: Vec<*mut AstExternFn>,
     functions: Vec<*mut AstFn>,
+    imports: Vec<String>,
 }
 
 // -----------------------------------------------------------------------------
@@ -601,15 +602,17 @@ pub fn alloc_fn(arena: *mut u8, name_sym: i64, params: Vec<*mut AstParam>, ret_t
 
 pub fn alloc_program(arena: *mut u8) -> *mut AstProgram {
     let p = unsafe {
-        tungsten_region_alloc(arena, 128, 8) as *mut AstProgram
+        tungsten_region_alloc(arena, 256, 8) as *mut AstProgram
     };
     let structs: Vec<*mut AstStruct> = vec_new_in(arena);
     let extern_fns: Vec<*mut AstExternFn> = vec_new_in(arena);
     let funcs: Vec<*mut AstFn> = vec_new_in(arena);
+    let imps: Vec<String> = vec_new_in(arena);
     unsafe {
         p.structs = structs;
         p.extern_fns = extern_fns;
         p.functions = funcs;
+        p.imports = imps;
     }
     p
 }

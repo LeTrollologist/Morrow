@@ -15,6 +15,7 @@ Thumbs.db
 *.obj
 *.ll
 *.zip
+!lib/crt/**
 examples/*.exe
 examples/*.ll
 examples/*.pdb

@@ -231,6 +231,15 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &HashMap, fn_defs: &HashMap, ext_defs
     }
 
     if kind == expr_call() {
+        // Type check argument expressions
+        let args_len = expr.args.len;
+        let mut i: i64 = 0;
+        while i < args_len {
+            let arg_expr = vec_get(&expr.args, i);
+            tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, arg_expr);
+            i = i + 1;
+        }
+
         let fn_sym = expr.sym;
         let interner_ref = tc.interner as &Interner;
         let s = interner_lookup(interner_ref, fn_sym);
@@ -251,27 +260,45 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &HashMap, fn_defs: &HashMap, ext_defs
             return tc_resolve_type(tc, types, struct_defs, ret_sym);
         }
 
-        // Type check argument expressions
-        let args_len = expr.args.len;
-        let mut i: i64 = 0;
-        while i < args_len {
-            let arg_expr = vec_get(&expr.args, i);
-            tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, arg_expr);
-            i = i + 1;
-        }
-
         return alloc_tc_type(tc.arena, ty_int(), 0);
     }
 
     if kind == expr_field() {
         let base_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, expr.left);
         let field_sym = expr.sym;
+        if base_ty != (0 as *mut TcType) && base_ty.sym != 0 {
+            let interner_ref = tc.interner as &Interner;
+            let s = interner_lookup(interner_ref, base_ty.sym);
+            let st_val = hashmap_get(struct_defs, s);
+            if st_val != 0 - 1 {
+                let st = st_val as *mut AstStruct;
+                let mut fi: i64 = 0;
+                while fi < st.fields.len {
+                    let f = vec_get(&st.fields, fi);
+                    if f.name_sym == field_sym {
+                        expr.op = fi + 1;
+                        return tc_resolve_type(tc, types, struct_defs, f.ty_sym);
+                    }
+                    fi = fi + 1;
+                }
+            }
+        }
         return alloc_tc_type(tc.arena, ty_int(), field_sym);
     }
 
     if kind == expr_index() {
         let base_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, expr.left);
         let idx_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, expr.right);
+        if base_ty != (0 as *mut TcType) {
+            if base_ty.kind == ty_byte() {
+                expr.op = 1;
+                return alloc_tc_type(tc.arena, ty_byte(), 0);
+            }
+            if base_ty.kind == ty_int() || base_ty.kind == ty_struct() || base_ty.kind == ty_ptr() || base_ty.kind == ty_ref() {
+                expr.op = 8;
+                return alloc_tc_type(tc.arena, ty_int(), 0);
+            }
+        }
         return alloc_tc_type(tc.arena, ty_byte(), 0);
     }
 
@@ -355,15 +382,40 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
     }
 
     if kind == stmt_field_assign() {
-        tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, stmt.left);
+        let base_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, stmt.left);
         tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, stmt.expr);
+        if base_ty != (0 as *mut TcType) && base_ty.sym != 0 {
+            let interner_ref = tc.interner as &Interner;
+            let s = interner_lookup(interner_ref, base_ty.sym);
+            let st_val = hashmap_get(struct_defs, s);
+            if st_val != 0 - 1 {
+                let st = st_val as *mut AstStruct;
+                let mut fi: i64 = 0;
+                while fi < st.fields.len {
+                    let f = vec_get(&st.fields, fi);
+                    if f.name_sym == stmt.sym {
+                        stmt.right = (fi + 1) as *mut AstExpr;
+                        break;
+                    }
+                    fi = fi + 1;
+                }
+            }
+        }
         return true;
     }
 
     if kind == stmt_index_assign() {
-        tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, stmt.left);
+        let base_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, stmt.left);
         tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, stmt.right);
         tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, stmt.expr);
+        if base_ty != (0 as *mut TcType) {
+            if base_ty.kind == ty_byte() {
+                stmt.sym = 1;
+            }
+            if base_ty.kind == ty_int() || base_ty.kind == ty_struct() || base_ty.kind == ty_ptr() || base_ty.kind == ty_ref() {
+                stmt.sym = 8;
+            }
+        }
         return true;
     }
 
@@ -412,6 +464,13 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
     }
 
     if kind == stmt_block() {
+        if stmt.sym != 0 {
+            let sym = stmt.sym;
+            let interner_ref = tc.interner as &Interner;
+            let s = interner_lookup(interner_ref, sym);
+            let reg_ty = alloc_tc_type(tc.arena, ty_ptr(), 0);
+            hashmap_insert(vars, s, reg_ty as i64);
+        }
         let body_len = stmt.then_stmts.len;
         let mut i: i64 = 0;
         while i < body_len {

@@ -1,0 +1,83 @@
+// Pure Tungsten Test Suite: Dynamic Struct Field Layout & Type-Directed Indexing
+import std.test;
+
+extern "C" {
+    fn tungsten_alloc(size: i64, align: i64) -> *mut u8;
+}
+
+struct Account {
+    balance: i64,
+    account_id: i64,
+    credit_score: i64,
+}
+
+struct Point3D {
+    coord_x: i64,
+    coord_y: i64,
+    coord_z: i64,
+}
+
+fn test_struct_field_offsets() {
+    var acc = Account {
+        balance: 1000,
+        account_id: 42,
+        credit_score: 750,
+    };
+
+    assert_eq(acc.balance, 1000, "Account balance initial value");
+    assert_eq(acc.account_id, 42, "Account ID initial value");
+    assert_eq(acc.credit_score, 750, "Account credit score initial value");
+
+    // Mutate field 1 (account_id) - ensure field 0 (balance) is not overwritten
+    acc.account_id = 9999;
+    assert_eq(acc.balance, 1000, "Account balance preserved after account_id write");
+    assert_eq(acc.account_id, 9999, "Account ID updated value");
+    assert_eq(acc.credit_score, 750, "Account credit score preserved");
+
+    // Mutate field 2 (credit_score)
+    acc.credit_score = 800;
+    assert_eq(acc.balance, 1000, "Account balance preserved after credit_score write");
+    assert_eq(acc.account_id, 9999, "Account ID preserved after credit_score write");
+    assert_eq(acc.credit_score, 800, "Account credit score updated value");
+}
+
+fn test_multi_struct_independence() {
+    var pt = Point3D {
+        coord_x: 10,
+        coord_y: 20,
+        coord_z: 30,
+    };
+
+    assert_eq(pt.coord_x, 10, "Point3D coord_x initial value");
+    assert_eq(pt.coord_y, 20, "Point3D coord_y initial value");
+    assert_eq(pt.coord_z, 30, "Point3D coord_z initial value");
+
+    pt.coord_y = 555;
+    assert_eq(pt.coord_x, 10, "Point3D coord_x preserved");
+    assert_eq(pt.coord_y, 555, "Point3D coord_y updated");
+    assert_eq(pt.coord_z, 30, "Point3D coord_z preserved");
+}
+
+fn test_type_directed_array_indexing() {
+    var my_numbers = unsafe {
+        tungsten_alloc(32, 8) as *mut i64
+    };
+
+    my_numbers[0] = 111;
+    my_numbers[1] = 222;
+    my_numbers[2] = 333;
+
+    assert_eq(my_numbers[0], 111, "my_numbers[0] preserves 111");
+    assert_eq(my_numbers[1], 222, "my_numbers[1] preserves 222 (8-byte stride)");
+    assert_eq(my_numbers[2], 333, "my_numbers[2] preserves 333");
+}
+
+fn main() {
+    test_print("=== Running Dynamic Struct Field Layout & Indexing Test Suite ===");
+
+    test_struct_field_offsets();
+    test_multi_struct_independence();
+    test_type_directed_array_indexing();
+
+    test_print("All dynamic struct field layout and indexing tests passed!");
+}

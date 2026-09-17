@@ -8,6 +8,7 @@ import compiler::diagnostics;
 
 extern "C" {
     fn strcmp(s1: *const u8, s2: *const u8) -> i32;
+    fn strlen(s: *const u8) -> usize;
 }
 
 pub struct Parser {
@@ -541,6 +542,29 @@ pub fn parse_fn(p: &mut Parser) -> *mut AstFn yields [Diagnostics] {
     alloc_fn(p.arena, name_sym, params, ret_ty_sym, body)
 }
 
+fn parse_import(p: &mut Parser) -> String {
+    let mut path_buf = string_buffer_new_in(p.arena);
+    while !check(p, tok_semicolon()) && !check(p, tok_eof()) {
+        if check(p, tok_ident()) {
+            let tok = current_tok(p);
+            let interner_ref = p.interner as &Interner;
+            let seg = interner_lookup(interner_ref, tok.sym);
+            let seg_len = unsafe { strlen(seg as *const u8) } as i64;
+            string_buffer_push_str(&mut path_buf, seg as *const u8, seg_len);
+            advance(p);
+        } else if check(p, tok_coloncolon()) || check(p, tok_dot()) {
+            string_buffer_push_byte(&mut path_buf, 47 as u8);
+            advance(p);
+        } else {
+            advance(p);
+        }
+    }
+    expect(p, tok_semicolon(), "Expected ';' after import");
+    string_buffer_push_str(&mut path_buf, ".tg" as *const u8, 3);
+    string_buffer_push_byte(&mut path_buf, 0 as u8);
+    string_as_ptr(&path_buf) as String
+}
+
 pub fn parse_program(tokens: Vec<*mut Token>, interner: &mut Interner, arena: *mut u8) -> *mut AstProgram yields [Diagnostics] {
     let prog = alloc_program(arena);
     let mut p = Parser {
@@ -557,10 +581,8 @@ pub fn parse_program(tokens: Vec<*mut Token>, interner: &mut Interner, arena: *m
 
         if check(&p, tok_kw_import()) {
             advance(&mut p); // consume import
-            while !check(&p, tok_semicolon()) && !check(&p, tok_eof()) {
-                advance(&mut p);
-            }
-            expect(&mut p, tok_semicolon(), "Expected ';' after import");
+            let imp = parse_import(&mut p);
+            vec_push(&mut prog.imports, imp);
         } else if check(&p, tok_kw_extern()) {
             advance(&mut p); // consume extern
             expect(&mut p, tok_str(), "Expected \"C\" after extern");

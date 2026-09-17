@@ -8,23 +8,25 @@
 
 | Phase | Milestone | Focus Area | Status |
 |:---|:---|:---|:---:|
-| **v0.1** | **Working Prototype** | Parser, Typechecker, Refinement Intervals, Effect VM, CLI | **Completed** |
-| **v0.2** | **Developer Experience** | Standard Library (`std`), Formatter (`forge fmt`), Language Server (`tungsten-lsp`) | **Completed** |
-| **v0.3** | **Advanced Type System** | Relational Refinements, Generics, Effect Row Polymorphism | **Completed** |
-| **v0.4** | **TIR & Optimization** | SSA / CFG Intermediate Representation, Bounds Elimination, DCE | **Completed** |
-| **v0.5** | **Native Codegen & ABI** | LLVM 18 AOT Driver, Cranelift JIT, CodeView PDB Debug Symbols | **Completed** |
-| **v0.6** | **Colorless Concurrency** | M:N Work-Stealing Fiber Scheduler, Nurseries, Channels via Effects | **Completed** |
-| **v0.7** | **Physical Region Allocator** | Machine-Level Arena Scopes, $\mathcal{O}(1)$ Bulk Teardown, Escape Analysis | **Completed** |
-| **v0.8** | **C-ABI FFI & Safe Database** | `forge bindgen`, Safe SQLite Driver (`std/sqlite`), Region Queries | **Completed** |
-| **v0.9** | **Production Stdlib & Packaging** | `Forge.toml`, `Forge.lock`, Multi-Package Workspace, `std::fs`, `std::http` | **Completed** |
+| **v0.1** | **Working Prototype** | Parser, Typechecker, Refinement Intervals, Effect VM, CLI (Stage-0 Rust) | **Completed** |
+| **v0.2** | **Developer Experience** | Standard Library (`std`), Formatter (`forge fmt`), Language Server (`tungsten-lsp`) (Stage-0 Rust) | **Completed** |
+| **v0.3** | **Advanced Type System** | Relational Refinements, Generics, Effect Row Polymorphism (Stage-0 Rust) | **Completed** |
+| **v0.4** | **TIR & Optimization** | SSA / CFG Intermediate Representation, Bounds Elimination, DCE (Stage-0 Rust) | **Completed** |
+| **v0.5** | **Native Codegen & ABI** | LLVM 18 AOT Driver, Cranelift JIT, CodeView PDB Debug Symbols (Stage-0 Rust) | **Completed** |
+| **v0.6** | **Colorless Concurrency** | M:N Work-Stealing Fiber Scheduler, Nurseries, Channels via Effects (Stage-0 Rust) | **Completed** |
+| **v0.7** | **Physical Region Allocator** | Machine-Level Arena Scopes, $\mathcal{O}(1)$ Bulk Teardown, Escape Analysis (Stage-0 Rust) | **Completed** |
+| **v0.8** | **C-ABI FFI & Safe Database** | `forge bindgen`, Safe SQLite Driver (`std/sqlite`), Region Queries (Stage-0 Rust) | **Completed** |
+| **v0.9** | **Production Stdlib & Packaging** | `Forge.toml`, `Forge.lock`, Multi-Package Workspace, `std::fs`, `std::http` (Stage-0 Rust) | **Completed** |
 | **v0.10** | **Self-Hosting Compiler Frontend** | Pure Tungsten Frontend (`compiler/`), Robin Hood Symbol Interner, `tgc.exe` | **Completed** |
-| **v0.11** | **Fortress Security Suite** | 10 Adversarial Vectors, 12 `FORT-*` Invariants, 3-Corpus Fuzzing | **Completed** |
+| **v0.11** | **Fortress Security Suite** | 10 Adversarial Vectors, 12 `FORT-*` Invariants, 3-Corpus Fuzzing (Stage-0 Rust) | **Completed** |
 | **v1.0** | **Full Self-Hosting Bootstrap Closure** | 3-Stage Bootstrap Loop, Fixed-Point LLVM IR Identity (`SHA256(S2) == SHA256(S3)`), 100% Green Suite | **Completed** |
-| **v1.1** | **Fortress v2: Async Network Engine** | Win32 IOCP, Fixed M:N Worker Task Pool, C100K Scale (< 1.2 KB/fiber) | **Completed** |
-| **v1.2** | **Cross-Platform Linux & Containerization** | x86_64 Linux (ELF) Target, LLVM POSIX Runtime, Production Multi-Stage Docker | **Completed** |
-| **v1.3** | **Tungsten Genesis: Full Independence** | 100% Pure Tungsten Compiler (`compiler/*.tg`), Modern De-Rustified Syntax (`var`, `: Type`, `.` imports), Native Test Suites (`tests/*.tg`), Standalone Distribution Binaries (`bin/`), Complete Retirement of Rust Stage-0 Crates | **Completed** |
-| **v1.4** | **Formal Verification & SMT Bridge** | Z3 Solver Bridge for Non-Linear Arithmetic, Automated Induction Proofs, Affine Handle Invariants | **Planned** |
-| **v1.5** | **Multi-Target Codegen & WebAssembly** | AArch64 (ARM64), macOS (Mach-O), and WebAssembly (`wasm32-unknown-unknown`) | **Planned** |
+| **v1.1** | **Fortress v2: Async Network Engine** | Win32 IOCP, Fixed M:N Worker Task Pool, C100K Scale (< 1.2 KB/fiber) (Stage-0 Rust) | **Completed** |
+| **v1.2** | **Cross-Platform Linux & Containerization** | x86_64 Linux (ELF) Target, LLVM POSIX Runtime, Production Multi-Stage Docker (Stage-0 Rust) | **Completed** |
+| **v1.3** | **Tungsten Genesis: Core Independence** | Pure Tungsten Self-Hosting Core (`compiler/*.tg`), Native Bump Arena, Standalone Binaries (`bin/`). *Technical Audit identified architectural debt (see AUDIT.md)* | **Completed** |
+| **v1.4** | **Compiler Integrity & Architecture Remediation** | Dynamic Struct Layouts, Type-Directed Indexing, TIR-Codegen Integration, Real Module Resolution, Error Propagation | **In Progress** |
+| **v1.5** | **Language Feature Realization** | User-Defined Refinement Syntax, Region Escape Analysis, Monomorphic Generics, Algebraic Effect Lowering | **Planned** |
+| **v1.6** | **Formal Verification & SMT Bridge** | Z3 Solver Bridge for Non-Linear Arithmetic, Automated Induction Proofs, Affine Handle Invariants | **Planned** |
+| **v1.7** | **Multi-Target Codegen & WebAssembly** | AArch64 (ARM64), macOS (Mach-O), and WebAssembly (`wasm32-unknown-unknown`) | **Planned** |
 
 ---
 
@@ -210,15 +212,74 @@
 - [x] **Complete Retirement of Rust Stage-0 Crates**:
   - All legacy Rust crates (`crates/`) and root `Cargo.toml`/`Cargo.lock` archived to `archive/stage0-rust/`.
   - The Tungsten workspace is 100% pure Tungsten.
+- [x] **Comprehensive Genesis Architectural Audit (`AUDIT.md`)**:
+  - Detailed forensic audit of `compiler/*.tg`, `std/*.tg`, and `examples/*.tg`.
+  - Documented working subsystems (self-hosting loop, LLVM IR bump arena, collections, C FFI).
+  - Identified critical technical debt: hardcoded struct field name tables in codegen, variable-name-based indexing, disconnected TIR optimizer passes, missing user-defined refinement types, discarded algebraic effects, and error masking in `forge check`.
+  - Established remediation roadmap to bridge the gap between documentation and implementation.
 
 ---
 
-## Upcoming Milestones: The Path Forward (v1.4 & v1.5)
+## Upcoming Milestones: The Path Forward
 
 ---
 
-### Phase 8: Formal Verification & SMT Solver Integration (v1.4)
-*Target: Mathematically verifiable zero-panic systems programming.*
+### Phase 8: Compiler Integrity & Architecture Remediation (v1.4 — In Progress)
+*Target: Eliminate compiler shortcuts, fix memory-safety bugs, and establish true multi-file compilation.*
+
+- [x] **Symbol-Driven Struct Field Layout & Type-Directed Indexing**:
+   - In `compiler/typeck.tg`, computed struct field byte offsets dynamically based on field declaration order and type sizes (`i64`/`ptr` = 8 bytes, `u8` = 1 byte).
+   - Replaced the hardcoded `get_field_offset` string comparison table in `compiler/codegen.tg` with a dynamic symbol lookup table (`struct_sym, field_sym -> offset`), completely eliminating field collision in user structs.
+   - Type-directed array & pointer indexing emitting GEP instructions based on element type byte-width instead of variable-name matching.
+   - Verified with comprehensive test suite `tests/struct_field_layout_test.tg`.
+- [x] **Strict Compilation Error Propagation & Halting**:
+   - Implemented centralized diagnostic tracking via runtime globals `@tungsten_diag_errors`, `tungsten_diag_reset`, `tungsten_diag_inc_error`, and `tungsten_diag_get_errors`.
+   - Wired `report_err` and `tungsten_report_error` to increment error counts across all pipeline stages (lexing, parsing, typechecking).
+   - Updated `compile_file` and `forge check` to halt immediately on error and return exit code 1, eliminating false-positive "check passed: 0 errors" reports on broken ASTs.
+   - Verified with unit test suite `tests/error_handling_tests.tg` and negative test sample `tests/invalid_syntax_sample.tg`.
+- [ ] **Connect TIR Intermediate Representation to Codegen**:
+   - Update `emit_llvm_ir` to consume `TirModule` rather than the unoptimized `AstProgram`.
+   - Ensure constant folding, dead code elimination, and redundant bounds check elimination passes directly optimize generated machine code.
+- [x] **AST-Level Module & Import Resolution**:
+   - Retired the monolithic 30,000-line string-concatenation hack in `load_source_bundle`.
+   - Extended `AstProgram` in `compiler/ast.tg` and `compiler/codegen.tg` with `imports: Vec<String>`.
+   - Updated `compiler/parser.tg` to parse `import <mod>[:: | .]<submod>;` into file path strings pushed directly to `prog.imports`.
+   - Implemented recursive bottom-up module loader (`normalize_path`, `resolve_import_path`, `load_module_recursive`, `load_program_modules`) in `compiler/forge.tg` with cyclic import prevention (`loaded_paths`), compiler intrinsic interception (`std::fs`, `std::process`), and symbol deduplication across `structs`, `extern_fns`, and `functions`.
+   - Wired `compile_file` and `forge check` to compile and verify only imported dependencies instead of the entire compiler bundle.
+   - Reached 3-stage self-hosting bootstrap fixed-point convergence ($\text{Stage 1} \to \text{Stage 2} \to \text{Stage 3}$) with 100% bitwise LLVM IR parity and all 8 test suites passing cleanly.
+- [x] **Toolchain Hygiene & CRT Isolation**:
+   - Relocated MinGW CRT startup objects (`crt2.o`, `dllcrt2.o`) and runtime static libraries from gitignored `target/crt/` into tracked `lib/crt/` tree.
+   - Updated `.gitignore` with `!lib/crt/**` exception rules to ensure CRT assets are committed.
+   - Updated Clang linker flags in `compiler/forge.tg` from `-Ltarget/crt` to `-Llib/crt` and `lib/crt/crt2.o`.
+   - Guaranteed automatic directory creation for `target/` in `compile_file`.
+   - Implemented functional `forge clean` that purges `target/*.exe`, `target/*.ll`, and test binaries while preserving `lib/crt/`.
+   - Verified that `target/crt/` can be completely deleted without breaking fresh builds.
+
+---
+
+### Phase 9: Language Feature Realization (v1.5)
+*Target: Implement headline language capabilities in the self-hosted compiler frontend and runtime.*
+
+1. **User-Defined Refinement Types**:
+   - Add top-level refinement grammar `type Name = Primitive[min..max];` to `compiler/parser.tg`.
+   - Store refinement intervals in the type environment and enforce arithmetic constraint checking during assignments, function argument passing, and return statements.
+2. **Compile-Time Region Escape Analysis**:
+   - Attach region identifiers to references in `compiler/typeck.tg`.
+   - Implement linear escape analysis to reject references that outlive their declaring `region r { ... }` block (via returns, assignments to outer variables, or struct fields).
+3. **Parametric Generics & Polymorphism**:
+   - Replace generic token skipping in `compiler/parser.tg` with proper type parameter AST nodes (`struct Container<T> { value: T }`).
+   - Implement monomorphization during TIR lowering to generate specialized struct layouts and function instances.
+4. **Algebraic Effects & Delimited Handlers**:
+   - Add `effect` declarations, `yields [...]` contracts, and `handle { ... } with Handler { ... }` syntax to the grammar and AST.
+   - Lower effects via delimited continuations or an explicit stack-switching runtime in LLVM IR.
+5. **Concurrency Runtime Reintegration**:
+   - Port the high-concurrency fiber task pool and Win32 IOCP / POSIX epoll event loop from `archive/stage0-rust` into a pure Tungsten runtime library (`std/sync.tg`, `std/net.tg`).
+   - Update `examples/player.tg` and `examples/web_service_v2.tg` to compile and run against the updated compiler.
+
+---
+
+### Phase 10: Formal Verification & SMT Solver Integration (v1.6)
+*Target: Verifiable non-linear interval constraints and automated proofs.*
 
 1. **Z3 SMT Solver Bridge**:
    - Optional Z3 solver integration for non-linear arithmetic refinement constraints (multiplication, division, modular arithmetic).
@@ -228,10 +289,10 @@
 
 ---
 
-### Phase 9: Multi-Target Codegen & WebAssembly (v1.5)
+### Phase 11: Multi-Target Codegen & WebAssembly (v1.7)
 *Target: Universal systems development from bare metal to browsers.*
 
-- [x] **x86_64 Linux (ELF) Target & Docker Container**: Completed in Milestone v1.2.
+- [x] **x86_64 Linux (ELF) Target & Docker Container**: Prototyped in Milestone v1.2 (Stage-0 Rust); scheduled for validation under the self-hosted compiler.
 - [ ] **AArch64 & macOS Targets**:
   - ARM64 ELF and Mach-O binary emission via LLVM backend and LLD linker.
   - Apple Silicon / ARM64 POSIX socket and syscall shims in `std/fs` and `std/net`.

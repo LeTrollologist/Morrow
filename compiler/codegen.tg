@@ -163,6 +163,7 @@ fn get_field_offset(cg: &mut Codegen, sym: i64) -> i64 {
     if unsafe { strcmp(p, "body" as *const u8) == 0 } { return 3; }
     if unsafe { strcmp(p, "next_label" as *const u8) == 0 } { return 3; }
     if unsafe { strcmp(p, "then_stmts" as *const u8) == 0 } { return 3; }
+    if unsafe { strcmp(p, "imports" as *const u8) == 0 } { return 3; }
 
     if unsafe { strcmp(p, "line" as *const u8) == 0 } { return 4; }
     if unsafe { strcmp(p, "op" as *const u8) == 0 } { return 4; }
@@ -240,7 +241,9 @@ fn collect_strings_stmt(cg: &mut Codegen, s: *mut AstStmt) {
     if s == 0 as *mut AstStmt { return; }
     collect_strings_expr(cg, s.expr);
     collect_strings_expr(cg, s.left);
-    collect_strings_expr(cg, s.right);
+    if s.kind != stmt_field_assign() {
+        collect_strings_expr(cg, s.right);
+    }
     let mut i: i64 = 0;
     while i < s.then_stmts.len {
         collect_strings_stmt(cg, vec_get(&s.then_stmts, i));
@@ -316,7 +319,12 @@ pub fn emit_expr(cg: &mut Codegen, expr_ptr: *mut AstExpr) -> i64 {
         emit_i64(cg, target_reg);
         emit_str(cg, " to ptr\n");
 
-        let offset = get_field_offset(cg, expr_ptr.sym);
+        let mut offset: i64 = 0;
+        if expr_ptr.op > 0 {
+            offset = expr_ptr.op - 1;
+        } else {
+            offset = get_field_offset(cg, expr_ptr.sym);
+        }
         let gep_reg = alloc_reg(cg);
         emit_str(cg, "    %t");
         emit_i64(cg, gep_reg);
@@ -345,7 +353,12 @@ pub fn emit_expr(cg: &mut Codegen, expr_ptr: *mut AstExpr) -> i64 {
         emit_i64(cg, raw_ptr_reg);
         emit_str(cg, " to ptr\n");
 
-        let is_byte = is_byte_indexing(cg, expr_ptr.left);
+        let mut is_byte = is_byte_indexing(cg, expr_ptr.left);
+        if expr_ptr.op == 8 {
+            is_byte = false;
+        } else if expr_ptr.op == 1 {
+            is_byte = true;
+        }
         let gep_reg = alloc_reg(cg);
         if is_byte {
             emit_str(cg, "    %t");
@@ -1087,7 +1100,13 @@ pub fn emit_stmt(cg: &mut Codegen, stmt_ptr: *mut AstStmt, is_main: bool, is_tai
         emit_i64(cg, target_reg);
         emit_str(cg, " to ptr\n");
 
-        let offset = get_field_offset(cg, stmt_ptr.sym);
+        let mut offset: i64 = 0;
+        let r_val = stmt_ptr.right as i64;
+        if r_val > 0 {
+            offset = r_val - 1;
+        } else {
+            offset = get_field_offset(cg, stmt_ptr.sym);
+        }
         let gep_reg = alloc_reg(cg);
         emit_str(cg, "    %t");
         emit_i64(cg, gep_reg);
@@ -1116,7 +1135,12 @@ pub fn emit_stmt(cg: &mut Codegen, stmt_ptr: *mut AstStmt, is_main: bool, is_tai
         emit_i64(cg, raw_ptr_reg);
         emit_str(cg, " to ptr\n");
 
-        let is_byte = is_byte_indexing(cg, stmt_ptr.left);
+        let mut is_byte = is_byte_indexing(cg, stmt_ptr.left);
+        if stmt_ptr.sym == 8 {
+            is_byte = false;
+        } else if stmt_ptr.sym == 1 {
+            is_byte = true;
+        }
         let gep_reg = alloc_reg(cg);
         if is_byte {
             emit_str(cg, "    %t");
@@ -1634,7 +1658,8 @@ pub fn emit_llvm_ir(prog_ptr: *mut AstProgram, interner: &mut Interner, arena: *
     emit_str(&mut cg, "@fmt_diag_err = internal constant [34 x i8] c\"[ERROR] %s (line %lld, col %lld)\\0A\\00\"\n");
     emit_str(&mut cg, "@str_mode_rb = internal constant [3 x i8] c\"rb\\00\"\n");
     emit_str(&mut cg, "@str_mode_wb = internal constant [3 x i8] c\"wb\\00\"\n");
-    emit_str(&mut cg, "@str_empty = internal constant [1 x i8] c\"\\00\"\n\n");
+    emit_str(&mut cg, "@str_empty = internal constant [1 x i8] c\"\\00\"\n");
+    emit_str(&mut cg, "@tungsten_diag_errors = internal global i64 0\n\n");
 
 
     let mut si: i64 = 0;
@@ -1658,7 +1683,22 @@ pub fn emit_llvm_ir(prog_ptr: *mut AstProgram, interner: &mut Interner, arena: *
     emit_str(&mut cg, "    call i32 @fflush(ptr null)\n");
     emit_str(&mut cg, "    ret void\n}\n\n");
 
+    emit_str(&mut cg, "define i64 @tungsten_diag_reset() {\n");
+    emit_str(&mut cg, "    store i64 0, ptr @tungsten_diag_errors\n");
+    emit_str(&mut cg, "    ret i64 0\n}\n\n");
+
+    emit_str(&mut cg, "define i64 @tungsten_diag_inc_error() {\n");
+    emit_str(&mut cg, "    %cur = load i64, ptr @tungsten_diag_errors\n");
+    emit_str(&mut cg, "    %inc = add i64 %cur, 1\n");
+    emit_str(&mut cg, "    store i64 %inc, ptr @tungsten_diag_errors\n");
+    emit_str(&mut cg, "    ret i64 %inc\n}\n\n");
+
+    emit_str(&mut cg, "define i64 @tungsten_diag_get_errors() {\n");
+    emit_str(&mut cg, "    %cur = load i64, ptr @tungsten_diag_errors\n");
+    emit_str(&mut cg, "    ret i64 %cur\n}\n\n");
+
     emit_str(&mut cg, "define i1 @tungsten_report_error(ptr %msg, i64 %line, i64 %col) {\n");
+    emit_str(&mut cg, "    call i64 @tungsten_diag_inc_error()\n");
     emit_str(&mut cg, "    call i32 (ptr, ...) @printf(ptr @fmt_diag_err, ptr %msg, i64 %line, i64 %col)\n");
     emit_str(&mut cg, "    call i32 @fflush(ptr null)\n");
     emit_str(&mut cg, "    ret i1 true\n}\n\n");
