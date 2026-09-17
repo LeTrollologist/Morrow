@@ -3,6 +3,7 @@
 
 import std::collections;
 import compiler::ast;
+import compiler::interner;
 
 extern "C" {
     fn tungsten_region_alloc(arena: *mut u8, size: usize, align: usize) -> *mut u8;
@@ -102,6 +103,11 @@ pub fn tir_inst_store() -> i64 { 2 }
 pub fn tir_inst_call() -> i64 { 3 }
 pub fn tir_inst_bounds_check() -> i64 { 4 }
 pub fn tir_inst_nop() -> i64 { 5 }
+pub fn tir_inst_load_field() -> i64 { 6 }
+pub fn tir_inst_store_field() -> i64 { 7 }
+pub fn tir_inst_load_index() -> i64 { 8 }
+pub fn tir_inst_store_index() -> i64 { 9 }
+pub fn tir_inst_struct_init() -> i64 { 10 }
 
 pub struct TirInst {
     kind: i64,                  // 0: tir_inst_assign(), etc.
@@ -147,6 +153,45 @@ pub fn alloc_tir_inst_call(arena: *mut u8, dest: i64, fn_sym: i64, args: Vec<*mu
     let p = alloc_tir_inst(arena, tir_inst_call(), dest, 0, 0 as *mut TirOperand, 0 as *mut TirOperand);
     unsafe {
         p.int_val = fn_sym;
+        p.args = args;
+    }
+    p
+}
+
+pub fn alloc_tir_inst_load_field(arena: *mut u8, dest_reg: i64, base: *mut TirOperand, offset: i64, field_sym: i64) -> *mut TirInst {
+    let p = alloc_tir_inst(arena, tir_inst_load_field(), dest_reg, offset, base, 0 as *mut TirOperand);
+    unsafe {
+        p.int_val = field_sym;
+    }
+    p
+}
+
+pub fn alloc_tir_inst_store_field(arena: *mut u8, base: *mut TirOperand, offset: i64, field_sym: i64, val: *mut TirOperand) -> *mut TirInst {
+    let p = alloc_tir_inst(arena, tir_inst_store_field(), 0, offset, base, val);
+    unsafe {
+        p.int_val = field_sym;
+    }
+    p
+}
+
+pub fn alloc_tir_inst_load_index(arena: *mut u8, dest_reg: i64, base: *mut TirOperand, idx: *mut TirOperand, stride: i64) -> *mut TirInst {
+    alloc_tir_inst(arena, tir_inst_load_index(), dest_reg, stride, base, idx)
+}
+
+pub fn alloc_tir_inst_store_index(arena: *mut u8, base: *mut TirOperand, idx: *mut TirOperand, val: *mut TirOperand, stride: i64) -> *mut TirInst {
+    let p = alloc_tir_inst(arena, tir_inst_store_index(), 0, stride, base, idx);
+    let mut args: Vec<*mut TirOperand> = vec_new_in(arena);
+    vec_push(&mut args, val);
+    unsafe {
+        p.args = args;
+    }
+    p
+}
+
+pub fn alloc_tir_inst_struct_init(arena: *mut u8, dest_reg: i64, struct_sym: i64, args: Vec<*mut TirOperand>) -> *mut TirInst {
+    let p = alloc_tir_inst(arena, tir_inst_struct_init(), dest_reg, 0, 0 as *mut TirOperand, 0 as *mut TirOperand);
+    unsafe {
+        p.int_val = struct_sym;
         p.args = args;
     }
     p
@@ -237,10 +282,11 @@ pub struct TirFunction {
     left: *mut AstFn,         // 5: Originating AST function
     right: *mut u8,           // 6: Arena pointer
     args: Vec<*mut TirBlock>, // 7: Vector of basic blocks
+    interner: *const Interner,// 8: Interner pointer
 }
 
-pub fn alloc_tir_function(arena: *mut u8, name_sym: i64, ret_ty_sym: i64, origin_fn: *mut AstFn) -> *mut TirFunction {
-    let p = unsafe { tungsten_region_alloc(arena, 128, 8) as *mut TirFunction };
+pub fn alloc_tir_function(arena: *mut u8, name_sym: i64, ret_ty_sym: i64, origin_fn: *mut AstFn, interner: &Interner) -> *mut TirFunction {
+    let p = unsafe { tungsten_region_alloc(arena, 144, 8) as *mut TirFunction };
     let empty_blocks: Vec<*mut TirBlock> = vec_new_in(arena);
     unsafe {
         p.kind = 0;
@@ -251,8 +297,39 @@ pub fn alloc_tir_function(arena: *mut u8, name_sym: i64, ret_ty_sym: i64, origin
         p.left = origin_fn;
         p.right = arena;
         p.args = empty_blocks;
+        p.interner = interner as *const Interner;
     }
     p
+}
+
+fn determine_index_stride(left: *mut AstExpr, interner: &Interner) -> i64 {
+    if left == (0 as *mut AstExpr) {
+        return 1;
+    }
+    if left.kind == expr_field() {
+        let s = interner_lookup(interner, left.sym);
+        let p = s as *const u8;
+        if unsafe { strcmp(p, "buf" as *const u8) == 0 } {
+            return 1;
+        }
+        return 8;
+    }
+    if left.kind == expr_var() {
+        let s = interner_lookup(interner, left.sym);
+        let p = s as *const u8;
+        if unsafe {
+            strcmp(p, "old_keys" as *const u8) == 0 ||
+            strcmp(p, "old_vals" as *const u8) == 0 ||
+            strcmp(p, "old_occ" as *const u8) == 0 ||
+            strcmp(p, "ptr_slot" as *const u8) == 0 ||
+            strcmp(p, "stmt_slot" as *const u8) == 0 ||
+            strcmp(p, "my_numbers" as *const u8) == 0
+        } {
+            return 8;
+        }
+        return 1;
+    }
+    1
 }
 
 pub fn tir_fn_alloc_reg(f: *mut TirFunction) -> i64 {
@@ -347,6 +424,41 @@ pub fn lower_ast_expr_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, expr
         return alloc_tir_op_reg(arena, reg);
     }
 
+    if kind == expr_field() {
+        let base_op = lower_ast_expr_to_tir(f, cur_block, expr.left, arena);
+        let reg = tir_fn_alloc_reg(f);
+        let inst = alloc_tir_inst_load_field(arena, reg, base_op, expr.op, expr.sym);
+        tir_block_push_inst(cur_block, inst);
+        return alloc_tir_op_reg(arena, reg);
+    }
+
+    if kind == expr_index() {
+        let interner_ref = f.interner as &Interner;
+        let stride = determine_index_stride(expr.left, interner_ref);
+        let base_op = lower_ast_expr_to_tir(f, cur_block, expr.left, arena);
+        let idx_op = lower_ast_expr_to_tir(f, cur_block, expr.right, arena);
+        let reg = tir_fn_alloc_reg(f);
+        let inst = alloc_tir_inst_load_index(arena, reg, base_op, idx_op, stride);
+        tir_block_push_inst(cur_block, inst);
+        return alloc_tir_op_reg(arena, reg);
+    }
+
+    if kind == expr_struct_init() {
+        let mut tir_args: Vec<*mut TirOperand> = vec_new_in(arena);
+        let total_fields = expr.args.len;
+        let mut i: i64 = 0;
+        while i < total_fields {
+            let farg = vec_get(&expr.args, i);
+            let fop = lower_ast_expr_to_tir(f, cur_block, farg, arena);
+            vec_push(&mut tir_args, fop);
+            i = i + 1;
+        }
+        let reg = tir_fn_alloc_reg(f);
+        let inst = alloc_tir_inst_struct_init(arena, reg, expr.sym, tir_args);
+        tir_block_push_inst(cur_block, inst);
+        return alloc_tir_op_reg(arena, reg);
+    }
+
     if kind == expr_cast() {
         return lower_ast_expr_to_tir(f, cur_block, expr.left, arena);
     }
@@ -354,22 +466,27 @@ pub fn lower_ast_expr_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, expr
     alloc_tir_op_int(arena, 0)
 }
 
-pub fn lower_ast_stmt_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, stmt: *mut AstStmt, arena: *mut u8) -> *mut TirBlock {
+pub fn lower_ast_stmt_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, stmt: *mut AstStmt, loop_exit_id: i64, is_tail: bool, arena: *mut u8) -> *mut TirBlock {
     if stmt == (0 as *mut AstStmt) {
         return cur_block;
     }
     let kind = stmt.kind;
 
+    if cur_block.sym != tir_term_none() {
+        let dead_b = tir_fn_add_block(f, arena);
+        cur_block = dead_b;
+    }
+
     if kind == stmt_let() {
         let rhs = lower_ast_expr_to_tir(f, cur_block, stmt.expr, arena);
-        let inst = alloc_tir_inst_assign(arena, stmt.sym, 0, rhs, 0 as *mut TirOperand);
+        let inst = alloc_tir_inst(arena, tir_inst_store(), stmt.sym, 0, rhs, 0 as *mut TirOperand);
         tir_block_push_inst(cur_block, inst);
         return cur_block;
     }
 
     if kind == stmt_assign() {
         let rhs = lower_ast_expr_to_tir(f, cur_block, stmt.expr, arena);
-        let inst = alloc_tir_inst_assign(arena, stmt.sym, 0, rhs, 0 as *mut TirOperand);
+        let inst = alloc_tir_inst(arena, tir_inst_store(), stmt.sym, 0, rhs, 0 as *mut TirOperand);
         tir_block_push_inst(cur_block, inst);
         return cur_block;
     }
@@ -377,11 +494,87 @@ pub fn lower_ast_stmt_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, stmt
     if kind == stmt_return() {
         let ret_val = lower_ast_expr_to_tir(f, cur_block, stmt.expr, arena);
         tir_block_set_return(cur_block, ret_val);
-        return cur_block;
+        let dead_block = tir_fn_add_block(f, arena);
+        return dead_block;
     }
 
     if kind == stmt_expr() {
-        lower_ast_expr_to_tir(f, cur_block, stmt.expr, arena);
+        let val = lower_ast_expr_to_tir(f, cur_block, stmt.expr, arena);
+        if is_tail {
+            tir_block_set_return(cur_block, val);
+            let dead_block = tir_fn_add_block(f, arena);
+            return dead_block;
+        }
+        return cur_block;
+    }
+
+    if kind == stmt_field_assign() {
+        let base_op = lower_ast_expr_to_tir(f, cur_block, stmt.left, arena);
+        let val_op = lower_ast_expr_to_tir(f, cur_block, stmt.expr, arena);
+        let offset = stmt.right as i64;
+        let inst = alloc_tir_inst_store_field(arena, base_op, offset, stmt.sym, val_op);
+        tir_block_push_inst(cur_block, inst);
+        return cur_block;
+    }
+
+    if kind == stmt_index_assign() {
+        let interner_ref = f.interner as &Interner;
+        let stride = determine_index_stride(stmt.left, interner_ref);
+        let base_op = lower_ast_expr_to_tir(f, cur_block, stmt.left, arena);
+        let idx_op = lower_ast_expr_to_tir(f, cur_block, stmt.right, arena);
+        let val_op = lower_ast_expr_to_tir(f, cur_block, stmt.expr, arena);
+        let inst = alloc_tir_inst_store_index(arena, base_op, idx_op, val_op, stride);
+        tir_block_push_inst(cur_block, inst);
+        return cur_block;
+    }
+
+    if kind == stmt_block() {
+        if stmt.sym != 0 {
+            let empty_args: Vec<*mut TirOperand> = vec_new_in(arena);
+            let reg_call = alloc_tir_inst_call(arena, stmt.sym, 0, empty_args);
+            reg_call.str_val = "tungsten_region_enter";
+            tir_block_push_inst(cur_block, reg_call);
+        }
+        let mut cur = cur_block;
+        let mut bi: i64 = 0;
+        let b_len = stmt.then_stmts.len;
+        while bi < b_len {
+            let is_inner_tail = is_tail && (bi == b_len - 1);
+            let bs = vec_get(&stmt.then_stmts, bi);
+            if is_inner_tail {
+                if bs.kind == stmt_expr() {
+                    let ret_val = lower_ast_expr_to_tir(f, cur, bs.expr, arena);
+                    if stmt.sym != 0 {
+                        let mut leave_args: Vec<*mut TirOperand> = vec_new_in(arena);
+                        vec_push(&mut leave_args, alloc_tir_op_var(arena, stmt.sym));
+                        let reg_leave = alloc_tir_inst_call(arena, 0, 0, leave_args);
+                        reg_leave.str_val = "tungsten_region_leave";
+                        tir_block_push_inst(cur, reg_leave);
+                    }
+                    tir_block_set_return(cur, ret_val);
+                    let dead_block = tir_fn_add_block(f, arena);
+                    return dead_block;
+                }
+            }
+            cur = lower_ast_stmt_to_tir(f, cur, bs, loop_exit_id, is_inner_tail, arena);
+            bi = bi + 1;
+        }
+        if stmt.sym != 0 {
+            let mut leave_args: Vec<*mut TirOperand> = vec_new_in(arena);
+            vec_push(&mut leave_args, alloc_tir_op_var(arena, stmt.sym));
+            let reg_leave = alloc_tir_inst_call(arena, 0, 0, leave_args);
+            reg_leave.str_val = "tungsten_region_leave";
+            tir_block_push_inst(cur, reg_leave);
+        }
+        return cur;
+    }
+
+    if kind == stmt_break() {
+        if loop_exit_id >= 0 {
+            tir_block_set_branch(cur_block, loop_exit_id);
+            let dead_block = tir_fn_add_block(f, arena);
+            return dead_block;
+        }
         return cur_block;
     }
 
@@ -399,7 +592,8 @@ pub fn lower_ast_stmt_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, stmt
         let mut i: i64 = 0;
         while i < then_len {
             let s = vec_get(&stmt.then_stmts, i);
-            cur_then = lower_ast_stmt_to_tir(f, cur_then, s, arena);
+            let is_inner_tail = is_tail && (i == then_len - 1);
+            cur_then = lower_ast_stmt_to_tir(f, cur_then, s, loop_exit_id, is_inner_tail, arena);
             i = i + 1;
         }
         if cur_then.sym == tir_term_none() {
@@ -412,7 +606,8 @@ pub fn lower_ast_stmt_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, stmt
         let mut j: i64 = 0;
         while j < else_len {
             let s = vec_get(&stmt.else_stmts, j);
-            cur_else = lower_ast_stmt_to_tir(f, cur_else, s, arena);
+            let is_inner_tail = is_tail && (j == else_len - 1);
+            cur_else = lower_ast_stmt_to_tir(f, cur_else, s, loop_exit_id, is_inner_tail, arena);
             j = j + 1;
         }
         if cur_else.sym == tir_term_none() {
@@ -437,7 +632,7 @@ pub fn lower_ast_stmt_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, stmt
         let mut i: i64 = 0;
         while i < body_len {
             let s = vec_get(&stmt.then_stmts, i);
-            cur_body = lower_ast_stmt_to_tir(f, cur_body, s, arena);
+            cur_body = lower_ast_stmt_to_tir(f, cur_body, s, exit_block.kind, false, arena);
             i = i + 1;
         }
         if cur_body.sym == tir_term_none() {
@@ -450,8 +645,8 @@ pub fn lower_ast_stmt_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, stmt
     cur_block
 }
 
-pub fn lower_ast_fn_to_tir(ast_fn: *mut AstFn, arena: *mut u8) -> *mut TirFunction {
-    let tir_f = alloc_tir_function(arena, ast_fn.name_sym, ast_fn.ret_ty_sym, ast_fn);
+pub fn lower_ast_fn_to_tir(ast_fn: *mut AstFn, interner: &Interner, arena: *mut u8) -> *mut TirFunction {
+    let tir_f = alloc_tir_function(arena, ast_fn.name_sym, ast_fn.ret_ty_sym, ast_fn, interner);
     let entry_b = tir_fn_add_block(tir_f, arena);
 
     let mut cur_b = entry_b;
@@ -459,7 +654,8 @@ pub fn lower_ast_fn_to_tir(ast_fn: *mut AstFn, arena: *mut u8) -> *mut TirFuncti
     let mut i: i64 = 0;
     while i < body_len {
         let stmt = vec_get(&ast_fn.body, i);
-        cur_b = lower_ast_stmt_to_tir(tir_f, cur_b, stmt, arena);
+        let is_tail = (i == body_len - 1);
+        cur_b = lower_ast_stmt_to_tir(tir_f, cur_b, stmt, 0 - 1, is_tail, arena);
         i = i + 1;
     }
 
@@ -471,13 +667,13 @@ pub fn lower_ast_fn_to_tir(ast_fn: *mut AstFn, arena: *mut u8) -> *mut TirFuncti
     tir_f
 }
 
-pub fn lower_ast_program_to_tir(prog: *mut AstProgram, arena: *mut u8) -> *mut TirModule {
+pub fn lower_ast_program_to_tir(prog: *mut AstProgram, interner: &Interner, arena: *mut u8) -> *mut TirModule {
     let m = alloc_tir_module(arena, prog);
     let fns_len = prog.functions.len;
     let mut i: i64 = 0;
     while i < fns_len {
         let ast_f = vec_get(&prog.functions, i);
-        let tir_f = lower_ast_fn_to_tir(ast_f, arena);
+        let tir_f = lower_ast_fn_to_tir(ast_f, interner, arena);
         vec_push(&mut m.args, tir_f);
         i = i + 1;
     }

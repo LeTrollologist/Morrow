@@ -216,11 +216,11 @@ pub fn compile_file(src_path: String, out_ll_path: String, out_exe_path: String)
                 exit_code = 1;
             } else {
                 forge_print("TGC: Lowering to TIR & optimizing...");
-                let tir_mod = lower_ast_program_to_tir(prog, comp_reg);
+                let tir_mod = lower_ast_program_to_tir(prog, &interner, comp_reg);
                 let opt_count = tir_optimize_module(tir_mod, comp_reg);
 
                 forge_print("TGC: Emitting LLVM IR...");
-                let mut ir_buf = emit_llvm_ir(prog, &mut interner, comp_reg);
+                let mut ir_buf = emit_llvm_ir(tir_mod, &mut interner, comp_reg);
                 string_buffer_push_byte(&mut ir_buf, 0 as u8);
                 let ir_str = string_as_ptr(&ir_buf) as String;
 

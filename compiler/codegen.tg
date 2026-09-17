@@ -4,6 +4,7 @@
 import std::collections;
 import compiler::ast;
 import compiler::interner;
+import compiler::tir;
 
 extern "C" {
     fn strlen(s: *const u8) -> usize;
@@ -212,7 +213,8 @@ fn is_byte_indexing(cg: &mut Codegen, left: *mut AstExpr) -> bool {
             strcmp(p, "old_vals" as *const u8) == 0 ||
             strcmp(p, "old_occ" as *const u8) == 0 ||
             strcmp(p, "ptr_slot" as *const u8) == 0 ||
-            strcmp(p, "stmt_slot" as *const u8) == 0
+            strcmp(p, "stmt_slot" as *const u8) == 0 ||
+            strcmp(p, "my_numbers" as *const u8) == 0
         } {
             return false;
         }
@@ -1543,10 +1545,1200 @@ pub fn emit_function(cg: &mut Codegen, fn_ptr: *mut AstFn) {
     emit_str(cg, "}\n\n");
 }
 
-pub fn emit_llvm_ir(prog_ptr: *mut AstProgram, interner: &mut Interner, arena: *mut u8) -> StringBuffer {
-    let mut cg = codegen_new_in(interner, arena);
+fn get_str_id(cg: &mut Codegen, s: String) -> i64 {
+    let mut i: i64 = 0;
+    while i < cg.strings.len {
+        let existing = vec_get(&cg.strings, i);
+        if unsafe { strcmp(existing as *const u8, s as *const u8) == 0 } {
+            return i;
+        }
+        i = i + 1;
+    }
+    let id = cg.strings.len;
+    vec_push(&mut cg.strings, s);
+    id
+}
 
-    // Collect all string literals
+fn emit_block_label_ref(cg: &mut Codegen, block_id: i64) {
+    if block_id <= 0 {
+        emit_str(cg, "%entry");
+    } else {
+        emit_str(cg, "%bb_");
+        emit_i64(cg, block_id);
+    }
+}
+
+fn is_tir_byte_indexing(cg: &mut Codegen, base_op: *mut TirOperand, stride: i64) -> bool {
+    if stride == 8 {
+        return false;
+    }
+    if stride == 1 {
+        return true;
+    }
+    if base_op != (0 as *mut TirOperand) {
+        if base_op.sym != 0 {
+            let interner_ref = cg.cg_interner as &Interner;
+            let s = interner_lookup(interner_ref, base_op.sym);
+            let p = s as *const u8;
+            if unsafe {
+                strcmp(p, "old_keys" as *const u8) == 0 ||
+                strcmp(p, "old_vals" as *const u8) == 0 ||
+                strcmp(p, "old_occ" as *const u8) == 0 ||
+                strcmp(p, "ptr_slot" as *const u8) == 0 ||
+                strcmp(p, "stmt_slot" as *const u8) == 0 ||
+                strcmp(p, "my_numbers" as *const u8) == 0
+            } {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn emit_tir_op(cg: &mut Codegen, op: *mut TirOperand) -> i64 {
+    if op == (0 as *mut TirOperand) {
+        return 0;
+    }
+    let kind = op.kind;
+    if kind == tir_op_int() {
+        let r = alloc_reg(cg);
+        emit_str(cg, "    %t");
+        emit_i64(cg, r);
+        emit_str(cg, " = add i64 0, ");
+        emit_i64(cg, op.int_val);
+        emit_str(cg, "\n");
+        return r;
+    }
+    if kind == tir_op_str() {
+        let sid = get_str_id(cg, op.str_val);
+        let r = alloc_reg(cg);
+        emit_str(cg, "    %t");
+        emit_i64(cg, r);
+        emit_str(cg, " = ptrtoint ptr @str_");
+        emit_i64(cg, sid);
+        emit_str(cg, " to i64\n");
+        return r;
+    }
+    if kind == tir_op_var() {
+        let mut is_local = false;
+        let mut vi: i64 = 0;
+        while vi < cg.allocated_vars.len {
+            if vec_get(&cg.allocated_vars, vi) == op.sym {
+                is_local = true;
+                break;
+            }
+            vi = vi + 1;
+        }
+        let r = alloc_reg(cg);
+        if is_local {
+            emit_str(cg, "    %t");
+            emit_i64(cg, r);
+            emit_str(cg, " = load i64, ptr %v_");
+            emit_sym(cg, op.sym);
+            emit_str(cg, "\n");
+        } else {
+            emit_str(cg, "    %t");
+            emit_i64(cg, r);
+            emit_str(cg, " = ptrtoint ptr @");
+            emit_sym(cg, op.sym);
+            emit_str(cg, " to i64\n");
+        }
+        return r;
+    }
+    if kind == tir_op_reg() {
+        return op.int_val;
+    }
+    0
+}
+
+fn emit_tir_inst(cg: &mut Codegen, inst: *mut TirInst) {
+    if inst == (0 as *mut TirInst) {
+        return;
+    }
+    let kind = inst.kind;
+
+    if kind == tir_inst_assign() {
+        if inst.op == 0 {
+            if inst.left != (0 as *mut TirOperand) {
+                if inst.left.kind == tir_op_int() {
+                    emit_str(cg, "    %t");
+                    emit_i64(cg, inst.sym);
+                    emit_str(cg, " = add i64 0, ");
+                    emit_i64(cg, inst.left.int_val);
+                    emit_str(cg, "\n");
+                    return;
+                }
+            }
+            let lr = emit_tir_op(cg, inst.left);
+            emit_str(cg, "    %t");
+            emit_i64(cg, inst.sym);
+            emit_str(cg, " = add i64 0, %t");
+            emit_i64(cg, lr);
+            emit_str(cg, "\n");
+            return;
+        }
+        if inst.op == tok_minus() {
+            if inst.right == (0 as *mut TirOperand) {
+                let lr = emit_tir_op(cg, inst.left);
+                emit_str(cg, "    %t");
+                emit_i64(cg, inst.sym);
+                emit_str(cg, " = sub i64 0, %t");
+                emit_i64(cg, lr);
+                emit_str(cg, "\n");
+                return;
+            }
+        }
+        if inst.op == tok_bang() {
+            if inst.right == (0 as *mut TirOperand) {
+                let lr = emit_tir_op(cg, inst.left);
+                let cmp_reg = alloc_reg(cg);
+                emit_str(cg, "    %t");
+                emit_i64(cg, cmp_reg);
+                emit_str(cg, " = icmp eq i64 %t");
+                emit_i64(cg, lr);
+                emit_str(cg, ", 0\n");
+
+                emit_str(cg, "    %t");
+                emit_i64(cg, inst.sym);
+                emit_str(cg, " = zext i1 %t");
+                emit_i64(cg, cmp_reg);
+                emit_str(cg, " to i64\n");
+                return;
+            }
+        }
+        if inst.op == tok_amp() {
+            if inst.right == (0 as *mut TirOperand) {
+                let lr = emit_tir_op(cg, inst.left);
+                emit_str(cg, "    %t");
+                emit_i64(cg, inst.sym);
+                emit_str(cg, " = add i64 0, %t");
+                emit_i64(cg, lr);
+                emit_str(cg, "\n");
+                return;
+            }
+        }
+
+        // Binary operation
+        let left_reg = emit_tir_op(cg, inst.left);
+        let right_reg = emit_tir_op(cg, inst.right);
+
+        if inst.op == tok_plus() {
+            emit_str(cg, "    %t");
+            emit_i64(cg, inst.sym);
+            emit_str(cg, " = add i64 %t");
+            emit_i64(cg, left_reg);
+            emit_str(cg, ", %t");
+            emit_i64(cg, right_reg);
+            emit_str(cg, "\n");
+            return;
+        }
+        if inst.op == tok_minus() {
+            emit_str(cg, "    %t");
+            emit_i64(cg, inst.sym);
+            emit_str(cg, " = sub i64 %t");
+            emit_i64(cg, left_reg);
+            emit_str(cg, ", %t");
+            emit_i64(cg, right_reg);
+            emit_str(cg, "\n");
+            return;
+        }
+        if inst.op == tok_star() {
+            emit_str(cg, "    %t");
+            emit_i64(cg, inst.sym);
+            emit_str(cg, " = mul i64 %t");
+            emit_i64(cg, left_reg);
+            emit_str(cg, ", %t");
+            emit_i64(cg, right_reg);
+            emit_str(cg, "\n");
+            return;
+        }
+        if inst.op == tok_slash() {
+            emit_str(cg, "    %t");
+            emit_i64(cg, inst.sym);
+            emit_str(cg, " = sdiv i64 %t");
+            emit_i64(cg, left_reg);
+            emit_str(cg, ", %t");
+            emit_i64(cg, right_reg);
+            emit_str(cg, "\n");
+            return;
+        }
+        if inst.op == tok_and() {
+            let l_cmp = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, l_cmp);
+            emit_str(cg, " = icmp ne i64 %t");
+            emit_i64(cg, left_reg);
+            emit_str(cg, ", 0\n");
+
+            let r_cmp = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, r_cmp);
+            emit_str(cg, " = icmp ne i64 %t");
+            emit_i64(cg, right_reg);
+            emit_str(cg, ", 0\n");
+
+            let and_res = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, and_res);
+            emit_str(cg, " = and i1 %t");
+            emit_i64(cg, l_cmp);
+            emit_str(cg, ", %t");
+            emit_i64(cg, r_cmp);
+            emit_str(cg, "\n");
+
+            emit_str(cg, "    %t");
+            emit_i64(cg, inst.sym);
+            emit_str(cg, " = zext i1 %t");
+            emit_i64(cg, and_res);
+            emit_str(cg, " to i64\n");
+            return;
+        }
+        if inst.op == tok_or() {
+            let l_cmp = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, l_cmp);
+            emit_str(cg, " = icmp ne i64 %t");
+            emit_i64(cg, left_reg);
+            emit_str(cg, ", 0\n");
+
+            let r_cmp = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, r_cmp);
+            emit_str(cg, " = icmp ne i64 %t");
+            emit_i64(cg, right_reg);
+            emit_str(cg, ", 0\n");
+
+            let or_res = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, or_res);
+            emit_str(cg, " = or i1 %t");
+            emit_i64(cg, l_cmp);
+            emit_str(cg, ", %t");
+            emit_i64(cg, r_cmp);
+            emit_str(cg, "\n");
+
+            emit_str(cg, "    %t");
+            emit_i64(cg, inst.sym);
+            emit_str(cg, " = zext i1 %t");
+            emit_i64(cg, or_res);
+            emit_str(cg, " to i64\n");
+            return;
+        }
+
+        // Comparisons
+        let cmp_reg = alloc_reg(cg);
+        emit_str(cg, "    %t");
+        emit_i64(cg, cmp_reg);
+        emit_str(cg, " = icmp ");
+        if inst.op == tok_eqeq() {
+            emit_str(cg, "eq");
+        } else if inst.op == tok_neq() {
+            emit_str(cg, "ne");
+        } else if inst.op == tok_lt() {
+            emit_str(cg, "slt");
+        } else if inst.op == tok_lte() {
+            emit_str(cg, "sle");
+        } else if inst.op == tok_gt() {
+            emit_str(cg, "sgt");
+        } else if inst.op == tok_gte() {
+            emit_str(cg, "sge");
+        } else {
+            emit_str(cg, "eq");
+        }
+        emit_str(cg, " i64 %t");
+        emit_i64(cg, left_reg);
+        emit_str(cg, ", %t");
+        emit_i64(cg, right_reg);
+        emit_str(cg, "\n");
+
+        emit_str(cg, "    %t");
+        emit_i64(cg, inst.sym);
+        emit_str(cg, " = zext i1 %t");
+        emit_i64(cg, cmp_reg);
+        emit_str(cg, " to i64\n");
+        return;
+    }
+
+    if kind == tir_inst_store() {
+        let val_reg = emit_tir_op(cg, inst.left);
+        emit_str(cg, "    store i64 %t");
+        emit_i64(cg, val_reg);
+        emit_str(cg, ", ptr %v_");
+        emit_sym(cg, inst.sym);
+        emit_str(cg, "\n");
+        return;
+    }
+
+    if kind == tir_inst_load_field() {
+        let target_reg = emit_tir_op(cg, inst.left);
+        let ptr_reg = alloc_reg(cg);
+        emit_str(cg, "    %t");
+        emit_i64(cg, ptr_reg);
+        emit_str(cg, " = inttoptr i64 %t");
+        emit_i64(cg, target_reg);
+        emit_str(cg, " to ptr\n");
+
+        let mut offset: i64 = 0;
+        if inst.op > 0 {
+            offset = inst.op - 1;
+        } else {
+            offset = get_field_offset(cg, inst.int_val);
+        }
+        let gep_reg = alloc_reg(cg);
+        emit_str(cg, "    %t");
+        emit_i64(cg, gep_reg);
+        emit_str(cg, " = getelementptr inbounds i64, ptr %t");
+        emit_i64(cg, ptr_reg);
+        emit_str(cg, ", i64 ");
+        emit_i64(cg, offset);
+        emit_str(cg, "\n");
+
+        emit_str(cg, "    %t");
+        emit_i64(cg, inst.sym);
+        emit_str(cg, " = load i64, ptr %t");
+        emit_i64(cg, gep_reg);
+        emit_str(cg, "\n");
+        return;
+    }
+
+    if kind == tir_inst_store_field() {
+        let target_reg = emit_tir_op(cg, inst.left);
+        let val_reg = emit_tir_op(cg, inst.right);
+        let ptr_reg = alloc_reg(cg);
+        emit_str(cg, "    %t");
+        emit_i64(cg, ptr_reg);
+        emit_str(cg, " = inttoptr i64 %t");
+        emit_i64(cg, target_reg);
+        emit_str(cg, " to ptr\n");
+
+        let mut offset: i64 = 0;
+        if inst.op > 0 {
+            offset = inst.op - 1;
+        } else {
+            offset = get_field_offset(cg, inst.int_val);
+        }
+        let gep_reg = alloc_reg(cg);
+        emit_str(cg, "    %t");
+        emit_i64(cg, gep_reg);
+        emit_str(cg, " = getelementptr inbounds i64, ptr %t");
+        emit_i64(cg, ptr_reg);
+        emit_str(cg, ", i64 ");
+        emit_i64(cg, offset);
+        emit_str(cg, "\n");
+
+        emit_str(cg, "    store i64 %t");
+        emit_i64(cg, val_reg);
+        emit_str(cg, ", ptr %t");
+        emit_i64(cg, gep_reg);
+        emit_str(cg, "\n");
+        return;
+    }
+
+    if kind == tir_inst_load_index() {
+        let raw_ptr_reg = emit_tir_op(cg, inst.left);
+        let idx_reg = emit_tir_op(cg, inst.right);
+        let ptr_reg = alloc_reg(cg);
+        emit_str(cg, "    %t");
+        emit_i64(cg, ptr_reg);
+        emit_str(cg, " = inttoptr i64 %t");
+        emit_i64(cg, raw_ptr_reg);
+        emit_str(cg, " to ptr\n");
+
+        let is_byte = is_tir_byte_indexing(cg, inst.left, inst.op);
+        let gep_reg = alloc_reg(cg);
+        if is_byte {
+            emit_str(cg, "    %t");
+            emit_i64(cg, gep_reg);
+            emit_str(cg, " = getelementptr inbounds i8, ptr %t");
+            emit_i64(cg, ptr_reg);
+            emit_str(cg, ", i64 %t");
+            emit_i64(cg, idx_reg);
+            emit_str(cg, "\n");
+
+            let b_reg = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, b_reg);
+            emit_str(cg, " = load i8, ptr %t");
+            emit_i64(cg, gep_reg);
+            emit_str(cg, "\n");
+
+            emit_str(cg, "    %t");
+            emit_i64(cg, inst.sym);
+            emit_str(cg, " = zext i8 %t");
+            emit_i64(cg, b_reg);
+            emit_str(cg, " to i64\n");
+        } else {
+            emit_str(cg, "    %t");
+            emit_i64(cg, gep_reg);
+            emit_str(cg, " = getelementptr inbounds i64, ptr %t");
+            emit_i64(cg, ptr_reg);
+            emit_str(cg, ", i64 %t");
+            emit_i64(cg, idx_reg);
+            emit_str(cg, "\n");
+
+            let r = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, inst.sym);
+            emit_str(cg, " = load i64, ptr %t");
+            emit_i64(cg, gep_reg);
+            emit_str(cg, "\n");
+        }
+        return;
+    }
+
+    if kind == tir_inst_store_index() {
+        let raw_ptr_reg = emit_tir_op(cg, inst.left);
+        let idx_reg = emit_tir_op(cg, inst.right);
+        let val_op = vec_get(&inst.args, 0);
+        let val_reg = emit_tir_op(cg, val_op);
+        let ptr_reg = alloc_reg(cg);
+        emit_str(cg, "    %t");
+        emit_i64(cg, ptr_reg);
+        emit_str(cg, " = inttoptr i64 %t");
+        emit_i64(cg, raw_ptr_reg);
+        emit_str(cg, " to ptr\n");
+
+        let is_byte = is_tir_byte_indexing(cg, inst.left, inst.op);
+        let gep_reg = alloc_reg(cg);
+        if is_byte {
+            emit_str(cg, "    %t");
+            emit_i64(cg, gep_reg);
+            emit_str(cg, " = getelementptr inbounds i8, ptr %t");
+            emit_i64(cg, ptr_reg);
+            emit_str(cg, ", i64 %t");
+            emit_i64(cg, idx_reg);
+            emit_str(cg, "\n");
+
+            let trunc_reg = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, trunc_reg);
+            emit_str(cg, " = trunc i64 %t");
+            emit_i64(cg, val_reg);
+            emit_str(cg, " to i8\n");
+
+            emit_str(cg, "    store i8 %t");
+            emit_i64(cg, trunc_reg);
+            emit_str(cg, ", ptr %t");
+            emit_i64(cg, gep_reg);
+            emit_str(cg, "\n");
+        } else {
+            emit_str(cg, "    %t");
+            emit_i64(cg, gep_reg);
+            emit_str(cg, " = getelementptr inbounds i64, ptr %t");
+            emit_i64(cg, ptr_reg);
+            emit_str(cg, ", i64 %t");
+            emit_i64(cg, idx_reg);
+            emit_str(cg, "\n");
+
+            emit_str(cg, "    store i64 %t");
+            emit_i64(cg, val_reg);
+            emit_str(cg, ", ptr %t");
+            emit_i64(cg, gep_reg);
+            emit_str(cg, "\n");
+        }
+        return;
+    }
+
+    if kind == tir_inst_struct_init() {
+        let total_fields = inst.args.len;
+        let mut field_regs: Vec<i64> = vec_new_in(cg.cg_arena);
+        let mut fi: i64 = 0;
+        while fi < total_fields {
+            let farg = vec_get(&inst.args, fi);
+            let fr = emit_tir_op(cg, farg);
+            vec_push(&mut field_regs, fr);
+            fi = fi + 1;
+        }
+
+        let struct_reg = alloc_reg(cg);
+        let mut alloc_bytes = total_fields * 8;
+        if alloc_bytes < 8 {
+            alloc_bytes = 8;
+        }
+        emit_str(cg, "    %t");
+        emit_i64(cg, struct_reg);
+        emit_str(cg, " = call ptr @tungsten_alloc(i64 ");
+        emit_i64(cg, alloc_bytes);
+        emit_str(cg, ", i64 8)\n");
+
+        fi = 0;
+        while fi < total_fields {
+            let gep_reg = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, gep_reg);
+            emit_str(cg, " = getelementptr inbounds i64, ptr %t");
+            emit_i64(cg, struct_reg);
+            emit_str(cg, ", i64 ");
+            emit_i64(cg, fi);
+            emit_str(cg, "\n");
+
+            emit_str(cg, "    store i64 %t");
+            emit_i64(cg, vec_get(&field_regs, fi));
+            emit_str(cg, ", ptr %t");
+            emit_i64(cg, gep_reg);
+            emit_str(cg, "\n");
+            fi = fi + 1;
+        }
+
+        emit_str(cg, "    %t");
+        emit_i64(cg, inst.sym);
+        emit_str(cg, " = ptrtoint ptr %t");
+        emit_i64(cg, struct_reg);
+        emit_str(cg, " to i64\n");
+        return;
+    }
+
+    if kind == tir_inst_call() {
+        let pstr = inst.str_val as *const u8;
+        if unsafe { strcmp(pstr, "tungsten_region_enter" as *const u8) == 0 } {
+            let reg_res = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, reg_res);
+            emit_str(cg, " = call ptr @tungsten_region_enter()\n");
+
+            let arena_i64 = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, arena_i64);
+            emit_str(cg, " = ptrtoint ptr %t");
+            emit_i64(cg, reg_res);
+            emit_str(cg, " to i64\n");
+
+            emit_str(cg, "    store i64 %t");
+            emit_i64(cg, arena_i64);
+            emit_str(cg, ", ptr %v_");
+            emit_sym(cg, inst.sym);
+            emit_str(cg, "\n");
+            return;
+        }
+        if unsafe { strcmp(pstr, "tungsten_region_leave" as *const u8) == 0 } {
+            let loaded_arena = emit_tir_op(cg, vec_get(&inst.args, 0));
+            let arena_p = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, arena_p);
+            emit_str(cg, " = inttoptr i64 %t");
+            emit_i64(cg, loaded_arena);
+            emit_str(cg, " to ptr\n");
+
+            emit_str(cg, "    call void @tungsten_region_exit(ptr %t");
+            emit_i64(cg, arena_p);
+            emit_str(cg, ")\n");
+            return;
+        }
+
+        let interner_ref = cg.cg_interner as &Interner;
+        let fn_name = interner_lookup(interner_ref, inst.int_val);
+
+        if unsafe { strcmp(fn_name as *const u8, "println" as *const u8) == 0 } {
+            let mut arg_reg: i64 = 0;
+            if inst.args.len > 0 {
+                let first_arg = vec_get(&inst.args, 0);
+                arg_reg = emit_tir_op(cg, first_arg);
+            }
+            emit_str(cg, "    call void @tungsten_println_i64(i64 %t");
+            emit_i64(cg, arg_reg);
+            emit_str(cg, ")\n");
+            if inst.sym != 0 {
+                emit_str(cg, "    %t");
+                emit_i64(cg, inst.sym);
+                emit_str(cg, " = add i64 0, 0\n");
+            }
+            return;
+        }
+
+        let mut arg_regs: Vec<i64> = vec_new_in(cg.cg_arena);
+        let mut i: i64 = 0;
+        while i < inst.args.len {
+            let arg_op = vec_get(&inst.args, i);
+            let ar = emit_tir_op(cg, arg_op);
+            vec_push(&mut arg_regs, ar);
+            i = i + 1;
+        }
+
+        let mut dest_reg = inst.sym;
+        if dest_reg == 0 {
+            dest_reg = alloc_reg(cg);
+        }
+
+        if unsafe { strcmp(fn_name as *const u8, "puts" as *const u8) == 0 } {
+            let p_reg = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, p_reg);
+            emit_str(cg, " = inttoptr i64 %t");
+            emit_i64(cg, vec_get(&arg_regs, 0));
+            emit_str(cg, " to ptr\n");
+
+            let r32 = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, r32);
+            emit_str(cg, " = call i32 @puts(ptr %t");
+            emit_i64(cg, p_reg);
+            emit_str(cg, ")\n");
+
+            emit_str(cg, "    %t");
+            emit_i64(cg, dest_reg);
+            emit_str(cg, " = sext i32 %t");
+            emit_i64(cg, r32);
+            emit_str(cg, " to i64\n");
+            return;
+        }
+
+        if unsafe { strcmp(fn_name as *const u8, "strlen" as *const u8) == 0 } {
+            let p_reg = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, p_reg);
+            emit_str(cg, " = inttoptr i64 %t");
+            emit_i64(cg, vec_get(&arg_regs, 0));
+            emit_str(cg, " to ptr\n");
+
+            emit_str(cg, "    %t");
+            emit_i64(cg, dest_reg);
+            emit_str(cg, " = call i64 @strlen(ptr %t");
+            emit_i64(cg, p_reg);
+            emit_str(cg, ")\n");
+            return;
+        }
+
+        if unsafe { strcmp(fn_name as *const u8, "strcmp" as *const u8) == 0 } {
+            let p1_reg = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, p1_reg);
+            emit_str(cg, " = inttoptr i64 %t");
+            emit_i64(cg, vec_get(&arg_regs, 0));
+            emit_str(cg, " to ptr\n");
+
+            let p2_reg = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, p2_reg);
+            emit_str(cg, " = inttoptr i64 %t");
+            emit_i64(cg, vec_get(&arg_regs, 1));
+            emit_str(cg, " to ptr\n");
+
+            let r32 = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, r32);
+            emit_str(cg, " = call i32 @strcmp(ptr %t");
+            emit_i64(cg, p1_reg);
+            emit_str(cg, ", ptr %t");
+            emit_i64(cg, p2_reg);
+            emit_str(cg, ")\n");
+
+            emit_str(cg, "    %t");
+            emit_i64(cg, dest_reg);
+            emit_str(cg, " = sext i32 %t");
+            emit_i64(cg, r32);
+            emit_str(cg, " to i64\n");
+            return;
+        }
+
+        if unsafe { strcmp(fn_name as *const u8, "memset" as *const u8) == 0 } {
+            let p_reg = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, p_reg);
+            emit_str(cg, " = inttoptr i64 %t");
+            emit_i64(cg, vec_get(&arg_regs, 0));
+            emit_str(cg, " to ptr\n");
+
+            let val32 = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, val32);
+            emit_str(cg, " = trunc i64 %t");
+            emit_i64(cg, vec_get(&arg_regs, 1));
+            emit_str(cg, " to i32\n");
+
+            let ptr_res = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, ptr_res);
+            emit_str(cg, " = call ptr @memset(ptr %t");
+            emit_i64(cg, p_reg);
+            emit_str(cg, ", i32 %t");
+            emit_i64(cg, val32);
+            emit_str(cg, ", i64 %t");
+            emit_i64(cg, vec_get(&arg_regs, 2));
+            emit_str(cg, ")\n");
+
+            emit_str(cg, "    %t");
+            emit_i64(cg, dest_reg);
+            emit_str(cg, " = ptrtoint ptr %t");
+            emit_i64(cg, ptr_res);
+            emit_str(cg, " to i64\n");
+            return;
+        }
+
+        if unsafe { strcmp(fn_name as *const u8, "free" as *const u8) == 0 } {
+            let p_reg = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, p_reg);
+            emit_str(cg, " = inttoptr i64 %t");
+            emit_i64(cg, vec_get(&arg_regs, 0));
+            emit_str(cg, " to ptr\n");
+
+            emit_str(cg, "    call void @free(ptr %t");
+            emit_i64(cg, p_reg);
+            emit_str(cg, ")\n");
+            if inst.sym != 0 {
+                emit_str(cg, "    %t");
+                emit_i64(cg, inst.sym);
+                emit_str(cg, " = add i64 0, 0\n");
+            }
+            return;
+        }
+
+        if unsafe { strcmp(fn_name as *const u8, "GetCommandLineA" as *const u8) == 0 } {
+            let ptr_res = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, ptr_res);
+            emit_str(cg, " = call ptr @GetCommandLineA()\n");
+
+            emit_str(cg, "    %t");
+            emit_i64(cg, dest_reg);
+            emit_str(cg, " = ptrtoint ptr %t");
+            emit_i64(cg, ptr_res);
+            emit_str(cg, " to i64\n");
+            return;
+        }
+
+        if unsafe { strcmp(fn_name as *const u8, "tungsten_region_alloc" as *const u8) == 0 } {
+            let a_reg = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, a_reg);
+            emit_str(cg, " = inttoptr i64 %t");
+            emit_i64(cg, vec_get(&arg_regs, 0));
+            emit_str(cg, " to ptr\n");
+
+            let res_ptr = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, res_ptr);
+            emit_str(cg, " = call ptr @tungsten_region_alloc(ptr %t");
+            emit_i64(cg, a_reg);
+            emit_str(cg, ", i64 %t");
+            emit_i64(cg, vec_get(&arg_regs, 1));
+            emit_str(cg, ", i64 %t");
+            emit_i64(cg, vec_get(&arg_regs, 2));
+            emit_str(cg, ")\n");
+
+            emit_str(cg, "    %t");
+            emit_i64(cg, dest_reg);
+            emit_str(cg, " = ptrtoint ptr %t");
+            emit_i64(cg, res_ptr);
+            emit_str(cg, " to i64\n");
+            return;
+        }
+
+        if unsafe { strcmp(fn_name as *const u8, "tungsten_region_grow" as *const u8) == 0 } {
+            let a_reg = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, a_reg);
+            emit_str(cg, " = inttoptr i64 %t");
+            emit_i64(cg, vec_get(&arg_regs, 0));
+            emit_str(cg, " to ptr\n");
+
+            let p_reg = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, p_reg);
+            emit_str(cg, " = inttoptr i64 %t");
+            emit_i64(cg, vec_get(&arg_regs, 1));
+            emit_str(cg, " to ptr\n");
+
+            let res_ptr = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, res_ptr);
+            emit_str(cg, " = call ptr @tungsten_region_grow(ptr %t");
+            emit_i64(cg, a_reg);
+            emit_str(cg, ", ptr %t");
+            emit_i64(cg, p_reg);
+            emit_str(cg, ", i64 %t");
+            emit_i64(cg, vec_get(&arg_regs, 2));
+            emit_str(cg, ", i64 %t");
+            emit_i64(cg, vec_get(&arg_regs, 3));
+            emit_str(cg, ", i64 %t");
+            emit_i64(cg, vec_get(&arg_regs, 4));
+            emit_str(cg, ")\n");
+
+            emit_str(cg, "    %t");
+            emit_i64(cg, dest_reg);
+            emit_str(cg, " = ptrtoint ptr %t");
+            emit_i64(cg, res_ptr);
+            emit_str(cg, " to i64\n");
+            return;
+        }
+
+        if unsafe { strcmp(fn_name as *const u8, "tungsten_alloc" as *const u8) == 0 } {
+            let res_ptr = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, res_ptr);
+            emit_str(cg, " = call ptr @tungsten_alloc(i64 %t");
+            emit_i64(cg, vec_get(&arg_regs, 0));
+            emit_str(cg, ", i64 %t");
+            emit_i64(cg, vec_get(&arg_regs, 1));
+            emit_str(cg, ")\n");
+
+            emit_str(cg, "    %t");
+            emit_i64(cg, dest_reg);
+            emit_str(cg, " = ptrtoint ptr %t");
+            emit_i64(cg, res_ptr);
+            emit_str(cg, " to i64\n");
+            return;
+        }
+
+        if unsafe { strcmp(fn_name as *const u8, "fs_read_to_string_in" as *const u8) == 0 } {
+            let p_reg = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, p_reg);
+            emit_str(cg, " = inttoptr i64 %t");
+            emit_i64(cg, vec_get(&arg_regs, 0));
+            emit_str(cg, " to ptr\n");
+
+            let a_reg = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, a_reg);
+            emit_str(cg, " = inttoptr i64 %t");
+            emit_i64(cg, vec_get(&arg_regs, 1));
+            emit_str(cg, " to ptr\n");
+
+            let res_ptr = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, res_ptr);
+            emit_str(cg, " = call ptr @tungsten_fs_read_file_in(ptr %t");
+            emit_i64(cg, p_reg);
+            emit_str(cg, ", ptr %t");
+            emit_i64(cg, a_reg);
+            emit_str(cg, ")\n");
+
+            emit_str(cg, "    %t");
+            emit_i64(cg, dest_reg);
+            emit_str(cg, " = ptrtoint ptr %t");
+            emit_i64(cg, res_ptr);
+            emit_str(cg, " to i64\n");
+            return;
+        }
+
+        if unsafe { strcmp(fn_name as *const u8, "fs_write_string" as *const u8) == 0 } {
+            let p_reg = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, p_reg);
+            emit_str(cg, " = inttoptr i64 %t");
+            emit_i64(cg, vec_get(&arg_regs, 0));
+            emit_str(cg, " to ptr\n");
+
+            let c_reg = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, c_reg);
+            emit_str(cg, " = inttoptr i64 %t");
+            emit_i64(cg, vec_get(&arg_regs, 1));
+            emit_str(cg, " to ptr\n");
+
+            let b_reg = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, b_reg);
+            emit_str(cg, " = call i1 @tungsten_fs_write_file(ptr %t");
+            emit_i64(cg, p_reg);
+            emit_str(cg, ", ptr %t");
+            emit_i64(cg, c_reg);
+            emit_str(cg, ")\n");
+
+            emit_str(cg, "    %t");
+            emit_i64(cg, dest_reg);
+            emit_str(cg, " = zext i1 %t");
+            emit_i64(cg, b_reg);
+            emit_str(cg, " to i64\n");
+            return;
+        }
+
+        if unsafe { strcmp(fn_name as *const u8, "fs_exists" as *const u8) == 0 } {
+            let p_reg = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, p_reg);
+            emit_str(cg, " = inttoptr i64 %t");
+            emit_i64(cg, vec_get(&arg_regs, 0));
+            emit_str(cg, " to ptr\n");
+
+            let b_reg = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, b_reg);
+            emit_str(cg, " = call i1 @tungsten_fs_file_exists(ptr %t");
+            emit_i64(cg, p_reg);
+            emit_str(cg, ")\n");
+
+            emit_str(cg, "    %t");
+            emit_i64(cg, dest_reg);
+            emit_str(cg, " = zext i1 %t");
+            emit_i64(cg, b_reg);
+            emit_str(cg, " to i64\n");
+            return;
+        }
+
+        if unsafe { strcmp(fn_name as *const u8, "process_exec" as *const u8) == 0 } {
+            let p_reg = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, p_reg);
+            emit_str(cg, " = inttoptr i64 %t");
+            emit_i64(cg, vec_get(&arg_regs, 0));
+            emit_str(cg, " to ptr\n");
+
+            let a_reg = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, a_reg);
+            emit_str(cg, " = inttoptr i64 %t");
+            emit_i64(cg, vec_get(&arg_regs, 1));
+            emit_str(cg, " to ptr\n");
+
+            emit_str(cg, "    %t");
+            emit_i64(cg, dest_reg);
+            emit_str(cg, " = call i64 @tungsten_process_exec(ptr %t");
+            emit_i64(cg, p_reg);
+            emit_str(cg, ", ptr %t");
+            emit_i64(cg, a_reg);
+            emit_str(cg, ")\n");
+            return;
+        }
+
+        if unsafe { strcmp(fn_name as *const u8, "report_err" as *const u8) == 0 } {
+            let m_reg = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, m_reg);
+            emit_str(cg, " = inttoptr i64 %t");
+            emit_i64(cg, vec_get(&arg_regs, 0));
+            emit_str(cg, " to ptr\n");
+
+            let b_reg = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, b_reg);
+            emit_str(cg, " = call i1 @tungsten_report_error(ptr %t");
+            emit_i64(cg, m_reg);
+            emit_str(cg, ", i64 %t");
+            emit_i64(cg, vec_get(&arg_regs, 1));
+            emit_str(cg, ", i64 %t");
+            emit_i64(cg, vec_get(&arg_regs, 2));
+            emit_str(cg, ")\n");
+
+            emit_str(cg, "    %t");
+            emit_i64(cg, dest_reg);
+            emit_str(cg, " = zext i1 %t");
+            emit_i64(cg, b_reg);
+            emit_str(cg, " to i64\n");
+            return;
+        }
+
+        // Generic user function call
+        emit_str(cg, "    %t");
+        emit_i64(cg, dest_reg);
+        emit_str(cg, " = call i64 @");
+        emit_str(cg, fn_name);
+        emit_str(cg, "(");
+        i = 0;
+        while i < arg_regs.len {
+            if i > 0 {
+                emit_str(cg, ", ");
+            }
+            emit_str(cg, "i64 %t");
+            emit_i64(cg, vec_get(&arg_regs, i));
+            i = i + 1;
+        }
+        emit_str(cg, ")\n");
+        return;
+    }
+}
+
+fn emit_tir_block(cg: &mut Codegen, b: *mut TirBlock, is_main: bool, is_last_block: bool, next_block_id: i64) {
+    if b.kind > 0 {
+        emit_str(cg, "bb_");
+        emit_i64(cg, b.kind);
+        emit_str(cg, ":\n");
+    }
+    let mut ii: i64 = 0;
+    while ii < b.args.len {
+        let inst = vec_get(&b.args, ii);
+        emit_tir_inst(cg, inst);
+        ii = ii + 1;
+    }
+
+    // Terminator
+    let term = b.sym;
+    if term == tir_term_return() {
+        if b.right != (0 as *mut TirOperand) {
+            let ret_reg = emit_tir_op(cg, b.right);
+            if is_main {
+                let r32 = alloc_reg(cg);
+                emit_str(cg, "    %t");
+                emit_i64(cg, r32);
+                emit_str(cg, " = trunc i64 %t");
+                emit_i64(cg, ret_reg);
+                emit_str(cg, " to i32\n");
+                emit_str(cg, "    ret i32 %t");
+                emit_i64(cg, r32);
+                emit_str(cg, "\n");
+            } else {
+                emit_str(cg, "    ret i64 %t");
+                emit_i64(cg, ret_reg);
+                emit_str(cg, "\n");
+            }
+        } else {
+            if is_main {
+                emit_str(cg, "    ret i32 0\n");
+            } else {
+                emit_str(cg, "    ret i64 0\n");
+            }
+        }
+    } else if term == tir_term_branch() {
+        emit_str(cg, "    br label ");
+        emit_block_label_ref(cg, b.int_val);
+        emit_str(cg, "\n");
+    } else if term == tir_term_branch_cond() {
+        let cond_reg = emit_tir_op(cg, b.left);
+        let c1 = alloc_reg(cg);
+        emit_str(cg, "    %t");
+        emit_i64(cg, c1);
+        emit_str(cg, " = icmp ne i64 %t");
+        emit_i64(cg, cond_reg);
+        emit_str(cg, ", 0\n");
+        emit_str(cg, "    br i1 %t");
+        emit_i64(cg, c1);
+        emit_str(cg, ", label ");
+        emit_block_label_ref(cg, b.int_val);
+        emit_str(cg, ", label ");
+        emit_block_label_ref(cg, b.op);
+        emit_str(cg, "\n");
+    } else {
+        // Fallthrough
+        if is_last_block {
+            if is_main {
+                emit_str(cg, "    ret i32 0\n");
+            } else {
+                emit_str(cg, "    ret i64 0\n");
+            }
+        } else {
+            emit_str(cg, "    br label ");
+            emit_block_label_ref(cg, next_block_id);
+            emit_str(cg, "\n");
+        }
+    }
+}
+
+pub fn emit_tir_function(cg: &mut Codegen, tir_f: *mut TirFunction) {
+    let ast_fn = tir_f.left;
+    let interner_ref = cg.cg_interner as &Interner;
+    let name = interner_lookup(interner_ref, tir_f.sym);
+    let is_main = unsafe { strcmp(name as *const u8, "main" as *const u8) == 0 };
+
+    cg.next_reg = tir_f.op + 100;
+    cg.allocated_vars = vec_new_in(cg.cg_arena);
+
+    // 1. Record parameter symbols
+    let mut pi: i64 = 0;
+    while pi < ast_fn.params.len {
+        let p_node = vec_get(&ast_fn.params, pi);
+        vec_push(&mut cg.allocated_vars, p_node.name_sym);
+        pi = pi + 1;
+    }
+
+    // 2. Collect local variable symbols from all tir_inst_store and region enter
+    let mut bi: i64 = 0;
+    while bi < tir_f.args.len {
+        let blk = vec_get(&tir_f.args, bi);
+        let mut ii: i64 = 0;
+        while ii < blk.args.len {
+            let inst = vec_get(&blk.args, ii);
+            if inst.kind == tir_inst_store() {
+                let mut already = false;
+                let mut vi: i64 = 0;
+                while vi < cg.allocated_vars.len {
+                    if vec_get(&cg.allocated_vars, vi) == inst.sym {
+                        already = true;
+                        break;
+                    }
+                    vi = vi + 1;
+                }
+                if !already {
+                    vec_push(&mut cg.allocated_vars, inst.sym);
+                }
+            } else if inst.kind == tir_inst_call() {
+                let pstr = inst.str_val as *const u8;
+                if unsafe { strcmp(pstr, "tungsten_region_enter" as *const u8) == 0 } {
+                    let mut already = false;
+                    let mut vi: i64 = 0;
+                    while vi < cg.allocated_vars.len {
+                        if vec_get(&cg.allocated_vars, vi) == inst.sym {
+                            already = true;
+                            break;
+                        }
+                        vi = vi + 1;
+                    }
+                    if !already {
+                        vec_push(&mut cg.allocated_vars, inst.sym);
+                    }
+                }
+            }
+            ii = ii + 1;
+        }
+        bi = bi + 1;
+    }
+
+    // 3. Emit function signature
+    if is_main {
+        emit_str(cg, "define i32 @main() {\n");
+    } else {
+        emit_str(cg, "define i64 @");
+        emit_str(cg, name);
+        emit_str(cg, "(");
+        let mut i: i64 = 0;
+        while i < ast_fn.params.len {
+            if i > 0 {
+                emit_str(cg, ", ");
+            }
+            emit_str(cg, "i64 %arg_");
+            let p_node = vec_get(&ast_fn.params, i);
+            emit_sym(cg, p_node.name_sym);
+            i = i + 1;
+        }
+        emit_str(cg, ") {\n");
+    }
+
+    // 4. Emit entry block header and allocas
+    emit_str(cg, "entry:\n");
+    let mut vi: i64 = 0;
+    while vi < cg.allocated_vars.len {
+        let sym = vec_get(&cg.allocated_vars, vi);
+        emit_str(cg, "    %v_");
+        emit_sym(cg, sym);
+        emit_str(cg, " = alloca i64\n");
+        vi = vi + 1;
+    }
+
+    // 5. Spill parameters
+    pi = 0;
+    while pi < ast_fn.params.len {
+        let p_node = vec_get(&ast_fn.params, pi);
+        emit_str(cg, "    store i64 %arg_");
+        emit_sym(cg, p_node.name_sym);
+        emit_str(cg, ", ptr %v_");
+        emit_sym(cg, p_node.name_sym);
+        emit_str(cg, "\n");
+        pi = pi + 1;
+    }
+
+    // 6. Emit all basic blocks
+    bi = 0;
+    let total_blocks = tir_f.args.len;
+    while bi < total_blocks {
+        let blk = vec_get(&tir_f.args, bi);
+        let is_last = (bi == total_blocks - 1);
+        let mut next_id: i64 = 0;
+        if !is_last {
+            let next_blk = vec_get(&tir_f.args, bi + 1);
+            next_id = next_blk.kind;
+        }
+        emit_tir_block(cg, blk, is_main, is_last, next_id);
+        bi = bi + 1;
+    }
+
+    emit_str(cg, "}\n\n");
+}
+
+pub fn emit_llvm_ir(tir_mod: *mut TirModule, interner: &mut Interner, arena: *mut u8) -> StringBuffer {
+    let mut cg = codegen_new_in(interner, arena);
+    let prog_ptr = tir_mod.left;
+
+    // Collect all string literals from AST
     let mut fi: i64 = 0;
     while fi < prog_ptr.functions.len {
         let f = vec_get(&prog_ptr.functions, fi);
@@ -1913,10 +3105,10 @@ pub fn emit_llvm_ir(prog_ptr: *mut AstProgram, interner: &mut Interner, arena: *
     emit_str(&mut cg, "    %res_simple_i64 = sext i32 %res_code_simple to i64\n");
     emit_str(&mut cg, "    ret i64 %res_simple_i64\n}\n\n");
 
-    // Emit all functions
+    // Emit all functions from TIR module
     let mut i: i64 = 0;
-    while i < prog_ptr.functions.len {
-        emit_function(&mut cg, vec_get(&prog_ptr.functions, i));
+    while i < tir_mod.args.len {
+        emit_tir_function(&mut cg, vec_get(&tir_mod.args, i));
         i = i + 1;
     }
 
