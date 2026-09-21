@@ -382,7 +382,7 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &HashMap, fn_defs: &HashMap, ext_defs
 // -----------------------------------------------------------------------------
 // Type Checking Statements & Region Escape Analysis
 // -----------------------------------------------------------------------------
-pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_defs: &HashMap, types: &HashMap, struct_defs: &HashMap, ret_ty: *mut TcType, stmt: *mut AstStmt) -> bool yields [Diagnostics] {
+pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_defs: &HashMap, types: &HashMap, struct_defs: &HashMap, ret_ty: *mut TcType, region_depth: i64, cur_region_sym: i64, stmt: *mut AstStmt) -> bool yields [Diagnostics] {
     if stmt == (0 as *mut AstStmt) {
         return true;
     }
@@ -401,6 +401,13 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
                     var_ty.int_val = expr_ty.int_val;
                     var_ty.op = expr_ty.op;
                 }
+            }
+        }
+        // Region escape tagging: if inside a region block and the type is a pointer
+        // or reference, mark it as region-scoped using the right field as a sentinel.
+        if region_depth > 0 {
+            if var_ty.kind == ty_ptr() || var_ty.kind == ty_ref() {
+                var_ty.right = cur_region_sym as *mut TcType;
             }
         }
         hashmap_insert(vars, s, var_ty as i64);
@@ -433,6 +440,22 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
                                 tc.pos = tc.pos + 1;
                                 return false;
                             }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Region escape check: reject assigning a region-scoped pointer to an outer variable.
+        // A region-scoped value has right != null; an outer variable has right == null.
+        if region_depth > 0 {
+            if expr_ty != (0 as *mut TcType) {
+                if expr_ty.right != (0 as *mut TcType) {
+                    if var_ty != (0 as *mut TcType) {
+                        if var_ty.right == (0 as *mut TcType) {
+                            report_err("Region Escape Violation: region-scoped pointer assigned to outer-scope variable", 1, 1);
+                            tc.pos = tc.pos + 1;
+                            return false;
                         }
                     }
                 }
@@ -499,6 +522,17 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
                     }
                 }
             }
+            // Region escape check: reject returning a region-scoped pointer.
+            // actual_ty.right != null means it was tagged inside a region block.
+            if region_depth > 0 {
+                if actual_ty != (0 as *mut TcType) {
+                    if actual_ty.right != (0 as *mut TcType) {
+                        report_err("Region Escape Violation: region-scoped pointer returned from function", 1, 1);
+                        tc.pos = tc.pos + 1;
+                        return false;
+                    }
+                }
+            }
         }
         return true;
     }
@@ -514,14 +548,14 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
         let mut i: i64 = 0;
         while i < then_len {
             let s = vec_get(&stmt.then_stmts, i);
-            tc_stmt(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, s);
+            tc_stmt(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, region_depth, cur_region_sym, s);
             i = i + 1;
         }
         let else_len = stmt.else_stmts.len;
         let mut j: i64 = 0;
         while j < else_len {
             let s = vec_get(&stmt.else_stmts, j);
-            tc_stmt(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, s);
+            tc_stmt(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, region_depth, cur_region_sym, s);
             j = j + 1;
         }
         return true;
@@ -533,25 +567,31 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
         let mut i: i64 = 0;
         while i < body_len {
             let s = vec_get(&stmt.then_stmts, i);
-            tc_stmt(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, s);
+            tc_stmt(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, region_depth, cur_region_sym, s);
             i = i + 1;
         }
         return true;
     }
 
     if kind == stmt_block() {
+        // Determine the region depth and sym for this block.
+        // stmt.sym != 0 means it is a named region block: enter a new region scope.
+        let mut blk_depth = region_depth;
+        let mut blk_region_sym = cur_region_sym;
         if stmt.sym != 0 {
             let sym = stmt.sym;
             let interner_ref = tc.interner as &Interner;
             let s = interner_lookup(interner_ref, sym);
             let reg_ty = alloc_tc_type(tc.arena, ty_ptr(), 0);
             hashmap_insert(vars, s, reg_ty as i64);
+            blk_depth = region_depth + 1;
+            blk_region_sym = stmt.sym;
         }
         let body_len = stmt.then_stmts.len;
         let mut i: i64 = 0;
         while i < body_len {
             let s = vec_get(&stmt.then_stmts, i);
-            tc_stmt(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, s);
+            tc_stmt(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, blk_depth, blk_region_sym, s);
             i = i + 1;
         }
         return true;
@@ -588,7 +628,7 @@ pub fn tc_function(tc: &mut TypeChecker, fn_defs: &HashMap, ext_defs: &HashMap, 
     let mut j: i64 = 0;
     while j < body_len {
         let stmt = vec_get(&f.body, j);
-        tc_stmt(tc, &mut vars, fn_defs, ext_defs, types, struct_defs, ret_ty, stmt);
+        tc_stmt(tc, &mut vars, fn_defs, ext_defs, types, struct_defs, ret_ty, 0, 0, stmt);
         j = j + 1;
     }
 

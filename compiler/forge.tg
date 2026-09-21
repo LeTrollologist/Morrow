@@ -375,6 +375,8 @@ pub fn forge_run_test(arena: *mut u8) -> i64 yields [FS, Process, Diagnostics, I
     vec_push(&mut test_suites, "tests/error_handling_tests.tg");
     vec_push(&mut test_suites, "tests/win32_gdi_callback_test.tg");
     vec_push(&mut test_suites, "tests/struct_field_layout_test.tg");
+    vec_push(&mut test_suites, "tests/refinement_test.tg");
+    vec_push(&mut test_suites, "tests/region_escape_test.tg");
 
     let mut passed: i64 = 0;
     let mut failed: i64 = 0;
