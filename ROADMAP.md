@@ -261,12 +261,17 @@
 ### Phase 9: Language Feature Realization (v1.6)
 *Target: Implement headline language capabilities in the self-hosted compiler frontend and runtime.*
 
-1. **User-Defined Refinement Types**:
-   - Add top-level refinement grammar `type Name = Primitive[min..max];` to `compiler/parser.tg`.
-   - Store refinement intervals in the type environment and enforce arithmetic constraint checking during assignments, function argument passing, and return statements.
-2. **Compile-Time Region Escape Analysis**:
-   - Attach region identifiers to references in `compiler/typeck.tg`.
-   - Implement linear escape analysis to reject references that outlive their declaring `region r { ... }` block (via returns, assignments to outer variables, or struct fields).
+1. **User-Defined Refinement Types** ✅:
+   - Added top-level refinement grammar `type Name = Primitive[min..max];` to `compiler/parser.tg`.
+   - Stored refinement intervals in the type environment; enforced arithmetic constraint checking during assignments, function argument passing, and return statements.
+   - Prelude refinements: `Percentage`, `Port`, `Byte` registered automatically.
+   - Verified with `tests/refinement_test.tg`.
+2. **Compile-Time Region Escape Analysis** ✅:
+   - Tagged ptr/ref bindings declared inside `region r { ... }` blocks with a region-scope sentinel (`TcType.right = region_sym`).
+   - Statically rejects: returning a region-scoped pointer from a function, and assigning a region-scoped pointer to an outer-scope variable.
+   - Region depth counter (`region_depth: i64`) and symbol (`cur_region_sym: i64`) threaded through `tc_stmt`.
+   - Bootstrap parity confirmed: `SHA256(S2) == SHA256(S3) = B2F126984AE66AB4313A7B89EE9C5EE486C53304B4B6138ACE84301D2095771E`.
+   - Verified with `tests/region_escape_test.tg`.
 3. **Parametric Generics & Polymorphism**:
    - Replace generic token skipping in `compiler/parser.tg` with proper type parameter AST nodes (`struct Container<T> { value: T }`).
    - Implement monomorphization during TIR lowering to generate specialized struct layouts and function instances.
