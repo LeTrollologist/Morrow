@@ -93,7 +93,13 @@ pub fn tc_init_prelude(tc: &mut TypeChecker, types: &mut HashMap) {
     hashmap_insert(types, "usize", t_int as i64);
     hashmap_insert(types, "isize", t_int as i64);
     hashmap_insert(types, "int", t_int as i64);
+    hashmap_insert(types, "u64", t_int as i64);
+    hashmap_insert(types, "u32", t_int as i64);
+    hashmap_insert(types, "i32", t_int as i64);
+    hashmap_insert(types, "u16", t_int as i64);
+    hashmap_insert(types, "i16", t_int as i64);
     hashmap_insert(types, "u8", t_byte as i64);
+    hashmap_insert(types, "i8", t_byte as i64);
     hashmap_insert(types, "byte", t_byte as i64);
     hashmap_insert(types, "bool", t_bool as i64);
     hashmap_insert(types, "String", t_str as i64);
@@ -218,12 +224,25 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &HashMap, fn_defs: &HashMap, ext_defs
         }
 
         // Arithmetic operators compute refinement intervals if both operands are refined
-        if l_ty.op >= 0 && r_ty.op >= 0 {
-            if op == tok_plus() {
-                return alloc_tc_refined(tc.arena, ty_int(), l_ty.int_val + r_ty.int_val, l_ty.op + r_ty.op);
-            }
-            if op == tok_minus() {
-                return alloc_tc_refined(tc.arena, ty_int(), l_ty.int_val - r_ty.op, l_ty.op - r_ty.int_val);
+        if l_ty != (0 as *mut TcType) {
+            if r_ty != (0 as *mut TcType) {
+                if l_ty.op >= 0 {
+                    if r_ty.op >= 0 {
+                        if op == tok_plus() {
+                            return alloc_tc_refined(tc.arena, ty_int(), l_ty.int_val + r_ty.int_val, l_ty.op + r_ty.op);
+                        }
+                        if op == tok_minus() {
+                            return alloc_tc_refined(tc.arena, ty_int(), l_ty.int_val - r_ty.op, l_ty.op - r_ty.int_val);
+                        }
+                        if op == tok_star() {
+                            if l_ty.int_val >= 0 {
+                                if r_ty.int_val >= 0 {
+                                    return alloc_tc_refined(tc.arena, ty_int(), l_ty.int_val * r_ty.int_val, l_ty.op * r_ty.op);
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -231,24 +250,48 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &HashMap, fn_defs: &HashMap, ext_defs
     }
 
     if kind == expr_call() {
-        // Type check argument expressions
-        let args_len = expr.args.len;
-        let mut i: i64 = 0;
-        while i < args_len {
-            let arg_expr = vec_get(&expr.args, i);
-            tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, arg_expr);
-            i = i + 1;
-        }
-
         let fn_sym = expr.sym;
         let interner_ref = tc.interner as &Interner;
         let s = interner_lookup(interner_ref, fn_sym);
 
-        // Check user function
         let fn_val = hashmap_get(fn_defs, s);
+        let mut target_fn: *mut AstFn = 0 as *mut AstFn;
         if fn_val != 0 - 1 {
-            let f = fn_val as *mut AstFn;
-            let ret_sym = f.ret_ty_sym;
+            target_fn = fn_val as *mut AstFn;
+        }
+
+        // Type check argument expressions and verify parameter refinement constraints
+        let args_len = expr.args.len;
+        let mut i: i64 = 0;
+        while i < args_len {
+            let arg_expr = vec_get(&expr.args, i);
+            let arg_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, arg_expr);
+            if target_fn != (0 as *mut AstFn) {
+                if i < target_fn.params.len {
+                    let p = vec_get(&target_fn.params, i);
+                    let param_ty = tc_resolve_type(tc, types, struct_defs, p.ty_sym);
+                    if param_ty != (0 as *mut TcType) {
+                        if arg_ty != (0 as *mut TcType) {
+                            if param_ty.sym != 0 {
+                                if param_ty.op >= 0 {
+                                    if arg_ty.op >= 0 {
+                                        if arg_ty.int_val < param_ty.int_val || arg_ty.op > param_ty.op {
+                                            report_err("Refinement Constraint Violation: argument out of bounds for refined parameter", 1, 1);
+                                            tc.pos = tc.pos + 1;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            i = i + 1;
+        }
+
+        // Check user function return
+        if target_fn != (0 as *mut AstFn) {
+            let ret_sym = target_fn.ret_ty_sym;
             return tc_resolve_type(tc, types, struct_defs, ret_sym);
         }
 
@@ -306,10 +349,16 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &HashMap, fn_defs: &HashMap, ext_defs
         let inner_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, expr.left);
         let target_sym = expr.sym;
         let target_ty = tc_resolve_type(tc, types, struct_defs, target_sym);
-        if target_ty.op >= 0 && inner_ty.op >= 0 {
-            if inner_ty.int_val < target_ty.int_val || inner_ty.op > target_ty.op {
-                report_err("Refinement Constraint Violation: value out of bounds for refined type", 1, 1);
-                tc.pos = tc.pos + 1;
+        if target_ty != (0 as *mut TcType) {
+            if inner_ty != (0 as *mut TcType) {
+                if target_ty.op >= 0 {
+                    if inner_ty.op >= 0 {
+                        if inner_ty.int_val < target_ty.int_val || inner_ty.op > target_ty.op {
+                            report_err("Refinement Constraint Violation: value out of bounds for refined type", 1, 1);
+                            tc.pos = tc.pos + 1;
+                        }
+                    }
+                }
             }
         }
         return target_ty;
@@ -333,7 +382,7 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &HashMap, fn_defs: &HashMap, ext_defs
 // -----------------------------------------------------------------------------
 // Type Checking Statements & Region Escape Analysis
 // -----------------------------------------------------------------------------
-pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_defs: &HashMap, types: &HashMap, struct_defs: &HashMap, stmt: *mut AstStmt) -> bool yields [Diagnostics] {
+pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_defs: &HashMap, types: &HashMap, struct_defs: &HashMap, ret_ty: *mut TcType, stmt: *mut AstStmt) -> bool yields [Diagnostics] {
     if stmt == (0 as *mut AstStmt) {
         return true;
     }
@@ -346,9 +395,13 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
         let expr_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, stmt.expr);
 
         let var_ty = alloc_tc_type(tc.arena, expr_ty.kind, expr_ty.sym);
-        if expr_ty.sym != 0 && expr_ty.op >= 0 {
-            var_ty.int_val = expr_ty.int_val;
-            var_ty.op = expr_ty.op;
+        if expr_ty != (0 as *mut TcType) {
+            if expr_ty.sym != 0 {
+                if expr_ty.op >= 0 {
+                    var_ty.int_val = expr_ty.int_val;
+                    var_ty.op = expr_ty.op;
+                }
+            }
         }
         hashmap_insert(vars, s, var_ty as i64);
         return true;
@@ -370,11 +423,19 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
         let expr_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, stmt.expr);
 
         // Refinement Constraint Check: Verify RHS is within LHS intervals
-        if var_ty.op >= 0 && expr_ty.op >= 0 {
-            if expr_ty.int_val < var_ty.int_val || expr_ty.op > var_ty.op {
-                report_err("Refinement Constraint Violation: value out of bounds for refined type", 1, 1);
-                tc.pos = tc.pos + 1;
-                return false;
+        if var_ty != (0 as *mut TcType) {
+            if expr_ty != (0 as *mut TcType) {
+                if var_ty.sym != 0 {
+                    if var_ty.op >= 0 {
+                        if expr_ty.op >= 0 {
+                            if expr_ty.int_val < var_ty.int_val || expr_ty.op > var_ty.op {
+                                report_err("Refinement Constraint Violation: value out of bounds for refined type", 1, 1);
+                                tc.pos = tc.pos + 1;
+                                return false;
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -422,7 +483,22 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
     if kind == stmt_return() {
         let ret_expr = stmt.expr;
         if ret_expr != (0 as *mut AstExpr) {
-            tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_expr);
+            let actual_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_expr);
+            if ret_ty != (0 as *mut TcType) {
+                if actual_ty != (0 as *mut TcType) {
+                    if ret_ty.sym != 0 {
+                        if ret_ty.op >= 0 {
+                            if actual_ty.op >= 0 {
+                                if actual_ty.int_val < ret_ty.int_val || actual_ty.op > ret_ty.op {
+                                    report_err("Refinement Constraint Violation: return value out of bounds for refined return type", 1, 1);
+                                    tc.pos = tc.pos + 1;
+                                    return false;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
         return true;
     }
@@ -438,14 +514,14 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
         let mut i: i64 = 0;
         while i < then_len {
             let s = vec_get(&stmt.then_stmts, i);
-            tc_stmt(tc, vars, fn_defs, ext_defs, types, struct_defs, s);
+            tc_stmt(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, s);
             i = i + 1;
         }
         let else_len = stmt.else_stmts.len;
         let mut j: i64 = 0;
         while j < else_len {
             let s = vec_get(&stmt.else_stmts, j);
-            tc_stmt(tc, vars, fn_defs, ext_defs, types, struct_defs, s);
+            tc_stmt(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, s);
             j = j + 1;
         }
         return true;
@@ -457,7 +533,7 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
         let mut i: i64 = 0;
         while i < body_len {
             let s = vec_get(&stmt.then_stmts, i);
-            tc_stmt(tc, vars, fn_defs, ext_defs, types, struct_defs, s);
+            tc_stmt(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, s);
             i = i + 1;
         }
         return true;
@@ -475,7 +551,7 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
         let mut i: i64 = 0;
         while i < body_len {
             let s = vec_get(&stmt.then_stmts, i);
-            tc_stmt(tc, vars, fn_defs, ext_defs, types, struct_defs, s);
+            tc_stmt(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, s);
             i = i + 1;
         }
         return true;
@@ -506,11 +582,13 @@ pub fn tc_function(tc: &mut TypeChecker, fn_defs: &HashMap, ext_defs: &HashMap, 
         i = i + 1;
     }
 
+    let ret_ty = tc_resolve_type(tc, types, struct_defs, f.ret_ty_sym);
+
     let body_len = f.body.len;
     let mut j: i64 = 0;
     while j < body_len {
         let stmt = vec_get(&f.body, j);
-        tc_stmt(tc, &mut vars, fn_defs, ext_defs, types, struct_defs, stmt);
+        tc_stmt(tc, &mut vars, fn_defs, ext_defs, types, struct_defs, ret_ty, stmt);
         j = j + 1;
     }
 
@@ -525,6 +603,27 @@ pub fn typecheck_program(prog: *mut AstProgram, interner: *mut Interner, arena: 
     let mut ext_defs = hashmap_new_in(arena, 64);
 
     tc_init_prelude(&mut tc, &mut types);
+
+    // Register type aliases & user-defined refinements
+    let aliases_len = prog.vals.len;
+    let mut a: i64 = 0;
+    while a < aliases_len {
+        let alias = vec_get(&prog.vals, a);
+        let interner_ref = interner as &Interner;
+        let name_s = interner_lookup(interner_ref, alias.name_sym);
+        let base_s = interner_lookup(interner_ref, alias.ty_sym);
+        let base_entry = hashmap_get(&types, base_s);
+        let mut kind = ty_int();
+        if base_entry != 0 - 1 {
+            let base_ty = base_entry as *mut TcType;
+            kind = base_ty.kind;
+        }
+        let t_alias = alloc_tc_type(tc.arena, kind, alias.name_sym);
+        t_alias.int_val = alias.int_val;
+        t_alias.op = alias.op;
+        hashmap_insert(&mut types, name_s, t_alias as i64);
+        a = a + 1;
+    }
 
     // Register structs
     let structs_len = prog.structs.len;

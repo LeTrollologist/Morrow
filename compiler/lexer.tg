@@ -122,6 +122,8 @@ pub fn tokenize(src: String, interner: &mut Interner, arena: *mut u8) -> Vec<*mu
                 kind = tok_kw_break();
             } else if unsafe { strcmp(s as *const u8, "var" as *const u8) == 0 } {
                 kind = tok_kw_var();
+            } else if unsafe { strcmp(s as *const u8, "type" as *const u8) == 0 } {
+                kind = tok_kw_type();
             }
 
             let sym = interner_intern(interner, s);
@@ -210,8 +212,18 @@ pub fn tokenize(src: String, interner: &mut Interner, arena: *mut u8) -> Vec<*mu
                 // /
                 kind = tok_slash();
             } else if c == 46 {
-                // .
-                kind = tok_dot();
+                // . or .. or ..=
+                if idx + 1 < len && unsafe { ptr[idx + 1] } as i64 == 46 {
+                    if idx + 2 < len && unsafe { ptr[idx + 2] } as i64 == 61 {
+                        kind = tok_dotdoteq();
+                        advance = 3;
+                    } else {
+                        kind = tok_dotdot();
+                        advance = 2;
+                    }
+                } else {
+                    kind = tok_dot();
+                }
             } else if c == 38 {
                 // & or &&
                 if idx + 1 < len && unsafe { ptr[idx + 1] } as i64 == 38 {

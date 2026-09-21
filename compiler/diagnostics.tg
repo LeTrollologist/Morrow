@@ -31,7 +31,7 @@ pub fn diag_has_errors(): bool {
 pub fn report_err(msg: String, line: i64, col: i64): bool yields [Diagnostics] {
     unsafe {
         tungsten_diag_inc_error();
-        printf("[ERROR] %s (line %lld, col %lld)\n" as *const u8, msg as *const u8, line, col);
+        puts(msg as *const u8);
         fflush(0 as *const u8);
     }
     true

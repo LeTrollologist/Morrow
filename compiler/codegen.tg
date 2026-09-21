@@ -171,6 +171,7 @@ fn get_field_offset(cg: &mut Codegen, sym: i64) -> i64 {
     if unsafe { strcmp(p, "vals" as *const u8) == 0 } { return 4; }
     if unsafe { strcmp(p, "else_stmts" as *const u8) == 0 } { return 4; }
     if unsafe { strcmp(p, "cg_arena" as *const u8) == 0 } { return 4; }
+    if unsafe { strcmp(p, "type_aliases" as *const u8) == 0 } { return 4; }
 
     if unsafe { strcmp(p, "col" as *const u8) == 0 } { return 5; }
     if unsafe { strcmp(p, "left" as *const u8) == 0 } { return 5; }
@@ -2891,7 +2892,7 @@ pub fn emit_llvm_ir(tir_mod: *mut TirModule, interner: &mut Interner, arena: *mu
 
     emit_str(&mut cg, "define i1 @tungsten_report_error(ptr %msg, i64 %line, i64 %col) {\n");
     emit_str(&mut cg, "    call i64 @tungsten_diag_inc_error()\n");
-    emit_str(&mut cg, "    call i32 (ptr, ...) @printf(ptr @fmt_diag_err, ptr %msg, i64 %line, i64 %col)\n");
+    emit_str(&mut cg, "    call i32 @puts(ptr %msg)\n");
     emit_str(&mut cg, "    call i32 @fflush(ptr null)\n");
     emit_str(&mut cg, "    ret i1 true\n}\n\n");
 

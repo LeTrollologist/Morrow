@@ -390,6 +390,26 @@ pub fn fmt_program(prog: *mut AstProgram, interner: &Interner, arena: *mut u8) -
         fmt_append_str(&mut buf, "}\n\n");
     }
 
+    let mut ta_i: i64 = 0;
+    while ta_i < prog.vals.len {
+        let ta = vec_get(&prog.vals, ta_i);
+        fmt_append_str(&mut buf, "type ");
+        let name_str = interner_lookup(interner, ta.name_sym);
+        fmt_append_str(&mut buf, name_str);
+        fmt_append_str(&mut buf, " = ");
+        let base_str = interner_lookup(interner, ta.ty_sym);
+        fmt_append_str(&mut buf, base_str);
+        if ta.op >= 0 {
+            fmt_append_str(&mut buf, "[");
+            fmt_append_i64(&mut buf, ta.int_val);
+            fmt_append_str(&mut buf, "..");
+            fmt_append_i64(&mut buf, ta.op);
+            fmt_append_str(&mut buf, "]");
+        }
+        fmt_append_str(&mut buf, ";\n\n");
+        ta_i = ta_i + 1;
+    }
+
     let mut j: i64 = 0;
     while j < prog.structs.len {
         let s = vec_get(&prog.structs, j);

@@ -542,6 +542,44 @@ pub fn parse_fn(p: &mut Parser) -> *mut AstFn yields [Diagnostics] {
     alloc_fn(p.arena, name_sym, params, ret_ty_sym, body)
 }
 
+fn parse_interval_bound(p: &mut Parser) -> i64 {
+    let mut sign: i64 = 1;
+    if check(p, tok_minus()) {
+        advance(p);
+        sign = 0 - 1;
+    }
+    if check(p, tok_int()) {
+        let tok = advance(p);
+        return sign * tok.int_val;
+    }
+    0
+}
+
+fn parse_type_alias(p: &mut Parser) -> *mut AstTypeAlias yields [Diagnostics] {
+    advance(p); // consume 'type'
+    let name_tok = expect(p, tok_ident(), "Expected type alias name");
+    expect(p, tok_eq(), "Expected '=' after type alias name");
+    let base_tok = expect(p, tok_ident(), "Expected base type identifier");
+    let mut min_val: i64 = 0;
+    let mut max_val: i64 = 0 - 1;
+
+    if check(p, tok_lbracket()) {
+        advance(p); // consume '['
+        min_val = parse_interval_bound(p);
+        if check(p, tok_dotdoteq()) || check(p, tok_dotdot()) {
+            advance(p); // consume .. or ..=
+        } else {
+            let tok = current_tok(p);
+            report_err("Expected '..' or '..=' in refinement interval", tok.line, tok.col);
+        }
+        max_val = parse_interval_bound(p);
+        expect(p, tok_rbracket(), "Expected ']' after refinement interval");
+    }
+
+    expect(p, tok_semicolon(), "Expected ';' after type alias declaration");
+    alloc_type_alias(p.arena, name_tok.sym, base_tok.sym, min_val, max_val)
+}
+
 fn parse_import(p: &mut Parser) -> String {
     let mut path_buf = string_buffer_new_in(p.arena);
     while !check(p, tok_semicolon()) && !check(p, tok_eof()) {
@@ -583,6 +621,9 @@ pub fn parse_program(tokens: Vec<*mut Token>, interner: &mut Interner, arena: *m
             advance(&mut p); // consume import
             let imp = parse_import(&mut p);
             vec_push(&mut prog.imports, imp);
+        } else if check(&p, tok_kw_type()) {
+            let t_alias = parse_type_alias(&mut p);
+            vec_push(&mut prog.vals, t_alias);
         } else if check(&p, tok_kw_extern()) {
             advance(&mut p); // consume extern
             expect(&mut p, tok_str(), "Expected \"C\" after extern");

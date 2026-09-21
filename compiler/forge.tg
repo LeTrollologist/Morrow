@@ -184,6 +184,26 @@ fn load_module_recursive(path: String, loaded_paths: &mut Vec<String>, prog: *mu
         }
         f_idx = f_idx + 1;
     }
+
+    // 10. Merge type_aliases with deduplication
+    let mut ta_idx: i64 = 0;
+    while ta_idx < file_prog.vals.len {
+        let ta = vec_get(&file_prog.vals, ta_idx);
+        let mut exists = false;
+        let mut chk_idx: i64 = 0;
+        while chk_idx < prog.vals.len {
+            let existing = vec_get(&prog.vals, chk_idx);
+            if existing.name_sym == ta.name_sym {
+                exists = true;
+                break;
+            }
+            chk_idx = chk_idx + 1;
+        }
+        if !exists {
+            vec_push(&mut prog.vals, ta);
+        }
+        ta_idx = ta_idx + 1;
+    }
 }
 
 pub fn load_program_modules(root_path: String, interner: &mut Interner, arena: *mut u8) -> *mut AstProgram yields [FS, Diagnostics] {

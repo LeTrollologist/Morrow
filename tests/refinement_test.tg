@@ -1,0 +1,125 @@
+// Tungsten Refinement Test Suite
+// Verifies user-defined refinement types, interval constraints, and function signatures
+
+type Percentage = u8[0..100];
+type Port = int[1..65535];
+type TempDelta = int[-20..50];
+type MyInt = i64;
+
+extern "C" {
+    fn puts(s: *const u8) -> i32;
+}
+
+fn print_msg(name: *const u8) {
+    unsafe {
+        puts(name);
+    }
+}
+
+fn scale_percentage(p: Percentage) -> Percentage {
+    return p;
+}
+
+fn default_http_port() -> Port {
+    return 80;
+}
+
+fn default_ssl_port() -> Port {
+    return 443;
+}
+
+fn clamp_delta(d: TempDelta) -> TempDelta {
+    return d;
+}
+
+fn test_basic_refinements() -> i64 {
+    let p1: Percentage = 0;
+    let p2: Percentage = 100;
+    let p3: Percentage = 50;
+
+    let port1: Port = 1;
+    let port2: Port = 8080;
+    let port3: Port = 65535;
+
+    let delta1: TempDelta = -20;
+    let delta2: TempDelta = 0;
+    let delta3: TempDelta = 50;
+
+    let unrefined: MyInt = 12345;
+
+    if p1 != 0 || p2 != 100 || p3 != 50 {
+        return 1;
+    }
+    if port1 != 1 || port2 != 8080 || port3 != 65535 {
+        return 2;
+    }
+    if delta1 != 0 - 20 || delta2 != 0 || delta3 != 50 {
+        return 3;
+    }
+    if unrefined != 12345 {
+        return 4;
+    }
+
+    return 0;
+}
+
+fn test_function_contracts() -> i64 {
+    let my_pct: Percentage = 75;
+    let scaled = scale_percentage(my_pct);
+    if scaled != 75 {
+        return 10;
+    }
+
+    let p80 = default_http_port();
+    let p443 = default_ssl_port();
+    if p80 != 80 || p443 != 443 {
+        return 11;
+    }
+
+    let d: TempDelta = -5;
+    let res_d = clamp_delta(d);
+    if res_d != 0 - 5 {
+        return 12;
+    }
+
+    return 0;
+}
+
+fn test_assignment_refinement() -> i64 {
+    let mut cur_pct: Percentage = 10;
+    cur_pct = 90;
+    if cur_pct != 90 {
+        return 20;
+    }
+
+    let mut cur_port: Port = 3000;
+    cur_port = 8000;
+    if cur_port != 8000 {
+        return 21;
+    }
+
+    return 0;
+}
+
+pub fn main() -> i64 {
+    let r1 = test_basic_refinements();
+    if r1 != 0 {
+        print_msg("FAILED: test_basic_refinements\0" as *const u8);
+        return r1;
+    }
+
+    let r2 = test_function_contracts();
+    if r2 != 0 {
+        print_msg("FAILED: test_function_contracts\0" as *const u8);
+        return r2;
+    }
+
+    let r3 = test_assignment_refinement();
+    if r3 != 0 {
+        print_msg("FAILED: test_assignment_refinement\0" as *const u8);
+        return r3;
+    }
+
+    print_msg("All Refinement Tests Passed (100% OK)\0" as *const u8);
+    return 0;
+}
