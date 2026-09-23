@@ -24,7 +24,7 @@
 | **v1.2** | **Cross-Platform Linux & Containerization** | x86_64 Linux (ELF) Target, LLVM POSIX Runtime, Production Multi-Stage Docker (Stage-0 Rust) | **Completed** |
 | **v1.4** | **Compiler Integrity & Architecture Remediation** | Dynamic Struct Layouts, Type-Directed Indexing, Real Module Resolution, Error Propagation, CRT Isolation | **Completed** |
 | **v1.5** | **Direct TIR Codegen & Optimization Pipeline** | Direct TIR-to-LLVM IR Emission, Dynamic Element Strides, SSA Constant Folding & DCE, Bitwise Bootstrap Parity | **Completed** |
-| **v1.6** | **Language Feature Realization** | User-Defined Refinement Syntax, Region Escape Analysis, Monomorphic Generics, Algebraic Effect Lowering | **Planned** |
+| **v1.6** | **Language Feature Realization** | User-Defined Refinement Syntax, Region Escape Analysis, Parametric Generics with Call-Site Monomorphization, Algebraic Effect Lowering | **In Progress** |
 | **v1.7** | **Formal Verification & SMT Bridge** | Z3 Solver Bridge for Non-Linear Arithmetic, Automated Induction Proofs, Affine Handle Invariants | **Planned** |
 
 ---

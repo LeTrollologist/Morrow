@@ -99,17 +99,42 @@ fn subslice_len(start: usize, end: usize(>= start)): usize {
 *const T    // Raw constant pointer (C-compatible FFI)
 ```
 
-### Generics
+### Parametric Generics with Call-Site Monomorphization
+
+Tungsten implements parametric generics via ahead-of-time call-site monomorphization rather than runtime polymorphism or type erasure. Generic templates for structs and functions are instantiated into concrete specializations prior to typechecking and code generation.
+
+Conceptual lowering pipeline:
+
+```text
+foo::<i64>(...)
+       │
+       ▼
+foo__i64
+       │
+       ▼
+concrete TIR
+       │
+       ▼
+LLVM
+```
+
+Generic call arguments and struct instantiations require explicit turbofish syntax (`::<Type>`):
+
 ```tungsten
-struct Pair<T, U> {
+struct Pair<T> {
     first: T,
-    second: U,
+    second: T,
 }
 
 fn identity<T>(item: T): T {
     item
 }
+
+// Specializations instantiated ahead of codegen:
+// identity::<i64>(42)        -> instantiates and calls identity__i64(42)
+// Pair::<i64> { first: 10, second: 20 } -> instantiates and constructs Pair__i64
 ```
+
 
 ---
 
