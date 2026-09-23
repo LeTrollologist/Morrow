@@ -271,10 +271,16 @@
    - Statically rejects: returning a region-scoped pointer from a function, and assigning a region-scoped pointer to an outer-scope variable.
    - Region depth counter (`region_depth: i64`) and symbol (`cur_region_sym: i64`) threaded through `tc_stmt`.
    - Bootstrap parity confirmed: `SHA256(S2) == SHA256(S3) = B2F126984AE66AB4313A7B89EE9C5EE486C53304B4B6138ACE84301D2095771E`.
-   - Verified with `tests/region_escape_test.tg`.
-3. **Parametric Generics & Polymorphism**:
-   - Replace generic token skipping in `compiler/parser.tg` with proper type parameter AST nodes (`struct Container<T> { value: T }`).
-   - Implement monomorphization during TIR lowering to generate specialized struct layouts and function instances.
+3. **Parametric Generics & Call-Site Monomorphization** ✅:
+   - Captured generic type parameter symbols in `compiler/parser.tg` (`struct Container<T>`, `fn identity<T>`) and stored on AST nodes (`type_param_sym` in `AstStruct`, `AstFn`).
+   - Standardized generic call syntax to turbofish notation (`ident::<Type>(args)` and `ident::<Type>{ fields }`) with explicit grammar rule documentation and unterminated turbofish error diagnostics.
+   - Implemented pre-pass monomorphization (`monomorphize_program` in `compiler/forge.tg`) prior to typechecking (Option B design), cloning functions and structs into concrete mangled instances (`ident__concrete`).
+   - Deduplicated instantiations and enforced acceptance invariants:
+     1. Each concrete generic specialization is created at most once (`already_mono` table).
+     2. All call sites to the same specialization resolve to that instance.
+     3. No unresolved type parameters reach code generation (`verify_no_unresolved_turbofish` active compile-time invariant guard).
+   - Bootstrap parity confirmed: `SHA256(S2) == SHA256(S3) = 89B95F06BE82BB5E42185AF2599A5D5D47BFB212CF03E27888D1FD32BD85E975`.
+   - Verified with 16-test comprehensive suite `tests/generics_test.tg`.
 4. **Algebraic Effects & Delimited Handlers**:
    - Add `effect` declarations, `yields [...]` contracts, and `handle { ... } with Handler { ... }` syntax to the grammar and AST.
    - Lower effects via delimited continuations or an explicit stack-switching runtime in LLVM IR.
