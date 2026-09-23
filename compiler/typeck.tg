@@ -689,23 +689,42 @@ pub fn typecheck_program(prog: *mut AstProgram, interner: *mut Interner, arena: 
         j = j + 1;
     }
 
-    // Register functions
+    // Register functions (skip generic templates — they are expanded by monomorphize_program)
     let fns_len = prog.functions.len;
     let mut k: i64 = 0;
     while k < fns_len {
         let f = vec_get(&prog.functions, k);
-        let sym = f.name_sym;
-        let interner_ref = interner as &Interner;
-        let s = interner_lookup(interner_ref, sym);
-        hashmap_insert(&mut fn_defs, s, f as i64);
+        if f.type_param_sym == 0 {
+            let sym = f.name_sym;
+            let interner_ref = interner as &Interner;
+            let s = interner_lookup(interner_ref, sym);
+            hashmap_insert(&mut fn_defs, s, f as i64);
+        }
         k = k + 1;
     }
 
-    // Typecheck each function body
+    // Typecheck each concrete function body.
+    //
+    // DESIGN: Option B — Monomorphization-First
+    //
+    // Generic templates (type_param_sym != 0) are deliberately skipped here.
+    // The monomorphize_program pre-pass has already cloned each template into
+    // one or more concrete specializations (e.g., identity__i64, identity__u8)
+    // and pushed them into prog.functions with type_param_sym = 0. Those
+    // concrete clones ARE typechecked below.
+    //
+    // Consequence: errors inside a generic body are only reported when the
+    // template is actually instantiated. An uninstantiated generic with a
+    // type error in its body will pass typechecking silently. This is an
+    // accepted tradeoff for this phase. A future Option A pass could typecheck
+    // generic bodies symbolically (with T as an abstract type sentinel) to
+    // catch such errors earlier.
     let mut m: i64 = 0;
     while m < fns_len {
         let f = vec_get(&prog.functions, m);
-        tc_function(&mut tc, &fn_defs, &ext_defs, &types, &struct_defs, f);
+        if f.type_param_sym == 0 {
+            tc_function(&mut tc, &fn_defs, &ext_defs, &types, &struct_defs, f);
+        }
         m = m + 1;
     }
 

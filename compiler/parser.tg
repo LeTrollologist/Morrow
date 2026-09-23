@@ -176,6 +176,95 @@ fn parse_primary_expr(p: &mut Parser) -> *mut AstExpr yields [Diagnostics] {
         let name_tok = advance(p);
         let sym = name_tok.sym;
 
+        // -----------------------------------------------------------------------
+        // Grammar Rule: Generic call arguments use turbofish syntax exclusively.
+        //
+        //   turbofish_call   ::= ident "::" "<" type_ident ">" "(" args ")"
+        //   turbofish_init   ::= ident "::" "<" type_ident ">" "{" fields "}"
+        //
+        // The "::<" prefix is REQUIRED. Writing:
+        //   foo<i64>(x)          -- NOT a generic call; "<" is a comparison operator
+        //   foo::<i64>(x)        -- IS a generic call (turbofish form)
+        //
+        // Only a single type argument is supported (Phase 9.3). Multi-param
+        // generics (foo::<A, B>) are deferred to a later phase.
+        //
+        // The monomorphizer (monomorphize_program in forge.tg) expands turbofish
+        // calls into concrete specializations before the typechecker runs.
+        // By the time codegen sees the AST, every call expression must have
+        // int_val == 0 (concrete), enforced by verify_no_unresolved_turbofish.
+        // -----------------------------------------------------------------------
+        if check(p, tok_coloncolon()) {
+            if peek_kind(p, 1) == tok_lt() {
+                advance(p); // consume ::
+                advance(p); // consume <
+                let mut turbo_ty_sym: i64 = 0;
+                if check(p, tok_ident()) {
+                    let ty_tok = advance(p);
+                    turbo_ty_sym = ty_tok.sym;
+                }
+                // Skip any additional tokens until > (e.g. nested <...>)
+                // or EOF
+                while !check(p, tok_gt()) && !check(p, tok_eof()) {
+                    advance(p);
+                }
+                // Unterminated turbofish: foo::<i64 without closing >
+                if check(p, tok_eof()) {
+                    let etok = current_tok(p);
+                    report_err("Unterminated turbofish type argument: missing '>' after generic type", etok.line, etok.col);
+                    return alloc_expr_int(p.arena, 0);
+                }
+                expect(p, tok_gt(), "Expected '>' to close turbofish type argument");
+
+                // Turbofish call: ident::<Type>(args)
+                if check(p, tok_lparen()) {
+                    advance(p); // consume (
+                    let mut args: Vec<*mut AstExpr> = vec_new_in(p.arena);
+                    if !check(p, tok_rparen()) {
+                        let first_arg = parse_expr(p);
+                        vec_push(&mut args, first_arg);
+                        while check(p, tok_comma()) {
+                            advance(p); // consume ,
+                            let next_arg = parse_expr(p);
+                            vec_push(&mut args, next_arg);
+                        }
+                    }
+                    expect(p, tok_rparen(), "Expected ')' after turbofish arguments");
+                    let call_expr = alloc_expr_call(p.arena, sym, args);
+                    // Encode concrete type sym in int_val as a turbofish marker.
+                    // This field MUST be cleared to 0 by monomorphize_program
+                    // before codegen sees the expression (invariant 3).
+                    unsafe { call_expr.int_val = turbo_ty_sym; }
+                    return call_expr;
+                }
+
+                // Turbofish struct init: ident::<Type> { field: val, ... }
+                if check(p, tok_lbrace()) {
+                    if peek_kind(p, 1) == tok_ident() {
+                        if peek_kind(p, 2) == tok_colon() {
+                            advance(p); // consume {
+                            let mut args: Vec<*mut AstExpr> = vec_new_in(p.arena);
+                            while !check(p, tok_rbrace()) && !check(p, tok_eof()) {
+                                expect(p, tok_ident(), "Expected field name in struct literal");
+                                expect(p, tok_colon(), "Expected ':' after field name");
+                                let fval = parse_expr(p);
+                                vec_push(&mut args, fval);
+                                if check(p, tok_comma()) {
+                                    advance(p);
+                                }
+                            }
+                            expect(p, tok_rbrace(), "Expected '}' after struct literal");
+                            let init_expr = alloc_expr_struct_init(p.arena, sym, args);
+                            unsafe { init_expr.int_val = turbo_ty_sym; }
+                            return init_expr;
+                        }
+                    }
+                }
+
+                return alloc_expr_var(p.arena, sym);
+            }
+        }
+
         // Function call: ident(...)
         if check(p, tok_lparen()) {
             advance(p); // consume (
@@ -424,8 +513,13 @@ pub fn parse_struct(p: &mut Parser) -> *mut AstStruct yields [Diagnostics] {
     let name_sym = name_tok.sym;
 
     // Optional generic type parameter: <T>
+    let mut type_param_sym: i64 = 0;
     if check(p, tok_lt()) {
-        advance(p);
+        advance(p); // consume <
+        if check(p, tok_ident()) {
+            let tp_tok = advance(p);
+            type_param_sym = tp_tok.sym;
+        }
         while !check(p, tok_gt()) && !check(p, tok_eof()) {
             advance(p);
         }
@@ -445,7 +539,7 @@ pub fn parse_struct(p: &mut Parser) -> *mut AstStruct yields [Diagnostics] {
         }
     }
     expect(p, tok_rbrace(), "Expected '}' to close struct body");
-    alloc_struct(p.arena, name_sym, fields)
+    alloc_struct(p.arena, name_sym, fields, type_param_sym)
 }
 
 pub fn parse_extern_fn(p: &mut Parser) -> *mut AstExternFn yields [Diagnostics] {
@@ -489,8 +583,13 @@ pub fn parse_fn(p: &mut Parser) -> *mut AstFn yields [Diagnostics] {
     let name_sym = name_tok.sym;
 
     // Optional generic type parameter: <T>
+    let mut type_param_sym: i64 = 0;
     if check(p, tok_lt()) {
-        advance(p);
+        advance(p); // consume <
+        if check(p, tok_ident()) {
+            let tp_tok = advance(p);
+            type_param_sym = tp_tok.sym;
+        }
         while !check(p, tok_gt()) && !check(p, tok_eof()) {
             advance(p);
         }
@@ -539,7 +638,7 @@ pub fn parse_fn(p: &mut Parser) -> *mut AstFn yields [Diagnostics] {
     }
 
     let body = parse_block(p);
-    alloc_fn(p.arena, name_sym, params, ret_ty_sym, body)
+    alloc_fn(p.arena, name_sym, params, ret_ty_sym, body, type_param_sym)
 }
 
 fn parse_interval_bound(p: &mut Parser) -> i64 {

@@ -1,0 +1,4 @@
+import std::collections;
+pub fn main() -> i64 {
+    0
+}

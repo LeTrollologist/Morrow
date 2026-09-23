@@ -189,6 +189,13 @@ fn get_field_offset(cg: &mut Codegen, sym: i64) -> i64 {
     if unsafe { strcmp(p, "blocks" as *const u8) == 0 } { return 7; }
 
     if unsafe { strcmp(p, "terminated" as *const u8) == 0 } { return 8; }
+    // TEMPORARY COMPATIBILITY FALLBACK: type_param_sym on AstFn/AstStruct is at
+    // byte offset 64 (word 8). This entry is a safety net only — by the time
+    // codegen runs, all type_param_sym fields should be 0 (concrete) because
+    // monomorphize_program has already substituted T -> concrete and the
+    // typechecker skips generic templates. If a non-zero type_param_sym ever
+    // reaches codegen, it indicates a monomorphization gap, not a codegen issue.
+    if unsafe { strcmp(p, "type_param_sym" as *const u8) == 0 } { return 8; }
 
     0
 }

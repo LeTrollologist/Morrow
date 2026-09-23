@@ -1,4 +1,4 @@
-﻿// tests/region_escape_test.tg
+// tests/region_escape_test.tg
 // Compile-Time Region Escape Analysis Tests
 // Verifies that the typechecker correctly accepts safe region use and
 // rejects region-scoped pointer escapes.
@@ -11,21 +11,21 @@ extern "C" {
 }
 
 // -----------------------------------------------------------------------
-// Test 1: Safe region use — pointer allocated and consumed inside region.
+// Test 1: Safe region use ? pointer allocated and consumed inside region.
 // The pointer is tagged by the typechecker but never escapes.
 // -----------------------------------------------------------------------
 fn test_region_safe_use(): i64 {
     let result: i64 = 0;
     region r {
         let ptr = tungsten_region_alloc(r, 8, 8) as *mut i64;
-        // Use result inside region — scalar assignment, allowed
+        // Use result inside region ? scalar assignment, allowed
         result = 42;
     }
     result
 }
 
 // -----------------------------------------------------------------------
-// Test 2: Scalar escape is always allowed — i64 has no region tag.
+// Test 2: Scalar escape is always allowed ? i64 has no region tag.
 // -----------------------------------------------------------------------
 fn test_scalar_escape_allowed(): i64 {
     let val: i64 = 0;
@@ -37,7 +37,7 @@ fn test_scalar_escape_allowed(): i64 {
 }
 
 // -----------------------------------------------------------------------
-// Main test runner — returns 0 on full pass (exit code convention)
+// Main test runner ? returns 0 on full pass (exit code convention)
 // -----------------------------------------------------------------------
 pub fn main(): i64 {
     let mut passed: i64 = 0;

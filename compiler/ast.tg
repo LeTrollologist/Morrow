@@ -128,6 +128,7 @@ pub struct AstField {
 pub struct AstStruct {
     name_sym: i64,
     fields: Vec<*mut AstField>,
+    type_param_sym: i64,
 }
 
 pub struct AstParam {
@@ -146,6 +147,7 @@ pub struct AstFn {
     params: Vec<*mut AstParam>,
     ret_ty_sym: i64,
     body: Vec<*mut AstStmt>,
+    type_param_sym: i64,
 }
 
 pub struct AstTypeAlias {
@@ -565,13 +567,14 @@ pub fn alloc_field(arena: *mut u8, name_sym: i64, ty_sym: i64) -> *mut AstField 
     p
 }
 
-pub fn alloc_struct(arena: *mut u8, name_sym: i64, fields: Vec<*mut AstField>) -> *mut AstStruct {
+pub fn alloc_struct(arena: *mut u8, name_sym: i64, fields: Vec<*mut AstField>, type_param_sym: i64) -> *mut AstStruct {
     let p = unsafe {
         tungsten_region_alloc(arena, 48, 8) as *mut AstStruct
     };
     unsafe {
         p.name_sym = name_sym;
         p.fields = fields;
+        p.type_param_sym = type_param_sym;
     }
     p
 }
@@ -599,7 +602,7 @@ pub fn alloc_extern_fn(arena: *mut u8, name_sym: i64, params: Vec<*mut AstParam>
     p
 }
 
-pub fn alloc_fn(arena: *mut u8, name_sym: i64, params: Vec<*mut AstParam>, ret_ty_sym: i64, body: Vec<*mut AstStmt>) -> *mut AstFn {
+pub fn alloc_fn(arena: *mut u8, name_sym: i64, params: Vec<*mut AstParam>, ret_ty_sym: i64, body: Vec<*mut AstStmt>, type_param_sym: i64) -> *mut AstFn {
     let p = unsafe {
         tungsten_region_alloc(arena, 80, 8) as *mut AstFn
     };
@@ -608,6 +611,7 @@ pub fn alloc_fn(arena: *mut u8, name_sym: i64, params: Vec<*mut AstParam>, ret_t
         p.params = params;
         p.ret_ty_sym = ret_ty_sym;
         p.body = body;
+        p.type_param_sym = type_param_sym;
     }
     p
 }

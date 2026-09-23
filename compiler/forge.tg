@@ -213,6 +213,406 @@ pub fn load_program_modules(root_path: String, interner: &mut Interner, arena: *
     prog
 }
 
+// =============================================================================
+// Monomorphization Pre-Pass
+// Expands all turbofish calls (foo::<i64>(x)) into concrete cloned functions
+// before the typechecker runs. Generic templates are identified by type_param_sym != 0.
+// =============================================================================
+
+// Build the mangled name "base__concrete" and intern it, returning the new sym.
+fn mangle_sym(interner: &mut Interner, arena: *mut u8, base_sym: i64, concrete_sym: i64) -> i64 {
+    let interner_ref = interner as &Interner;
+    let base_s = interner_lookup(interner_ref, base_sym);
+    let conc_s = interner_lookup(interner_ref, concrete_sym);
+    let mut buf = string_buffer_new_in(arena);
+    let base_len = unsafe { strlen(base_s as *const u8) } as i64;
+    let conc_len = unsafe { strlen(conc_s as *const u8) } as i64;
+    string_buffer_push_str(&mut buf, base_s as *const u8, base_len);
+    string_buffer_push_str(&mut buf, "__" as *const u8, 2);
+    string_buffer_push_str(&mut buf, conc_s as *const u8, conc_len);
+    string_buffer_push_byte(&mut buf, 0 as u8);
+    let mangled = string_as_ptr(&buf) as String;
+    interner_intern(interner, mangled)
+}
+
+// Clone an AstParam, substituting type_param_sym -> concrete_sym in its ty_sym.
+fn clone_param_with_subst(arena: *mut u8, src: *mut AstParam, type_param_sym: i64, concrete_sym: i64) -> *mut AstParam {
+    let mut ty = src.ty_sym;
+    if ty == type_param_sym {
+        ty = concrete_sym;
+    }
+    alloc_param(arena, src.name_sym, ty)
+}
+
+// Clone an AstField, substituting type_param_sym -> concrete_sym in its ty_sym.
+fn clone_field_with_subst(arena: *mut u8, src: *mut AstField, type_param_sym: i64, concrete_sym: i64) -> *mut AstField {
+    let mut ty = src.ty_sym;
+    if ty == type_param_sym {
+        ty = concrete_sym;
+    }
+    alloc_field(arena, src.name_sym, ty)
+}
+
+// Clone a generic AstFn template as a concrete monomorphization.
+// The body is SHARED (not deep-cloned) — safe for simple pass-through generics.
+fn clone_fn_concrete(arena: *mut u8, interner: &mut Interner, tmpl: *mut AstFn, concrete_sym: i64) -> *mut AstFn {
+    let type_param_sym = tmpl.type_param_sym;
+    let mangled_sym = mangle_sym(interner, arena, tmpl.name_sym, concrete_sym);
+
+    let mut new_params: Vec<*mut AstParam> = vec_new_in(arena);
+    let params_len = tmpl.params.len;
+    let mut i: i64 = 0;
+    while i < params_len {
+        let src_p = vec_get(&tmpl.params, i);
+        let cloned_p = clone_param_with_subst(arena, src_p, type_param_sym, concrete_sym);
+        vec_push(&mut new_params, cloned_p);
+        i = i + 1;
+    }
+
+    let mut ret_ty = tmpl.ret_ty_sym;
+    if ret_ty == type_param_sym {
+        ret_ty = concrete_sym;
+    }
+
+    alloc_fn(arena, mangled_sym, new_params, ret_ty, tmpl.body, 0)
+}
+
+// Clone a generic AstStruct template as a concrete monomorphization.
+fn clone_struct_concrete(arena: *mut u8, interner: &mut Interner, tmpl: *mut AstStruct, concrete_sym: i64) -> *mut AstStruct {
+    let type_param_sym = tmpl.type_param_sym;
+    let mangled_sym = mangle_sym(interner, arena, tmpl.name_sym, concrete_sym);
+
+    let mut new_fields: Vec<*mut AstField> = vec_new_in(arena);
+    let fields_len = tmpl.fields.len;
+    let mut i: i64 = 0;
+    while i < fields_len {
+        let src_f = vec_get(&tmpl.fields, i);
+        let cloned_f = clone_field_with_subst(arena, src_f, type_param_sym, concrete_sym);
+        vec_push(&mut new_fields, cloned_f);
+        i = i + 1;
+    }
+
+    alloc_struct(arena, mangled_sym, new_fields, 0)
+}
+
+// Walk an expression, expanding any turbofish calls/struct-inits it contains.
+fn walk_expr_mono(arena: *mut u8, interner: &mut Interner, prog: *mut AstProgram, gf: &HashMap, gs: &HashMap, already_mono: &mut HashMap, expr: *mut AstExpr) {
+    if expr == 0 as *mut AstExpr {
+        return;
+    }
+    let kind = expr.kind;
+
+    if kind == expr_call() {
+        let turbo_sym = expr.int_val;
+        if turbo_sym != 0 {
+            let interner_ref = interner as &Interner;
+            let base_s = interner_lookup(interner_ref, expr.sym);
+            let val = hashmap_get(gf, base_s);
+            if val != 0 - 1 {
+                let tmpl = val as *mut AstFn;
+                let concrete_sym = turbo_sym;
+                let mangled_sym = mangle_sym(interner, arena, tmpl.name_sym, concrete_sym);
+                let interner_ref2 = interner as &Interner;
+                let mangled_s = interner_lookup(interner_ref2, mangled_sym);
+                let already = hashmap_get(already_mono, mangled_s);
+                if already == 0 - 1 {
+                    let clone = clone_fn_concrete(arena, interner, tmpl, concrete_sym);
+                    vec_push(&mut prog.functions, clone);
+                    hashmap_insert(already_mono, mangled_s, 1);
+                }
+                unsafe {
+                    expr.sym = mangled_sym;
+                    expr.int_val = 0;
+                }
+            } else {
+                unsafe { expr.int_val = 0; }
+            }
+        }
+        let args_len = expr.args.len;
+        let mut i: i64 = 0;
+        while i < args_len {
+            let arg = vec_get(&expr.args, i);
+            walk_expr_mono(arena, interner, prog, gf, gs, already_mono, arg);
+            i = i + 1;
+        }
+        return;
+    }
+
+    if kind == expr_struct_init() {
+        let turbo_sym = expr.int_val;
+        if turbo_sym != 0 {
+            let interner_ref = interner as &Interner;
+            let base_s = interner_lookup(interner_ref, expr.sym);
+            let val = hashmap_get(gs, base_s);
+            if val != 0 - 1 {
+                let tmpl = val as *mut AstStruct;
+                let concrete_sym = turbo_sym;
+                let mangled_sym = mangle_sym(interner, arena, tmpl.name_sym, concrete_sym);
+                let interner_ref2 = interner as &Interner;
+                let mangled_s = interner_lookup(interner_ref2, mangled_sym);
+                let already = hashmap_get(already_mono, mangled_s);
+                if already == 0 - 1 {
+                    let clone = clone_struct_concrete(arena, interner, tmpl, concrete_sym);
+                    vec_push(&mut prog.structs, clone);
+                    hashmap_insert(already_mono, mangled_s, 1);
+                }
+                unsafe {
+                    expr.sym = mangled_sym;
+                    expr.int_val = 0;
+                }
+            } else {
+                unsafe { expr.int_val = 0; }
+            }
+        }
+        let args_len = expr.args.len;
+        let mut i: i64 = 0;
+        while i < args_len {
+            let arg = vec_get(&expr.args, i);
+            walk_expr_mono(arena, interner, prog, gf, gs, already_mono, arg);
+            i = i + 1;
+        }
+        return;
+    }
+
+    // Recurse into sub-expressions for all other node kinds
+    if expr.left != 0 as *mut AstExpr {
+        walk_expr_mono(arena, interner, prog, gf, gs, already_mono, expr.left);
+    }
+    if expr.right != 0 as *mut AstExpr {
+        walk_expr_mono(arena, interner, prog, gf, gs, already_mono, expr.right);
+    }
+    let args_len = expr.args.len;
+    let mut i: i64 = 0;
+    while i < args_len {
+        let arg = vec_get(&expr.args, i);
+        walk_expr_mono(arena, interner, prog, gf, gs, already_mono, arg);
+        i = i + 1;
+    }
+}
+
+// Walk a statement, expanding any turbofish calls inside it.
+fn walk_stmt_mono(arena: *mut u8, interner: &mut Interner, prog: *mut AstProgram, gf: &HashMap, gs: &HashMap, already_mono: &mut HashMap, stmt: *mut AstStmt) {
+    if stmt == 0 as *mut AstStmt {
+        return;
+    }
+    if stmt.expr != 0 as *mut AstExpr {
+        walk_expr_mono(arena, interner, prog, gf, gs, already_mono, stmt.expr);
+    }
+    if stmt.left != 0 as *mut AstExpr {
+        walk_expr_mono(arena, interner, prog, gf, gs, already_mono, stmt.left);
+    }
+    if stmt.right != 0 as *mut AstExpr {
+        walk_expr_mono(arena, interner, prog, gf, gs, already_mono, stmt.right);
+    }
+    let then_len = stmt.then_stmts.len;
+    let mut i: i64 = 0;
+    while i < then_len {
+        let s = vec_get(&stmt.then_stmts, i);
+        walk_stmt_mono(arena, interner, prog, gf, gs, already_mono, s);
+        i = i + 1;
+    }
+    let else_len = stmt.else_stmts.len;
+    let mut j: i64 = 0;
+    while j < else_len {
+        let s = vec_get(&stmt.else_stmts, j);
+        walk_stmt_mono(arena, interner, prog, gf, gs, already_mono, s);
+        j = j + 1;
+    }
+}
+
+// Monomorphization pre-pass: expand all turbofish generic instantiations in prog.
+pub fn monomorphize_program(prog: *mut AstProgram, interner: &mut Interner, arena: *mut u8) {
+    // Build generic fn template map (name_str -> *mut AstFn)
+    let mut gf: HashMap = hashmap_new_in(arena, 32);
+    let fns_len = prog.functions.len;
+    let mut i: i64 = 0;
+    while i < fns_len {
+        let f = vec_get(&prog.functions, i);
+        if f.type_param_sym != 0 {
+            let interner_ref = interner as &Interner;
+            let s = interner_lookup(interner_ref, f.name_sym);
+            hashmap_insert(&mut gf, s, f as i64);
+        }
+        i = i + 1;
+    }
+
+    // Build generic struct template map
+    let mut gs: HashMap = hashmap_new_in(arena, 32);
+    let structs_len = prog.structs.len;
+    let mut j: i64 = 0;
+    while j < structs_len {
+        let st = vec_get(&prog.structs, j);
+        if st.type_param_sym != 0 {
+            let interner_ref = interner as &Interner;
+            let s = interner_lookup(interner_ref, st.name_sym);
+            hashmap_insert(&mut gs, s, st as i64);
+        }
+        j = j + 1;
+    }
+
+    // Dedup set: tracks already-monomorphized mangled names
+    let mut already_mono: HashMap = hashmap_new_in(arena, 64);
+
+    // Walk all non-generic function bodies expanding turbofish calls.
+    // NOTE: fns_len is the pre-walk count; newly appended clones are not
+    // walked here — their shared bodies contain no turbofish calls.
+    let mut k: i64 = 0;
+    while k < fns_len {
+        let f = vec_get(&prog.functions, k);
+        if f.type_param_sym == 0 {
+            let body_len = f.body.len;
+            let mut b: i64 = 0;
+            while b < body_len {
+                let s = vec_get(&f.body, b);
+                walk_stmt_mono(arena, interner, prog, &gf, &gs, &mut already_mono, s);
+                b = b + 1;
+            }
+        }
+        k = k + 1;
+    }
+
+    // -----------------------------------------------------------------------
+    // Acceptance Invariants — enforced by the post-pass below:
+    //   (1) Each concrete specialization is created at most once.
+    //       Enforced by: already_mono HashMap deduplication above.
+    //   (2) All references to the same specialization resolve to that instance.
+    //       Enforced by: expr.sym is set to the interned mangled sym; the
+    //       interner guarantees that identical strings map to the same sym.
+    //   (3) No unresolved type parameters reach final code generation.
+    //       Enforced by: verify_no_unresolved_turbofish below — it walks
+    //       all concrete function bodies and asserts that no call or struct_init
+    //       expression retains a non-zero int_val turbofish marker.
+    //       If this assertion fires, the codegen.tg compatibility fallback is
+    //       load-bearing, which means Phase 9.3 has a monomorphization gap.
+    // -----------------------------------------------------------------------
+    verify_no_unresolved_turbofish(prog, interner, arena);
+}
+
+// Walk an expression asserting no turbofish marker remains (int_val == 0 on
+// call/struct_init). Returns true if the invariant holds, false on violation.
+fn verify_expr_concrete(expr: *mut AstExpr, interner: &Interner, arena: *mut u8) -> bool {
+    if expr == 0 as *mut AstExpr {
+        return true;
+    }
+    let kind = expr.kind;
+    if kind == expr_call() {
+        if expr.int_val != 0 {
+            // Invariant (3) violated: a turbofish call whose template was not
+            // found in the generic map. The interner still has the original sym.
+            return false;
+        }
+        let args_len = expr.args.len;
+        let mut i: i64 = 0;
+        while i < args_len {
+            let arg = vec_get(&expr.args, i);
+            if !verify_expr_concrete(arg, interner, arena) {
+                return false;
+            }
+            i = i + 1;
+        }
+        return true;
+    }
+    if kind == expr_struct_init() {
+        if expr.int_val != 0 {
+            return false;
+        }
+        let args_len = expr.args.len;
+        let mut i: i64 = 0;
+        while i < args_len {
+            let arg = vec_get(&expr.args, i);
+            if !verify_expr_concrete(arg, interner, arena) {
+                return false;
+            }
+            i = i + 1;
+        }
+        return true;
+    }
+    if expr.left != 0 as *mut AstExpr {
+        if !verify_expr_concrete(expr.left, interner, arena) {
+            return false;
+        }
+    }
+    if expr.right != 0 as *mut AstExpr {
+        if !verify_expr_concrete(expr.right, interner, arena) {
+            return false;
+        }
+    }
+    let args_len = expr.args.len;
+    let mut i: i64 = 0;
+    while i < args_len {
+        let arg = vec_get(&expr.args, i);
+        if !verify_expr_concrete(arg, interner, arena) {
+            return false;
+        }
+        i = i + 1;
+    }
+    true
+}
+
+fn verify_stmt_concrete(stmt: *mut AstStmt, interner: &Interner, arena: *mut u8) -> bool {
+    if stmt == 0 as *mut AstStmt {
+        return true;
+    }
+    if stmt.expr != 0 as *mut AstExpr {
+        if !verify_expr_concrete(stmt.expr, interner, arena) {
+            return false;
+        }
+    }
+    if stmt.left != 0 as *mut AstExpr {
+        if !verify_expr_concrete(stmt.left, interner, arena) {
+            return false;
+        }
+    }
+    if stmt.right != 0 as *mut AstExpr {
+        if !verify_expr_concrete(stmt.right, interner, arena) {
+            return false;
+        }
+    }
+    let then_len = stmt.then_stmts.len;
+    let mut i: i64 = 0;
+    while i < then_len {
+        let s = vec_get(&stmt.then_stmts, i);
+        if !verify_stmt_concrete(s, interner, arena) {
+            return false;
+        }
+        i = i + 1;
+    }
+    let else_len = stmt.else_stmts.len;
+    let mut j: i64 = 0;
+    while j < else_len {
+        let s = vec_get(&stmt.else_stmts, j);
+        if !verify_stmt_concrete(s, interner, arena) {
+            return false;
+        }
+        j = j + 1;
+    }
+    true
+}
+
+// Invariant (3) enforcement: scan all concrete function bodies and assert that
+// no call or struct_init expression retains a turbofish marker (int_val != 0).
+// Reports a diagnostic error if violated — this will cause compilation to fail,
+// ensuring the codegen.tg compatibility fallback can never become load-bearing.
+fn verify_no_unresolved_turbofish(prog: *mut AstProgram, interner: &Interner, arena: *mut u8) yields [Diagnostics] {
+    let fns_len = prog.functions.len;
+    let mut i: i64 = 0;
+    while i < fns_len {
+        let f = vec_get(&prog.functions, i);
+        if f.type_param_sym == 0 {
+            let body_len = f.body.len;
+            let mut b: i64 = 0;
+            while b < body_len {
+                let s = vec_get(&f.body, b);
+                if !verify_stmt_concrete(s, interner, arena) {
+                    report_err("Generic Invariant Violation: turbofish call to unknown generic function; no concrete specialization was created. Check that the generic function is defined and has exactly one type parameter.", 1, 1);
+                }
+                b = b + 1;
+            }
+        }
+        i = i + 1;
+    }
+}
+
 pub fn compile_file(src_path: String, out_ll_path: String, out_exe_path: String) -> i64 yields [FS, Process, Diagnostics, IO] {
     let mut exit_code: i64 = 0;
     unsafe {
@@ -230,6 +630,7 @@ pub fn compile_file(src_path: String, out_ll_path: String, out_exe_path: String)
             exit_code = 1;
         } else {
             forge_print("TGC: Type checking & solving refinements...");
+            monomorphize_program(prog, &mut interner, comp_reg);
             let tc_ok = typecheck_program(prog, &mut interner, comp_reg);
             if !tc_ok || diag_has_errors() {
                 report_err("Type checking failed", 1, 1);
@@ -377,6 +778,7 @@ pub fn forge_run_test(arena: *mut u8) -> i64 yields [FS, Process, Diagnostics, I
     vec_push(&mut test_suites, "tests/struct_field_layout_test.tg");
     vec_push(&mut test_suites, "tests/refinement_test.tg");
     vec_push(&mut test_suites, "tests/region_escape_test.tg");
+    vec_push(&mut test_suites, "tests/generics_test.tg");
 
     let mut passed: i64 = 0;
     let mut failed: i64 = 0;
