@@ -290,7 +290,7 @@
 
 ---
 
-### Phase 10: Formal Verification & SMT Solver Integration (v1.6)
+### Phase 10: Formal Verification & SMT Solver Integration (v1.7)
 *Target: Verifiable non-linear interval constraints and automated proofs.*
 
 1. **Z3 SMT Solver Bridge**:
@@ -301,7 +301,7 @@
 
 ---
 
-### Phase 11: Multi-Target Codegen & WebAssembly (v1.7)
+### Phase 11: Multi-Target Codegen & WebAssembly (v1.8)
 *Target: Universal systems development from bare metal to browsers.*
 
 - [x] **x86_64 Linux (ELF) Target & Docker Container**: Prototyped in Milestone v1.2 (Stage-0 Rust); scheduled for validation under the self-hosted compiler.
