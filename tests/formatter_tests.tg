@@ -6,7 +6,7 @@ import compiler.ast;
 import compiler.lexer;
 import compiler.parser;
 
-fn main() {
+fn main() yields [Diagnostics] {
     test_print("=== Running Formatter Test Suite ===");
 
     region test_reg {

@@ -237,6 +237,6 @@ Because `target/` is gitignored, a fresh clone on a machine without `clang` or `
 ### Phase B: Delivering Stated Language Invariants (Milestone v1.6)
 * [x] **Refinement Grammar & Solver:** Support `type Name = Primitive[min..max];` in `parser.tg`, storing bounds in the type environment (Phase 9.1).
 * [x] **Region Escape Analysis:** Track region lifetimes in `typeck.tg` and reject references that outlive their declaring region (Phase 9.2).
-* [x] **Parametric Generics with Call-Site Monomorphization:** Replaced token-skipping in the parser with AST generic parameters (`AstStruct`, `AstFn`), turbofish call-site syntax (`::<T>`), pre-pass deduplicated monomorphization (`ident__concrete`), and compile-time invariant enforcement prohibiting unresolved generic types at code generation (Phase 9.3).
-* [ ] **Algebraic Effects & Concurrency:** Design a realistic lowering path for effects (via delimited continuations or a native C runtime fiber scheduler).
+* [x] **Algebraic Effects & Delimited Handlers:** Delimited continuations with explicit continuation records, native x86_64 assembly setjmp/longjmp routines, static effect row checking, nearest-match dynamic handler dispatch, single-shot resumption, and abortive unwinding (Phase 9.4).
+* [ ] **Concurrency Runtime Reintegration:** Port high-concurrency fiber task pool and event loop into standard library.
 * [ ] **Example & Docs Alignment:** Update `examples/` and documentation to accurately reflect supported syntax and semantics.

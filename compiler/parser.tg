@@ -80,7 +80,7 @@ fn get_binop_precedence(kind: i64) -> i64 {
 }
 
 // Parses type annotations (e.g. i64, String, *mut u8, &mut Vec<T>, etc.)
-pub fn parse_type(p: &mut Parser) -> i64 {
+pub fn parse_type(p: &mut Parser) -> i64 yields [Diagnostics] {
     if check(p, tok_star()) {
         advance(p); // consume *
         if check(p, tok_kw_mut()) {
@@ -170,6 +170,82 @@ fn parse_primary_expr(p: &mut Parser) -> *mut AstExpr yields [Diagnostics] {
             }
         }
         return last_expr;
+    }
+
+    if kind == tok_kw_perform() {
+        advance(p); // consume perform
+        let eff_tok = expect(p, tok_ident(), "Expected effect name after 'perform'");
+        expect(p, tok_dot(), "Expected '.' after effect name");
+        let op_tok = expect(p, tok_ident(), "Expected operation name after '.'");
+        expect(p, tok_lparen(), "Expected '(' after operation name");
+        let mut args: Vec<*mut AstExpr> = vec_new_in(p.arena);
+        if !check(p, tok_rparen()) {
+            let first_arg = parse_expr(p);
+            vec_push(&mut args, first_arg);
+            while check(p, tok_comma()) {
+                advance(p);
+                let next_arg = parse_expr(p);
+                vec_push(&mut args, next_arg);
+            }
+        }
+        expect(p, tok_rparen(), "Expected ')' after arguments");
+        return alloc_expr_perform(p.arena, eff_tok.sym, op_tok.sym, args);
+    }
+
+    if kind == tok_kw_resume() {
+        advance(p); // consume resume
+        let mut has_paren = false;
+        if check(p, tok_lparen()) {
+            advance(p);
+            has_paren = true;
+        }
+        let cont_expr = parse_expr(p);
+        expect(p, tok_comma(), "Expected ',' after continuation in resume");
+        let val_expr = parse_expr(p);
+        if has_paren {
+            expect(p, tok_rparen(), "Expected ')' after resume arguments");
+        }
+        return alloc_expr_resume(p.arena, cont_expr, val_expr);
+    }
+
+    if kind == tok_kw_handle() {
+        advance(p); // consume handle
+        let body = parse_block(p);
+        expect(p, tok_kw_with(), "Expected 'with' after handle block");
+        let eff_name_tok = expect(p, tok_ident(), "Expected effect name after 'with'");
+        let eff_sym = eff_name_tok.sym;
+        expect(p, tok_lbrace(), "Expected '{' to start handler definition");
+        let mut arms: Vec<*mut AstHandlerArm> = vec_new_in(p.arena);
+        while !check(p, tok_rbrace()) && !check(p, tok_eof()) {
+            if check(p, tok_kw_fn()) {
+                advance(p); // consume fn
+            }
+            let op_name_tok = expect(p, tok_ident(), "Expected operation name in handler");
+            let op_sym = op_name_tok.sym;
+            expect(p, tok_lparen(), "Expected '(' after operation name");
+            let k_tok = expect(p, tok_ident(), "Expected continuation parameter name");
+            let k_sym = k_tok.sym;
+            let mut arm_params: Vec<*mut AstParam> = vec_new_in(p.arena);
+            while check(p, tok_comma()) {
+                advance(p);
+                let p_name = expect(p, tok_ident(), "Expected parameter name");
+                let mut p_ty: i64 = 0;
+                if check(p, tok_colon()) {
+                    advance(p);
+                    p_ty = parse_type(p);
+                }
+                let param_node = alloc_param(p.arena, p_name.sym, p_ty);
+                vec_push(&mut arm_params, param_node);
+            }
+            expect(p, tok_rparen(), "Expected ')' after handler parameters");
+            let arm_body = parse_block(p);
+            let null_expr = 0 as *mut AstExpr;
+            let arm_node = alloc_handler_arm(p.arena, op_sym, k_sym, arm_params, arm_body, null_expr);
+            vec_push(&mut arms, arm_node);
+        }
+        expect(p, tok_rbrace(), "Expected '}' to close handler definition");
+        let handler_node = alloc_handler(p.arena, eff_sym, arms);
+        return alloc_expr_handle(p.arena, eff_sym, body, handler_node);
     }
 
     if kind == tok_ident() {
@@ -484,6 +560,14 @@ pub fn parse_stmt(p: &mut Parser) -> *mut AstStmt yields [Diagnostics] {
         return alloc_stmt_block(p.arena, 0, body);
     }
 
+    if kind == tok_kw_handle() {
+        let h_expr = parse_primary_expr(p);
+        if check(p, tok_semicolon()) {
+            advance(p);
+        }
+        return alloc_stmt_expr(p.arena, h_expr);
+    }
+
     // Expression or Assignment statement
     let lhs = parse_expr(p);
     if check(p, tok_eq()) {
@@ -623,6 +707,7 @@ pub fn parse_fn(p: &mut Parser) -> *mut AstFn yields [Diagnostics] {
     }
 
     // Optional yields clause: yields [ Effect1, Effect2, ... ]
+    let mut yields_effects: Vec<i64> = vec_new_in(p.arena);
     if check(p, tok_ident()) {
         let tok = current_tok(p);
         let interner_ref = p.interner as &Interner;
@@ -630,15 +715,21 @@ pub fn parse_fn(p: &mut Parser) -> *mut AstFn yields [Diagnostics] {
         if unsafe { strcmp(s as *const u8, "yields" as *const u8) == 0 } {
             advance(p); // consume yields
             expect(p, tok_lbracket(), "Expected '[' after yields");
-            while !check(p, tok_rbracket()) && !check(p, tok_eof()) {
-                advance(p);
+            if !check(p, tok_rbracket()) {
+                let eff_tok = expect(p, tok_ident(), "Expected effect name in yields list");
+                vec_push(&mut yields_effects, eff_tok.sym);
+                while check(p, tok_comma()) {
+                    advance(p); // consume ,
+                    let next_eff = expect(p, tok_ident(), "Expected effect name in yields list");
+                    vec_push(&mut yields_effects, next_eff.sym);
+                }
             }
             expect(p, tok_rbracket(), "Expected ']' after effect list");
         }
     }
 
     let body = parse_block(p);
-    alloc_fn(p.arena, name_sym, params, ret_ty_sym, body, type_param_sym)
+    alloc_fn(p.arena, name_sym, params, ret_ty_sym, body, type_param_sym, yields_effects)
 }
 
 fn parse_interval_bound(p: &mut Parser) -> i64 {
@@ -679,7 +770,7 @@ fn parse_type_alias(p: &mut Parser) -> *mut AstTypeAlias yields [Diagnostics] {
     alloc_type_alias(p.arena, name_tok.sym, base_tok.sym, min_val, max_val)
 }
 
-fn parse_import(p: &mut Parser) -> String {
+fn parse_import(p: &mut Parser) -> String yields [Diagnostics] {
     let mut path_buf = string_buffer_new_in(p.arena);
     while !check(p, tok_semicolon()) && !check(p, tok_eof()) {
         if check(p, tok_ident()) {
@@ -700,6 +791,51 @@ fn parse_import(p: &mut Parser) -> String {
     string_buffer_push_str(&mut path_buf, ".tg" as *const u8, 3);
     string_buffer_push_byte(&mut path_buf, 0 as u8);
     string_as_ptr(&path_buf) as String
+}
+
+fn parse_effect(p: &mut Parser) -> *mut AstEffect yields [Diagnostics] {
+    expect(p, tok_kw_effect(), "Expected 'effect'");
+    let name_tok = expect(p, tok_ident(), "Expected effect name");
+    let name_sym = name_tok.sym;
+    expect(p, tok_lbrace(), "Expected '{' to start effect definition");
+    let mut ops: Vec<*mut AstEffectOp> = vec_new_in(p.arena);
+    while !check(p, tok_rbrace()) && !check(p, tok_eof()) {
+        if check(p, tok_kw_fn()) {
+            advance(p); // consume fn
+        }
+        let op_name_tok = expect(p, tok_ident(), "Expected operation name");
+        let op_name_sym = op_name_tok.sym;
+        expect(p, tok_lparen(), "Expected '(' after operation name");
+        let mut params: Vec<*mut AstParam> = vec_new_in(p.arena);
+        if !check(p, tok_rparen()) {
+            let p_name = expect(p, tok_ident(), "Expected parameter name");
+            expect(p, tok_colon(), "Expected ':' after parameter name");
+            let p_ty = parse_type(p);
+            let param_node = alloc_param(p.arena, p_name.sym, p_ty);
+            vec_push(&mut params, param_node);
+            while check(p, tok_comma()) {
+                advance(p); // consume ,
+                let next_name = expect(p, tok_ident(), "Expected parameter name");
+                expect(p, tok_colon(), "Expected ':' after parameter name");
+                let next_ty = parse_type(p);
+                let next_param = alloc_param(p.arena, next_name.sym, next_ty);
+                vec_push(&mut params, next_param);
+            }
+        }
+        expect(p, tok_rparen(), "Expected ')' after parameters");
+        let mut ret_ty_sym: i64 = 0;
+        if check(p, tok_arrow()) || check(p, tok_colon()) {
+            advance(p); // consume -> or :
+            ret_ty_sym = parse_type(p);
+        }
+        if check(p, tok_semicolon()) {
+            advance(p); // consume optional ;
+        }
+        let op_node = alloc_effect_op(p.arena, op_name_sym, params, ret_ty_sym);
+        vec_push(&mut ops, op_node);
+    }
+    expect(p, tok_rbrace(), "Expected '}' to close effect definition");
+    alloc_effect(p.arena, name_sym, ops)
 }
 
 pub fn parse_program(tokens: Vec<*mut Token>, interner: &mut Interner, arena: *mut u8) -> *mut AstProgram yields [Diagnostics] {
@@ -723,6 +859,9 @@ pub fn parse_program(tokens: Vec<*mut Token>, interner: &mut Interner, arena: *m
         } else if check(&p, tok_kw_type()) {
             let t_alias = parse_type_alias(&mut p);
             vec_push(&mut prog.vals, t_alias);
+        } else if check(&p, tok_kw_effect()) {
+            let eff = parse_effect(&mut p);
+            vec_push(&mut prog.effects, eff);
         } else if check(&p, tok_kw_extern()) {
             advance(&mut p); // consume extern
             expect(&mut p, tok_str(), "Expected \"C\" after extern");

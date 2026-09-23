@@ -281,9 +281,15 @@
      3. No unresolved type parameters reach code generation (`verify_no_unresolved_turbofish` active compile-time invariant guard).
    - Bootstrap parity confirmed: `SHA256(S2) == SHA256(S3) = 89B95F06BE82BB5E42185AF2599A5D5D47BFB212CF03E27888D1FD32BD85E975`.
    - Verified with 16-test comprehensive suite `tests/generics_test.tg`.
-4. **Algebraic Effects & Delimited Handlers**:
-   - Add `effect` declarations, `yields [...]` contracts, and `handle { ... } with Handler { ... }` syntax to the grammar and AST.
-   - Lower effects via delimited continuations or an explicit stack-switching runtime in LLVM IR.
+4. **Algebraic Effects & Delimited Handlers** ✅:
+   - Added `effect` declarations (`AstEffect`, `AstOpSignature`), `yields [...]` function contracts, and `handle { ... } with Handler { ... }` syntax to parser and AST (`AstHandler`, `AstHandlerArm`).
+   - Implemented compile-time static effect row checking and contract enforcement in `compiler/typeck.tg`, verifying that unhandled effects are explicitly declared in the enclosing function's `yields` contract.
+   - Designed delimited continuation model represented as explicit continuation records (`TungstenContinuation` + `TungstenHandlerFrame`).
+   - Implemented single-shot resumption and non-local stack unwinding via self-contained x86_64 assembly routines (`tungsten_setjmp` and `tungsten_longjmp`), bypassing Windows MSVCRT SEH/`RtlUnwindEx` runtime interference.
+   - Added dynamic handler frame registration (`tungsten_top_handler_frame`), runtime dispatch tables, and nearest-match effect stack searching supporting nested handlers and shadowing.
+   - Verified abortive handlers returning values directly without calling `resume` unwind cleanly to the enclosing `handle` block.
+   - Reached 3-stage bootstrap fixed-point parity: `SHA256(stage7.ll) == SHA256(stage8.ll) == SHA256(stage9.ll) = 1B35C04A40BD9B94599F77A8E86BBED6C514207737FA145F439A61CD17D67F9E`.
+   - Verified with comprehensive test suite `tests/effects_test.tg` covering single-shot resumption, multi-operation sequencing, abortive unwinding, nested nearest-match dispatch, effect shadowing, deep call chain propagation, multi-argument operations, and deep abort unwinding (100% OK across all 12 native test suites).
 5. **Concurrency Runtime Reintegration**:
    - Port the high-concurrency fiber task pool and Win32 IOCP / POSIX epoll event loop from `archive/stage0-rust` into a pure Tungsten runtime library (`std/sync.tg`, `std/net.tg`).
    - Update `examples/player.tg` and `examples/web_service_v2.tg` to compile and run against the updated compiler.

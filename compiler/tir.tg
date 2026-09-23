@@ -108,6 +108,11 @@ pub fn tir_inst_store_field() -> i64 { 7 }
 pub fn tir_inst_load_index() -> i64 { 8 }
 pub fn tir_inst_store_index() -> i64 { 9 }
 pub fn tir_inst_struct_init() -> i64 { 10 }
+pub fn tir_inst_effect_perform() -> i64 { 11 }
+pub fn tir_inst_handler_push() -> i64 { 12 }
+pub fn tir_inst_handler_pop() -> i64 { 13 }
+pub fn tir_inst_continuation_capture() -> i64 { 14 }
+pub fn tir_inst_continuation_resume() -> i64 { 15 }
 
 pub struct TirInst {
     kind: i64,                  // 0: tir_inst_assign(), etc.
@@ -463,6 +468,65 @@ pub fn lower_ast_expr_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, expr
         return lower_ast_expr_to_tir(f, cur_block, expr.left, arena);
     }
 
+    if kind == expr_perform() {
+        let mut tir_args: Vec<*mut TirOperand> = vec_new_in(arena);
+        let mut i: i64 = 0;
+        while i < expr.args.len {
+            let a = vec_get(&expr.args, i);
+            let op = lower_ast_expr_to_tir(f, cur_block, a, arena);
+            vec_push(&mut tir_args, op);
+            i = i + 1;
+        }
+        let reg = tir_fn_alloc_reg(f);
+        let inst = alloc_tir_inst(arena, tir_inst_effect_perform(), reg, expr.op, 0 as *mut TirOperand, 0 as *mut TirOperand);
+        inst.int_val = expr.sym;
+        inst.args = tir_args;
+        tir_block_push_inst(cur_block, inst);
+        return alloc_tir_op_reg(arena, reg);
+    }
+
+    if kind == expr_resume() {
+        let k_op = lower_ast_expr_to_tir(f, cur_block, expr.left, arena);
+        let val_op = lower_ast_expr_to_tir(f, cur_block, expr.right, arena);
+        let reg = tir_fn_alloc_reg(f);
+        let inst = alloc_tir_inst(arena, tir_inst_continuation_resume(), reg, 0, k_op, val_op);
+        tir_block_push_inst(cur_block, inst);
+        return alloc_tir_op_reg(arena, reg);
+    }
+
+    if kind == expr_handle() {
+        let handler = expr.left as *mut AstHandler;
+        let mut h_id: i64 = 0;
+        if handler != (0 as *mut AstHandler) {
+            h_id = handler.id;
+        }
+        let reg = tir_fn_alloc_reg(f);
+        let push_inst = alloc_tir_inst(arena, tir_inst_handler_push(), reg, h_id, 0 as *mut TirOperand, 0 as *mut TirOperand);
+        push_inst.int_val = expr.sym;
+        tir_block_push_inst(cur_block, push_inst);
+
+        let mut cur = cur_block;
+        let mut bi: i64 = 0;
+        let b_len = expr.stmts.len;
+        let mut body_val = alloc_tir_op_int(arena, 0);
+        while bi < b_len {
+            let s = vec_get(&expr.stmts, bi);
+            if bi == b_len - 1 {
+                if s.kind == stmt_expr() {
+                    body_val = lower_ast_expr_to_tir(f, cur, s.expr, arena);
+                    break;
+                }
+            }
+            cur = lower_ast_stmt_to_tir(f, cur, s, 0 - 1, false, arena);
+            bi = bi + 1;
+        }
+
+        let pop_inst = alloc_tir_inst(arena, tir_inst_handler_pop(), reg, h_id, body_val, 0 as *mut TirOperand);
+        pop_inst.int_val = expr.sym;
+        tir_block_push_inst(cur, pop_inst);
+        return alloc_tir_op_reg(arena, reg);
+    }
+
     alloc_tir_op_int(arena, 0)
 }
 
@@ -640,6 +704,31 @@ pub fn lower_ast_stmt_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, stmt
         }
 
         return exit_block;
+    }
+
+    if kind == stmt_handle() {
+        let handler = stmt.handler;
+        let mut h_id: i64 = 0;
+        if handler != (0 as *mut AstHandler) {
+            h_id = handler.id;
+        }
+        let push_inst = alloc_tir_inst(arena, tir_inst_handler_push(), 0, h_id, 0 as *mut TirOperand, 0 as *mut TirOperand);
+        push_inst.int_val = stmt.sym;
+        tir_block_push_inst(cur_block, push_inst);
+
+        let mut cur = cur_block;
+        let mut bi: i64 = 0;
+        let b_len = stmt.then_stmts.len;
+        while bi < b_len {
+            let s = vec_get(&stmt.then_stmts, bi);
+            cur = lower_ast_stmt_to_tir(f, cur, s, loop_exit_id, is_tail && (bi == b_len - 1), arena);
+            bi = bi + 1;
+        }
+
+        let pop_inst = alloc_tir_inst(arena, tir_inst_handler_pop(), 0, h_id, 0 as *mut TirOperand, 0 as *mut TirOperand);
+        pop_inst.int_val = stmt.sym;
+        tir_block_push_inst(cur, pop_inst);
+        return cur;
     }
 
     cur_block

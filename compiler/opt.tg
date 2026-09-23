@@ -201,6 +201,30 @@ pub fn tir_optimize_module(m: *mut TirModule, arena: *mut u8) -> i64 {
 
     while i < fns_len {
         let f = vec_get(&m.args, i);
+
+        // Verify handler push/pop balance (Invariant 6)
+        let mut bi: i64 = 0;
+        let blocks_len = f.blocks.len;
+        let mut push_count: i64 = 0;
+        let mut pop_count: i64 = 0;
+        while bi < blocks_len {
+            let b = vec_get(&f.blocks, bi);
+            let mut ii: i64 = 0;
+            while ii < b.args.len {
+                let inst = vec_get(&b.args, ii);
+                if inst.kind == tir_inst_handler_push() {
+                    push_count = push_count + 1;
+                } else if inst.kind == tir_inst_handler_pop() {
+                    pop_count = pop_count + 1;
+                }
+                ii = ii + 1;
+            }
+            bi = bi + 1;
+        }
+        if push_count != pop_count {
+            unsafe { puts("Handler push/pop balance invariant violated\0" as *const u8); }
+        }
+
         let changes = tir_optimize_fn(f, arena);
         total = total + changes;
         i = i + 1;

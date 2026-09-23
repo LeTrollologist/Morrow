@@ -61,6 +61,11 @@ pub fn tok_rbracket() -> i64 { 51 }
 pub fn tok_kw_type() -> i64 { 52 }
 pub fn tok_dotdot() -> i64 { 53 }
 pub fn tok_dotdoteq() -> i64 { 54 }
+pub fn tok_kw_effect() -> i64 { 55 }
+pub fn tok_kw_perform() -> i64 { 56 }
+pub fn tok_kw_handle() -> i64 { 57 }
+pub fn tok_kw_with() -> i64 { 58 }
+pub fn tok_kw_resume() -> i64 { 59 }
 
 pub struct Token {
     kind: i64,
@@ -84,6 +89,9 @@ pub fn expr_field() -> i64 { 7 }
 pub fn expr_index() -> i64 { 8 }
 pub fn expr_cast() -> i64 { 9 }
 pub fn expr_struct_init() -> i64 { 10 }
+pub fn expr_perform() -> i64 { 11 }
+pub fn expr_resume() -> i64 { 12 }
+pub fn expr_handle() -> i64 { 13 }
 
 pub struct AstExpr {
     kind: i64,
@@ -94,6 +102,7 @@ pub struct AstExpr {
     left: *mut AstExpr,
     right: *mut AstExpr,
     args: Vec<*mut AstExpr>,
+    stmts: Vec<*mut AstStmt>,
 }
 
 // -----------------------------------------------------------------------------
@@ -109,6 +118,22 @@ pub fn stmt_field_assign() -> i64 { 7 }
 pub fn stmt_index_assign() -> i64 { 8 }
 pub fn stmt_block() -> i64 { 9 }
 pub fn stmt_break() -> i64 { 10 }
+pub fn stmt_handle() -> i64 { 11 }
+
+pub struct AstHandlerArm {
+    op_sym: i64,
+    params: Vec<*mut AstParam>,
+    continuation_sym: i64,
+    body: Vec<*mut AstStmt>,
+    ret_expr: *mut AstExpr,
+    fn_sym: i64,
+}
+
+pub struct AstHandler {
+    effect_sym: i64,
+    arms: Vec<*mut AstHandlerArm>,
+    id: i64,
+}
 
 pub struct AstStmt {
     kind: i64,
@@ -118,6 +143,7 @@ pub struct AstStmt {
     else_stmts: Vec<*mut AstStmt>,
     left: *mut AstExpr,
     right: *mut AstExpr,
+    handler: *mut AstHandler,
 }
 
 pub struct AstField {
@@ -148,6 +174,7 @@ pub struct AstFn {
     ret_ty_sym: i64,
     body: Vec<*mut AstStmt>,
     type_param_sym: i64,
+    yields_effects: Vec<i64>,
 }
 
 pub struct AstTypeAlias {
@@ -158,12 +185,24 @@ pub struct AstTypeAlias {
     op: i64,
 }
 
+pub struct AstEffectOp {
+    name_sym: i64,
+    params: Vec<*mut AstParam>,
+    ret_ty_sym: i64,
+}
+
+pub struct AstEffect {
+    name_sym: i64,
+    ops: Vec<*mut AstEffectOp>,
+}
+
 pub struct AstProgram {
     structs: Vec<*mut AstStruct>,
     extern_fns: Vec<*mut AstExternFn>,
     functions: Vec<*mut AstFn>,
     imports: Vec<String>,
     vals: Vec<*mut AstTypeAlias>,
+    effects: Vec<*mut AstEffect>,
 }
 
 // -----------------------------------------------------------------------------
@@ -191,6 +230,7 @@ pub fn alloc_expr_int(arena: *mut u8, val: i64) -> *mut AstExpr {
     };
     let null_expr = 0 as *mut AstExpr;
     let empty_args: Vec<*mut AstExpr> = vec_new_in(arena);
+    let empty_stmts: Vec<*mut AstStmt> = vec_new_in(arena);
     unsafe {
         p.kind = expr_int();
         p.int_val = val;
@@ -199,6 +239,7 @@ pub fn alloc_expr_int(arena: *mut u8, val: i64) -> *mut AstExpr {
         p.left = null_expr;
         p.right = null_expr;
         p.args = empty_args;
+        p.stmts = empty_stmts;
         p.str_val = "";
     }
     p
@@ -210,6 +251,7 @@ pub fn alloc_expr_str(arena: *mut u8, str_val: String, sym: i64) -> *mut AstExpr
     };
     let null_expr = 0 as *mut AstExpr;
     let empty_args: Vec<*mut AstExpr> = vec_new_in(arena);
+    let empty_stmts: Vec<*mut AstStmt> = vec_new_in(arena);
     unsafe {
         p.kind = expr_str();
         p.int_val = 0;
@@ -218,6 +260,7 @@ pub fn alloc_expr_str(arena: *mut u8, str_val: String, sym: i64) -> *mut AstExpr
         p.left = null_expr;
         p.right = null_expr;
         p.args = empty_args;
+        p.stmts = empty_stmts;
         p.str_val = str_val;
     }
     p
@@ -229,6 +272,7 @@ pub fn alloc_expr_var(arena: *mut u8, sym: i64) -> *mut AstExpr {
     };
     let null_expr = 0 as *mut AstExpr;
     let empty_args: Vec<*mut AstExpr> = vec_new_in(arena);
+    let empty_stmts: Vec<*mut AstStmt> = vec_new_in(arena);
     unsafe {
         p.kind = expr_var();
         p.int_val = 0;
@@ -237,6 +281,7 @@ pub fn alloc_expr_var(arena: *mut u8, sym: i64) -> *mut AstExpr {
         p.left = null_expr;
         p.right = null_expr;
         p.args = empty_args;
+        p.stmts = empty_stmts;
         p.str_val = "";
     }
     p
@@ -247,6 +292,7 @@ pub fn alloc_expr_binop(arena: *mut u8, op: i64, left: *mut AstExpr, right: *mut
         tungsten_region_alloc(arena, 128, 8) as *mut AstExpr
     };
     let empty_args: Vec<*mut AstExpr> = vec_new_in(arena);
+    let empty_stmts: Vec<*mut AstStmt> = vec_new_in(arena);
     unsafe {
         p.kind = expr_binop();
         p.int_val = 0;
@@ -255,6 +301,7 @@ pub fn alloc_expr_binop(arena: *mut u8, op: i64, left: *mut AstExpr, right: *mut
         p.left = left;
         p.right = right;
         p.args = empty_args;
+        p.stmts = empty_stmts;
         p.str_val = "";
     }
     p
@@ -266,6 +313,7 @@ pub fn alloc_expr_unary(arena: *mut u8, op: i64, expr: *mut AstExpr) -> *mut Ast
     };
     let null_expr = 0 as *mut AstExpr;
     let empty_args: Vec<*mut AstExpr> = vec_new_in(arena);
+    let empty_stmts: Vec<*mut AstStmt> = vec_new_in(arena);
     unsafe {
         p.kind = expr_unary();
         p.int_val = 0;
@@ -274,6 +322,7 @@ pub fn alloc_expr_unary(arena: *mut u8, op: i64, expr: *mut AstExpr) -> *mut Ast
         p.left = expr;
         p.right = null_expr;
         p.args = empty_args;
+        p.stmts = empty_stmts;
         p.str_val = "";
     }
     p
@@ -285,6 +334,7 @@ pub fn alloc_expr_field(arena: *mut u8, left: *mut AstExpr, field_sym: i64) -> *
     };
     let null_expr = 0 as *mut AstExpr;
     let empty_args: Vec<*mut AstExpr> = vec_new_in(arena);
+    let empty_stmts: Vec<*mut AstStmt> = vec_new_in(arena);
     unsafe {
         p.kind = expr_field();
         p.int_val = 0;
@@ -293,6 +343,7 @@ pub fn alloc_expr_field(arena: *mut u8, left: *mut AstExpr, field_sym: i64) -> *
         p.left = left;
         p.right = null_expr;
         p.args = empty_args;
+        p.stmts = empty_stmts;
         p.str_val = "";
     }
     p
@@ -303,6 +354,7 @@ pub fn alloc_expr_index(arena: *mut u8, left: *mut AstExpr, idx: *mut AstExpr) -
         tungsten_region_alloc(arena, 128, 8) as *mut AstExpr
     };
     let empty_args: Vec<*mut AstExpr> = vec_new_in(arena);
+    let empty_stmts: Vec<*mut AstStmt> = vec_new_in(arena);
     unsafe {
         p.kind = expr_index();
         p.int_val = 0;
@@ -311,6 +363,7 @@ pub fn alloc_expr_index(arena: *mut u8, left: *mut AstExpr, idx: *mut AstExpr) -
         p.left = left;
         p.right = idx;
         p.args = empty_args;
+        p.stmts = empty_stmts;
         p.str_val = "";
     }
     p
@@ -322,6 +375,7 @@ pub fn alloc_expr_cast(arena: *mut u8, expr: *mut AstExpr, ty_sym: i64) -> *mut 
     };
     let null_expr = 0 as *mut AstExpr;
     let empty_args: Vec<*mut AstExpr> = vec_new_in(arena);
+    let empty_stmts: Vec<*mut AstStmt> = vec_new_in(arena);
     unsafe {
         p.kind = expr_cast();
         p.int_val = 0;
@@ -330,6 +384,7 @@ pub fn alloc_expr_cast(arena: *mut u8, expr: *mut AstExpr, ty_sym: i64) -> *mut 
         p.left = expr;
         p.right = null_expr;
         p.args = empty_args;
+        p.stmts = empty_stmts;
         p.str_val = "";
     }
     p
@@ -340,6 +395,7 @@ pub fn alloc_expr_call(arena: *mut u8, sym: i64, args: Vec<*mut AstExpr>) -> *mu
         tungsten_region_alloc(arena, 128, 8) as *mut AstExpr
     };
     let null_expr = 0 as *mut AstExpr;
+    let empty_stmts: Vec<*mut AstStmt> = vec_new_in(arena);
     unsafe {
         p.kind = expr_call();
         p.int_val = 0;
@@ -348,6 +404,7 @@ pub fn alloc_expr_call(arena: *mut u8, sym: i64, args: Vec<*mut AstExpr>) -> *mu
         p.left = null_expr;
         p.right = null_expr;
         p.args = args;
+        p.stmts = empty_stmts;
         p.str_val = "";
     }
     p
@@ -358,6 +415,7 @@ pub fn alloc_expr_struct_init(arena: *mut u8, struct_sym: i64, args: Vec<*mut As
         tungsten_region_alloc(arena, 128, 8) as *mut AstExpr
     };
     let null_expr = 0 as *mut AstExpr;
+    let empty_stmts: Vec<*mut AstStmt> = vec_new_in(arena);
     unsafe {
         p.kind = expr_struct_init();
         p.int_val = 0;
@@ -366,6 +424,67 @@ pub fn alloc_expr_struct_init(arena: *mut u8, struct_sym: i64, args: Vec<*mut As
         p.left = null_expr;
         p.right = null_expr;
         p.args = args;
+        p.stmts = empty_stmts;
+        p.str_val = "";
+    }
+    p
+}
+
+pub fn alloc_expr_perform(arena: *mut u8, effect_sym: i64, op_sym: i64, args: Vec<*mut AstExpr>) -> *mut AstExpr {
+    let p = unsafe {
+        tungsten_region_alloc(arena, 128, 8) as *mut AstExpr
+    };
+    let null_expr = 0 as *mut AstExpr;
+    let empty_stmts: Vec<*mut AstStmt> = vec_new_in(arena);
+    unsafe {
+        p.kind = expr_perform();
+        p.int_val = 0;
+        p.sym = effect_sym;
+        p.op = op_sym;
+        p.left = null_expr;
+        p.right = null_expr;
+        p.args = args;
+        p.stmts = empty_stmts;
+        p.str_val = "";
+    }
+    p
+}
+
+pub fn alloc_expr_resume(arena: *mut u8, cont_expr: *mut AstExpr, val_expr: *mut AstExpr) -> *mut AstExpr {
+    let p = unsafe {
+        tungsten_region_alloc(arena, 128, 8) as *mut AstExpr
+    };
+    let empty_args: Vec<*mut AstExpr> = vec_new_in(arena);
+    let empty_stmts: Vec<*mut AstStmt> = vec_new_in(arena);
+    unsafe {
+        p.kind = expr_resume();
+        p.int_val = 0;
+        p.sym = 0;
+        p.op = 0;
+        p.left = cont_expr;
+        p.right = val_expr;
+        p.args = empty_args;
+        p.stmts = empty_stmts;
+        p.str_val = "";
+    }
+    p
+}
+
+pub fn alloc_expr_handle(arena: *mut u8, effect_sym: i64, body: Vec<*mut AstStmt>, handler: *mut AstHandler) -> *mut AstExpr {
+    let p = unsafe {
+        tungsten_region_alloc(arena, 128, 8) as *mut AstExpr
+    };
+    let empty_args: Vec<*mut AstExpr> = vec_new_in(arena);
+    let null_expr = 0 as *mut AstExpr;
+    unsafe {
+        p.kind = expr_handle();
+        p.int_val = 0;
+        p.sym = effect_sym;
+        p.op = 0;
+        p.left = handler as *mut AstExpr;
+        p.right = null_expr;
+        p.args = empty_args;
+        p.stmts = body;
         p.str_val = "";
     }
     p
@@ -386,6 +505,7 @@ pub fn alloc_stmt_let(arena: *mut u8, sym: i64, expr: *mut AstExpr) -> *mut AstS
         p.else_stmts = empty_else;
         p.left = null_expr;
         p.right = null_expr;
+        p.handler = 0 as *mut AstHandler;
     }
     p
 }
@@ -405,6 +525,7 @@ pub fn alloc_stmt_assign(arena: *mut u8, sym: i64, expr: *mut AstExpr) -> *mut A
         p.else_stmts = empty_else;
         p.left = null_expr;
         p.right = null_expr;
+        p.handler = 0 as *mut AstHandler;
     }
     p
 }
@@ -424,6 +545,7 @@ pub fn alloc_stmt_field_assign(arena: *mut u8, left: *mut AstExpr, field_sym: i6
         p.else_stmts = empty_else;
         p.left = left;
         p.right = null_expr;
+        p.handler = 0 as *mut AstHandler;
     }
     p
 }
@@ -434,6 +556,7 @@ pub fn alloc_stmt_index_assign(arena: *mut u8, left: *mut AstExpr, idx: *mut Ast
     };
     let empty_then: Vec<*mut AstStmt> = vec_new_in(arena);
     let empty_else: Vec<*mut AstStmt> = vec_new_in(arena);
+    let null_expr = 0 as *mut AstExpr;
     unsafe {
         p.kind = stmt_index_assign();
         p.sym = 0;
@@ -442,6 +565,7 @@ pub fn alloc_stmt_index_assign(arena: *mut u8, left: *mut AstExpr, idx: *mut Ast
         p.else_stmts = empty_else;
         p.left = left;
         p.right = idx;
+        p.handler = 0 as *mut AstHandler;
     }
     p
 }
@@ -461,6 +585,7 @@ pub fn alloc_stmt_return(arena: *mut u8, expr: *mut AstExpr) -> *mut AstStmt {
         p.else_stmts = empty_else;
         p.left = null_expr;
         p.right = null_expr;
+        p.handler = 0 as *mut AstHandler;
     }
     p
 }
@@ -480,6 +605,7 @@ pub fn alloc_stmt_expr(arena: *mut u8, expr: *mut AstExpr) -> *mut AstStmt {
         p.else_stmts = empty_else;
         p.left = null_expr;
         p.right = null_expr;
+        p.handler = 0 as *mut AstHandler;
     }
     p
 }
@@ -497,6 +623,7 @@ pub fn alloc_stmt_if(arena: *mut u8, cond: *mut AstExpr, then_stmts: Vec<*mut As
         p.else_stmts = else_stmts;
         p.left = null_expr;
         p.right = null_expr;
+        p.handler = 0 as *mut AstHandler;
     }
     p
 }
@@ -515,6 +642,7 @@ pub fn alloc_stmt_while(arena: *mut u8, cond: *mut AstExpr, body: Vec<*mut AstSt
         p.else_stmts = empty_else;
         p.left = null_expr;
         p.right = null_expr;
+        p.handler = 0 as *mut AstHandler;
     }
     p
 }
@@ -533,6 +661,7 @@ pub fn alloc_stmt_block(arena: *mut u8, sym: i64, stmts: Vec<*mut AstStmt>) -> *
         p.else_stmts = empty_else;
         p.left = null_expr;
         p.right = null_expr;
+        p.handler = 0 as *mut AstHandler;
     }
     p
 }
@@ -552,6 +681,26 @@ pub fn alloc_stmt_break(arena: *mut u8) -> *mut AstStmt {
         p.else_stmts = empty_else;
         p.left = null_expr;
         p.right = null_expr;
+        p.handler = 0 as *mut AstHandler;
+    }
+    p
+}
+
+pub fn alloc_stmt_handle(arena: *mut u8, effect_sym: i64, body: Vec<*mut AstStmt>, handler: *mut AstHandler) -> *mut AstStmt {
+    let p = unsafe {
+        tungsten_region_alloc(arena, 128, 8) as *mut AstStmt
+    };
+    let empty_else: Vec<*mut AstStmt> = vec_new_in(arena);
+    let null_expr = 0 as *mut AstExpr;
+    unsafe {
+        p.kind = stmt_handle();
+        p.sym = effect_sym;
+        p.expr = null_expr;
+        p.then_stmts = body;
+        p.else_stmts = empty_else;
+        p.left = null_expr;
+        p.right = null_expr;
+        p.handler = handler;
     }
     p
 }
@@ -602,9 +751,9 @@ pub fn alloc_extern_fn(arena: *mut u8, name_sym: i64, params: Vec<*mut AstParam>
     p
 }
 
-pub fn alloc_fn(arena: *mut u8, name_sym: i64, params: Vec<*mut AstParam>, ret_ty_sym: i64, body: Vec<*mut AstStmt>, type_param_sym: i64) -> *mut AstFn {
+pub fn alloc_fn(arena: *mut u8, name_sym: i64, params: Vec<*mut AstParam>, ret_ty_sym: i64, body: Vec<*mut AstStmt>, type_param_sym: i64, yields_effects: Vec<i64>) -> *mut AstFn {
     let p = unsafe {
-        tungsten_region_alloc(arena, 80, 8) as *mut AstFn
+        tungsten_region_alloc(arena, 128, 8) as *mut AstFn
     };
     unsafe {
         p.name_sym = name_sym;
@@ -612,6 +761,7 @@ pub fn alloc_fn(arena: *mut u8, name_sym: i64, params: Vec<*mut AstParam>, ret_t
         p.ret_ty_sym = ret_ty_sym;
         p.body = body;
         p.type_param_sym = type_param_sym;
+        p.yields_effects = yields_effects;
     }
     p
 }
@@ -630,6 +780,56 @@ pub fn alloc_type_alias(arena: *mut u8, name_sym: i64, ty_sym: i64, min_val: i64
     p
 }
 
+pub fn alloc_effect_op(arena: *mut u8, name_sym: i64, params: Vec<*mut AstParam>, ret_ty_sym: i64) -> *mut AstEffectOp {
+    let p = unsafe {
+        tungsten_region_alloc(arena, 48, 8) as *mut AstEffectOp
+    };
+    unsafe {
+        p.name_sym = name_sym;
+        p.params = params;
+        p.ret_ty_sym = ret_ty_sym;
+    }
+    p
+}
+
+pub fn alloc_effect(arena: *mut u8, name_sym: i64, ops: Vec<*mut AstEffectOp>) -> *mut AstEffect {
+    let p = unsafe {
+        tungsten_region_alloc(arena, 48, 8) as *mut AstEffect
+    };
+    unsafe {
+        p.name_sym = name_sym;
+        p.ops = ops;
+    }
+    p
+}
+
+pub fn alloc_handler_arm(arena: *mut u8, op_sym: i64, continuation_sym: i64, params: Vec<*mut AstParam>, body: Vec<*mut AstStmt>, ret_expr: *mut AstExpr) -> *mut AstHandlerArm {
+    let p = unsafe {
+        tungsten_region_alloc(arena, 80, 8) as *mut AstHandlerArm
+    };
+    unsafe {
+        p.op_sym = op_sym;
+        p.params = params;
+        p.continuation_sym = continuation_sym;
+        p.body = body;
+        p.ret_expr = ret_expr;
+        p.fn_sym = 0;
+    }
+    p
+}
+
+pub fn alloc_handler(arena: *mut u8, effect_sym: i64, arms: Vec<*mut AstHandlerArm>) -> *mut AstHandler {
+    let p = unsafe {
+        tungsten_region_alloc(arena, 48, 8) as *mut AstHandler
+    };
+    unsafe {
+        p.effect_sym = effect_sym;
+        p.arms = arms;
+        p.id = 0;
+    }
+    p
+}
+
 pub fn alloc_program(arena: *mut u8) -> *mut AstProgram {
     let p = unsafe {
         tungsten_region_alloc(arena, 256, 8) as *mut AstProgram
@@ -639,12 +839,14 @@ pub fn alloc_program(arena: *mut u8) -> *mut AstProgram {
     let funcs: Vec<*mut AstFn> = vec_new_in(arena);
     let imps: Vec<String> = vec_new_in(arena);
     let type_aliases: Vec<*mut AstTypeAlias> = vec_new_in(arena);
+    let effects: Vec<*mut AstEffect> = vec_new_in(arena);
     unsafe {
         p.structs = structs;
         p.extern_fns = extern_fns;
         p.functions = funcs;
         p.imports = imps;
         p.vals = type_aliases;
+        p.effects = effects;
     }
     p
 }

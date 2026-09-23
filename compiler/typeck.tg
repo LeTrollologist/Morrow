@@ -25,6 +25,7 @@ pub fn ty_ptr() -> i64 { 6 }
 pub fn ty_ref() -> i64 { 7 }
 pub fn ty_struct() -> i64 { 8 }
 pub fn ty_fn() -> i64 { 9 }
+pub fn ty_continuation() -> i64 { 10 }
 
 // Memory layout aligned with AstExpr (offsets 0..6)
 pub struct TcType {
@@ -33,7 +34,7 @@ pub struct TcType {
     int_val: i64,       // 2: Refinement interval min
     str_val: String,    // 3: Unused
     op: i64,            // 4: Refinement interval max (-1 if unrefined)
-    left: *mut TcType,  // 5: Inner type (for Ref/Ptr)
+    left: *mut TcType,  // 5: Inner type (for Ref/Ptr/Continuation)
     right: *mut TcType, // 6: Region info
 }
 
@@ -61,15 +62,23 @@ pub fn alloc_tc_ref(arena: *mut u8, inner: *mut TcType) -> *mut TcType {
     t
 }
 
+pub fn alloc_tc_continuation(arena: *mut u8, op_ret_ty: *mut TcType) -> *mut TcType {
+    let t = alloc_tc_type(arena, ty_continuation(), 0);
+    t.left = op_ret_ty;
+    t
+}
+
 // -----------------------------------------------------------------------------
 // Type Checker State
 // -----------------------------------------------------------------------------
-// Memory layout aligned with Parser (offsets 0..3)
 pub struct TypeChecker {
-    tokens: Vec<*mut Token>, // 0: Unused
-    pos: i64,                // 1: Error count
-    interner: *mut Interner, // 2: Interner pointer
-    arena: *mut u8,          // 3: Scratch region arena
+    tokens: Vec<*mut Token>,        // 0: Unused
+    pos: i64,                       // 1: Error count
+    interner: *mut Interner,        // 2: Interner pointer
+    arena: *mut u8,                 // 3: Scratch region arena
+    effect_defs: *mut HashMap,      // 4: Map of effect name -> *mut AstEffect
+    active_yields: *mut Vec<i64>,   // 5: Current function's declared yields
+    handled_effects: *mut Vec<i64>, // 6: Stack of active handled effect symbols
 }
 
 pub fn typechecker_new_in(interner: *mut Interner, arena: *mut u8) -> TypeChecker {
@@ -79,7 +88,36 @@ pub fn typechecker_new_in(interner: *mut Interner, arena: *mut u8) -> TypeChecke
         pos: 0,
         interner: interner,
         arena: arena,
+        effect_defs: 0 as *mut HashMap,
+        active_yields: 0 as *mut Vec<i64>,
+        handled_effects: 0 as *mut Vec<i64>,
     }
+}
+
+pub fn tc_is_effect_covered(tc: &TypeChecker, eff_sym: i64) -> bool {
+    // 1. Check active handled_effects stack
+    if tc.handled_effects != (0 as *mut Vec<i64>) {
+        let handled_ref = unsafe { tc.handled_effects as &Vec<i64> };
+        let mut hi: i64 = 0;
+        while hi < handled_ref.len {
+            if vec_get(handled_ref, hi) == eff_sym {
+                return true;
+            }
+            hi = hi + 1;
+        }
+    }
+    // 2. Check active function yields contract
+    if tc.active_yields != (0 as *mut Vec<i64>) {
+        let yields_ref = unsafe { tc.active_yields as &Vec<i64> };
+        let mut yi: i64 = 0;
+        while yi < yields_ref.len {
+            if vec_get(yields_ref, yi) == eff_sym {
+                return true;
+            }
+            yi = yi + 1;
+        }
+    }
+    false
 }
 
 pub fn tc_init_prelude(tc: &mut TypeChecker, types: &mut HashMap) {
@@ -105,6 +143,8 @@ pub fn tc_init_prelude(tc: &mut TypeChecker, types: &mut HashMap) {
     hashmap_insert(types, "String", t_str as i64);
     hashmap_insert(types, "string", t_str as i64);
     hashmap_insert(types, "void", t_unit as i64);
+    let t_cont = alloc_tc_type(tc.arena, ty_continuation(), 0);
+    hashmap_insert(types, "Continuation", t_cont as i64);
 
     // Standard prelude refinements
     let t_pct = alloc_tc_refined(tc.arena, ty_byte(), 0, 100);
@@ -291,6 +331,16 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &HashMap, fn_defs: &HashMap, ext_defs
 
         // Check user function return
         if target_fn != (0 as *mut AstFn) {
+            // Static Invariant: Check effect propagation
+            let mut ei: i64 = 0;
+            while ei < target_fn.yields_effects.len {
+                let eff_sym = vec_get(&target_fn.yields_effects, ei);
+                if !tc_is_effect_covered(tc, eff_sym) {
+                    report_err("Unhandled effect in function call; must be declared in yields contract or handled", 1, 1);
+                    tc.pos = tc.pos + 1;
+                }
+                ei = ei + 1;
+            }
             let ret_sym = target_fn.ret_ty_sym;
             return tc_resolve_type(tc, types, struct_defs, ret_sym);
         }
@@ -374,6 +424,194 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &HashMap, fn_defs: &HashMap, ext_defs
             i = i + 1;
         }
         return alloc_tc_type(tc.arena, ty_struct(), struct_sym);
+    }
+
+    if kind == expr_perform() {
+        let eff_sym = expr.sym;
+        let op_sym = expr.op;
+        let interner_ref = tc.interner as &Interner;
+        let eff_name = interner_lookup(interner_ref, eff_sym);
+        let eff_val = hashmap_get(tc.effect_defs as &HashMap, eff_name);
+        if eff_val == 0 - 1 {
+            report_err("Unknown effect in perform", 1, 1);
+            tc.pos = tc.pos + 1;
+            return alloc_tc_type(tc.arena, ty_int(), 0);
+        }
+        let eff = eff_val as *mut AstEffect;
+        let mut target_op = 0 as *mut AstEffectOp;
+        let mut oi: i64 = 0;
+        while oi < eff.ops.len {
+            let candidate = vec_get(&eff.ops, oi);
+            if candidate.name_sym == op_sym {
+                target_op = candidate;
+                break;
+            }
+            oi = oi + 1;
+        }
+        if target_op == (0 as *mut AstEffectOp) {
+            report_err("Unknown effect operation in perform", 1, 1);
+            tc.pos = tc.pos + 1;
+            return alloc_tc_type(tc.arena, ty_int(), 0);
+        }
+
+        // Validate argument count and types
+        if expr.args.len != target_op.params.len {
+            report_err("Effect operation argument count mismatch", 1, 1);
+            tc.pos = tc.pos + 1;
+        } else {
+            let mut ai: i64 = 0;
+            while ai < expr.args.len {
+                let arg_node = vec_get(&expr.args, ai);
+                let _arg_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, arg_node);
+                ai = ai + 1;
+            }
+        }
+
+        // Enforce Static Invariant 1:
+        if !tc_is_effect_covered(tc, eff_sym) {
+            report_err("Unhandled perform effect; must be declared in yields contract or handled", 1, 1);
+            tc.pos = tc.pos + 1;
+        }
+
+        return tc_resolve_type(tc, types, struct_defs, target_op.ret_ty_sym);
+    }
+
+    if kind == expr_resume() {
+        let k_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, expr.left);
+        let val_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, expr.right);
+        if k_ty.kind != ty_continuation() {
+            report_err("First argument to resume must be a continuation", 1, 1);
+            tc.pos = tc.pos + 1;
+        } else {
+            if k_ty.left != (0 as *mut TcType) {
+                if val_ty.kind != ty_unknown() && k_ty.left.kind != ty_unknown() {
+                    if val_ty.kind != k_ty.left.kind {
+                        report_err("Resume value type does not match continuation expected type", 1, 1);
+                        tc.pos = tc.pos + 1;
+                    }
+                }
+            }
+        }
+        return alloc_tc_type(tc.arena, ty_unit(), 0);
+    }
+
+    if kind == expr_handle() {
+        let eff_sym = expr.sym;
+        let handler = expr.left as *mut AstHandler;
+        let interner_ref = tc.interner as &Interner;
+        let eff_name = interner_lookup(interner_ref, eff_sym);
+        let eff_val = hashmap_get(tc.effect_defs as &HashMap, eff_name);
+        if eff_val == 0 - 1 {
+            report_err("Handler references undefined effect", 1, 1);
+            tc.pos = tc.pos + 1;
+            return alloc_tc_type(tc.arena, ty_int(), 0);
+        }
+        let eff = eff_val as *mut AstEffect;
+
+        // Invariant 2: Check all operations in eff are implemented by handler
+        let mut oi: i64 = 0;
+        while oi < eff.ops.len {
+            let required_op = vec_get(&eff.ops, oi);
+            let mut found = false;
+            let mut ai: i64 = 0;
+            while ai < handler.arms.len {
+                let arm = vec_get(&handler.arms, ai);
+                if arm.op_sym == required_op.name_sym {
+                    found = true;
+                    if arm.params.len != required_op.params.len {
+                        report_err("Handler arm parameter count mismatch", 1, 1);
+                        tc.pos = tc.pos + 1;
+                    }
+                    break;
+                }
+                ai = ai + 1;
+            }
+            if !found {
+                report_err("Handler does not implement all operations of effect", 1, 1);
+                tc.pos = tc.pos + 1;
+            }
+            oi = oi + 1;
+        }
+
+        // Typecheck each handler arm
+        let mut arm_idx: i64 = 0;
+        while arm_idx < handler.arms.len {
+            let arm = vec_get(&handler.arms, arm_idx);
+            let mut arm_vars = hashmap_new_in(tc.arena, 32);
+            let mut vi: i64 = 0;
+            while vi < vars.occupied.len {
+                let idx = vec_get(&vars.occupied, vi);
+                let k = vec_get(&vars.keys, idx);
+                let v = vec_get(&vars.vals, idx);
+                hashmap_insert(&mut arm_vars, k, v);
+                vi = vi + 1;
+            }
+            let k_name = interner_lookup(interner_ref, arm.continuation_sym);
+            let mut op_ret_ty = alloc_tc_type(tc.arena, ty_int(), 0);
+            let mut op_i: i64 = 0;
+            while op_i < eff.ops.len {
+                let op = vec_get(&eff.ops, op_i);
+                if op.name_sym == arm.op_sym {
+                    op_ret_ty = tc_resolve_type(tc, types, struct_defs, op.ret_ty_sym);
+                    break;
+                }
+                op_i = op_i + 1;
+            }
+            let k_ty = alloc_tc_continuation(tc.arena, op_ret_ty);
+            hashmap_insert(&mut arm_vars, k_name, k_ty as i64);
+
+            let mut pi: i64 = 0;
+            while pi < arm.params.len {
+                let p = vec_get(&arm.params, pi);
+                let p_name = interner_lookup(interner_ref, p.name_sym);
+                let p_ty = tc_resolve_type(tc, types, struct_defs, p.ty_sym);
+                hashmap_insert(&mut arm_vars, p_name, p_ty as i64);
+                pi = pi + 1;
+            }
+
+            let mut si: i64 = 0;
+            while si < arm.body.len {
+                let s = vec_get(&arm.body, si);
+                tc_stmt(tc, &mut arm_vars, fn_defs, ext_defs, types, struct_defs, op_ret_ty, 0, 0, s);
+                si = si + 1;
+            }
+            arm_idx = arm_idx + 1;
+        }
+
+        // Push effect onto handled_effects stack
+        let handled_vec = unsafe { tc.handled_effects as &mut Vec<i64> };
+        vec_push(handled_vec, eff_sym);
+
+        // Typecheck handled body statements
+        let mut body_ty = alloc_tc_type(tc.arena, ty_unit(), 0);
+        let mut bi: i64 = 0;
+        let mut body_vars = hashmap_new_in(tc.arena, 32);
+        let mut vi: i64 = 0;
+        while vi < vars.occupied.len {
+            let idx = vec_get(&vars.occupied, vi);
+            let k = vec_get(&vars.keys, idx);
+            let v = vec_get(&vars.vals, idx);
+            hashmap_insert(&mut body_vars, k, v);
+            vi = vi + 1;
+        }
+        while bi < expr.stmts.len {
+            let s = vec_get(&expr.stmts, bi);
+            if bi == expr.stmts.len - 1 {
+                if s.kind == stmt_expr() {
+                    body_ty = tc_expr(tc, &body_vars, fn_defs, ext_defs, types, struct_defs, s.expr);
+                } else {
+                    tc_stmt(tc, &mut body_vars, fn_defs, ext_defs, types, struct_defs, body_ty, 0, 0, s);
+                }
+            } else {
+                tc_stmt(tc, &mut body_vars, fn_defs, ext_defs, types, struct_defs, body_ty, 0, 0, s);
+            }
+            bi = bi + 1;
+        }
+
+        // Pop effect from handled_effects stack
+        handled_vec.len = handled_vec.len - 1;
+
+        return body_ty;
     }
 
     alloc_tc_type(tc.arena, ty_unit(), 0)
@@ -601,6 +839,14 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
         return true;
     }
 
+    if kind == stmt_handle() {
+        if stmt.handler != (0 as *mut AstHandler) {
+            let handle_expr = alloc_expr_handle(tc.arena, stmt.sym, stmt.then_stmts, stmt.handler);
+            tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, handle_expr);
+        }
+        return true;
+    }
+
     true
 }
 
@@ -608,6 +854,7 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
 // Type Checking Functions & Program
 // -----------------------------------------------------------------------------
 pub fn tc_function(tc: &mut TypeChecker, fn_defs: &HashMap, ext_defs: &HashMap, types: &HashMap, struct_defs: &HashMap, f: *mut AstFn) -> bool yields [Diagnostics] {
+    tc.active_yields = &mut f.yields_effects as *mut Vec<i64>;
     let mut vars = hashmap_new_in(tc.arena, 64);
     let params_len = f.params.len;
     let mut i: i64 = 0;
@@ -641,6 +888,22 @@ pub fn typecheck_program(prog: *mut AstProgram, interner: *mut Interner, arena: 
     let mut struct_defs = hashmap_new_in(arena, 64);
     let mut fn_defs = hashmap_new_in(arena, 128);
     let mut ext_defs = hashmap_new_in(arena, 64);
+
+    // Register effect definitions
+    let mut effect_defs = hashmap_new_in(arena, 32);
+    let effs_len = prog.effects.len;
+    let mut ei: i64 = 0;
+    while ei < effs_len {
+        let eff = vec_get(&prog.effects, ei);
+        let sym = eff.name_sym;
+        let interner_ref = interner as &Interner;
+        let s = interner_lookup(interner_ref, sym);
+        hashmap_insert(&mut effect_defs, s, eff as i64);
+        ei = ei + 1;
+    }
+    tc.effect_defs = &mut effect_defs as *mut HashMap;
+    let mut handled_vec: Vec<i64> = vec_new_in(arena);
+    tc.handled_effects = &mut handled_vec as *mut Vec<i64>;
 
     tc_init_prelude(&mut tc, &mut types);
 

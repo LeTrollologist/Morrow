@@ -1,0 +1,358 @@
+// tests/effects_test.tg
+// Phase 9.4 - Algebraic Effects & Delimited Handlers
+//
+// ACCEPTANCE INVARIANTS:
+//   (1) Delimited continuations are represented as explicit continuation records.
+//   (2) Single-shot resumption restores control and value to the perform call site.
+//   (3) Abortive handlers cleanly unwind to the enclosing handle block.
+//   (4) Handlers search the dynamic frame stack for the nearest matching effect.
+//   (5) All effect contracts (yields [...]) are strictly checked at compile time.
+
+import std::collections;
+
+extern "C" {
+    fn puts(s: *const u8) -> i32;
+}
+
+fn tprint(msg: String) {
+    unsafe {
+        puts(msg as *const u8);
+    }
+}
+
+// ===========================================================================
+// Effect Declarations
+// ===========================================================================
+
+effect Counter {
+    fn inc(delta: i64) -> i64;
+    fn get() -> i64;
+}
+
+effect AbortEff {
+    fn bail(code: i64) -> i64;
+}
+
+effect EffOuter {
+    fn outer_op(x: i64) -> i64;
+}
+
+effect EffInner {
+    fn inner_op(x: i64) -> i64;
+}
+
+effect ShadowEff {
+    fn op(x: i64) -> i64;
+}
+
+effect MathEff {
+    fn add3(a: i64, b: i64, c: i64) -> i64;
+}
+
+// ===========================================================================
+// Test 1: Basic single-shot resumption with value return
+// ===========================================================================
+
+fn worker_basic_resume() -> i64 yields [Counter] {
+    let x = perform Counter.inc(21);
+    return x + 5;
+}
+
+fn test_basic_resume() -> i64 {
+    let res = handle {
+        worker_basic_resume()
+    } with Counter {
+        fn inc(k, delta: i64) {
+            resume(k, delta * 2);
+        }
+        fn get(k) {
+            resume(k, 0);
+        }
+    };
+    // Expected: 21 * 2 = 42; 42 + 5 = 47
+    if res == 47 {
+        return 0;
+    }
+    return 1;
+}
+
+// ===========================================================================
+// Test 2: Multiple operations on same effect within one worker
+// ===========================================================================
+
+fn worker_multi_op() -> i64 yields [Counter] {
+    let a = perform Counter.inc(10);
+    let b = perform Counter.get();
+    let c = perform Counter.inc(5);
+    return a + b + c;
+}
+
+fn test_multi_op_resume() -> i64 {
+    let res = handle {
+        worker_multi_op()
+    } with Counter {
+        fn inc(k, delta: i64) {
+            resume(k, delta * 3);
+        }
+        fn get(k) {
+            resume(k, 100);
+        }
+    };
+    // Expected: a = 30, b = 100, c = 15 => 30 + 100 + 15 = 145
+    if res == 145 {
+        return 0;
+    }
+    return 1;
+}
+
+// ===========================================================================
+// Test 3: Abortive handler (returns value without calling resume)
+// ===========================================================================
+
+fn worker_abort() -> i64 yields [AbortEff] {
+    let x = perform AbortEff.bail(404);
+    // This code must never be reached!
+    return x + 999999;
+}
+
+fn test_abortive_handler() -> i64 {
+    let res = handle {
+        worker_abort()
+    } with AbortEff {
+        fn bail(k, code: i64) {
+            // Early exit without resume
+            code + 96
+        }
+    };
+    // Expected: 404 + 96 = 500
+    if res == 500 {
+        return 0;
+    }
+    return 1;
+}
+
+// ===========================================================================
+// Test 4: Nested handlers for distinct effects (nearest-match dispatch)
+// ===========================================================================
+
+fn worker_nested() -> i64 yields [EffOuter, EffInner] {
+    let a = perform EffOuter.outer_op(10);
+    let b = perform EffInner.inner_op(20);
+    return a + b;
+}
+
+fn test_nested_handlers() -> i64 {
+    let res = handle {
+        handle {
+            worker_nested()
+        } with EffInner {
+            fn inner_op(k, x: i64) {
+                resume(k, x * 4);
+            }
+        }
+    } with EffOuter {
+        fn outer_op(k, x: i64) {
+            resume(k, x + 100);
+        }
+    };
+    // Expected: a = 110, b = 80 => 110 + 80 = 190
+    if res == 190 {
+        return 0;
+    }
+    return 1;
+}
+
+// ===========================================================================
+// Test 5: Shadowed effect handler (innermost handler matches first)
+// ===========================================================================
+
+fn worker_shadow() -> i64 yields [ShadowEff] {
+    let a = perform ShadowEff.op(10);
+    return a;
+}
+
+fn test_nested_shadowing() -> i64 {
+    let res = handle {
+        handle {
+            worker_shadow()
+        } with ShadowEff {
+            fn op(k, x: i64) {
+                // Inner handler: multiplies by 2
+                resume(k, x * 2);
+            }
+        }
+    } with ShadowEff {
+        fn op(k, x: i64) {
+            // Outer handler: multiplies by 100 (should be shadowed)
+            resume(k, x * 100);
+        }
+    };
+    // Expected: inner matches first => 10 * 2 = 20
+    if res == 20 {
+        return 0;
+    }
+    return 1;
+}
+
+// ===========================================================================
+// Test 6: Deep call chain effect propagation
+// ===========================================================================
+
+fn chain_level_3(x: i64) -> i64 yields [Counter] {
+    let inc_val = perform Counter.inc(x);
+    inc_val + 1
+}
+
+fn chain_level_2(x: i64) -> i64 yields [Counter] {
+    let v = chain_level_3(x * 2);
+    v + 10
+}
+
+fn chain_level_1(x: i64) -> i64 yields [Counter] {
+    chain_level_2(x + 3)
+}
+
+fn test_deep_propagation() -> i64 {
+    // x = 2 -> level 1 passes (2 + 3) = 5
+    // level 2 passes (5 * 2) = 10 to level 3
+    // level 3 performs Counter.inc(10) -> handler returns 10 * 10 = 100
+    // level 3 returns 100 + 1 = 101
+    // level 2 returns 101 + 10 = 111
+    // level 1 returns 111
+    let res = handle {
+        chain_level_1(2)
+    } with Counter {
+        fn inc(k, delta: i64) {
+            resume(k, delta * 10);
+        }
+        fn get(k) {
+            resume(k, 0);
+        }
+    };
+    if res == 111 {
+        return 0;
+    }
+    return 1;
+}
+
+// ===========================================================================
+// Test 7: Multi-argument effect operation
+// ===========================================================================
+
+fn worker_math(a: i64, b: i64, c: i64) -> i64 yields [MathEff] {
+    let r = perform MathEff.add3(a, b, c);
+    return r * 2;
+}
+
+fn test_multi_arg_op() -> i64 {
+    let res = handle {
+        worker_math(10, 20, 30)
+    } with MathEff {
+        fn add3(k, a: i64, b: i64, c: i64) {
+            resume(k, a + b + c);
+        }
+    };
+    // Expected: 10 + 20 + 30 = 60; 60 * 2 = 120
+    if res == 120 {
+        return 0;
+    }
+    return 1;
+}
+
+// ===========================================================================
+// Test 8: Abort inside deeply nested call stack
+// ===========================================================================
+
+fn deep_bail_3() -> i64 yields [AbortEff] {
+    perform AbortEff.bail(77);
+    return 999;
+}
+
+fn deep_bail_2() -> i64 yields [AbortEff] {
+    let v = deep_bail_3();
+    return v + 1;
+}
+
+fn deep_bail_1() -> i64 yields [AbortEff] {
+    deep_bail_2()
+}
+
+fn test_deep_abort() -> i64 {
+    let res = handle {
+        deep_bail_1()
+    } with AbortEff {
+        fn bail(k, code: i64) {
+            code + 23
+        }
+    };
+    // Expected: 77 + 23 = 100
+    if res == 100 {
+        return 0;
+    }
+    return 1;
+}
+
+// ===========================================================================
+// Main Test Runner
+// ===========================================================================
+
+fn main() -> i64 {
+    let r1 = test_basic_resume();
+    if r1 != 0 {
+        tprint("FAILED: test_basic_resume\0");
+        return r1;
+    }
+    tprint("  test basic single-shot resume ... ok\0");
+
+    let r2 = test_multi_op_resume();
+    if r2 != 0 {
+        tprint("FAILED: test_multi_op_resume\0");
+        return r2;
+    }
+    tprint("  test multiple sequential operations ... ok\0");
+
+    let r3 = test_abortive_handler();
+    if r3 != 0 {
+        tprint("FAILED: test_abortive_handler\0");
+        return r3;
+    }
+    tprint("  test abortive handler unwinding ... ok\0");
+
+    let r4 = test_nested_handlers();
+    if r4 != 0 {
+        tprint("FAILED: test_nested_handlers\0");
+        return r4;
+    }
+    tprint("  test nested handlers nearest-match dispatch ... ok\0");
+
+    let r5 = test_nested_shadowing();
+    if r5 != 0 {
+        tprint("FAILED: test_nested_shadowing\0");
+        return r5;
+    }
+    tprint("  test nested effect shadowing ... ok\0");
+
+    let r6 = test_deep_propagation();
+    if r6 != 0 {
+        tprint("FAILED: test_deep_propagation\0");
+        return r6;
+    }
+    tprint("  test deep call chain propagation ... ok\0");
+
+    let r7 = test_multi_arg_op();
+    if r7 != 0 {
+        tprint("FAILED: test_multi_arg_op\0");
+        return r7;
+    }
+    tprint("  test multi-argument operation ... ok\0");
+
+    let r8 = test_deep_abort();
+    if r8 != 0 {
+        tprint("FAILED: test_deep_abort\0");
+        return r8;
+    }
+    tprint("  test deep abort unwinding ... ok\0");
+
+    tprint("All Algebraic Effects Tests Passed (100% OK)\0");
+    return 0;
+}

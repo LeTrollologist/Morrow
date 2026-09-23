@@ -204,6 +204,26 @@ fn load_module_recursive(path: String, loaded_paths: &mut Vec<String>, prog: *mu
         }
         ta_idx = ta_idx + 1;
     }
+
+    // 11. Merge effects with deduplication
+    let mut eff_idx: i64 = 0;
+    while eff_idx < file_prog.effects.len {
+        let eff_item = vec_get(&file_prog.effects, eff_idx);
+        let mut exists = false;
+        let mut chk_idx: i64 = 0;
+        while chk_idx < prog.effects.len {
+            let existing = vec_get(&prog.effects, chk_idx);
+            if existing.name_sym == eff_item.name_sym {
+                exists = true;
+                break;
+            }
+            chk_idx = chk_idx + 1;
+        }
+        if !exists {
+            vec_push(&mut prog.effects, eff_item);
+        }
+        eff_idx = eff_idx + 1;
+    }
 }
 
 pub fn load_program_modules(root_path: String, interner: &mut Interner, arena: *mut u8) -> *mut AstProgram yields [FS, Diagnostics] {
@@ -274,7 +294,7 @@ fn clone_fn_concrete(arena: *mut u8, interner: &mut Interner, tmpl: *mut AstFn, 
         ret_ty = concrete_sym;
     }
 
-    alloc_fn(arena, mangled_sym, new_params, ret_ty, tmpl.body, 0)
+    alloc_fn(arena, mangled_sym, new_params, ret_ty, tmpl.body, 0, tmpl.yields_effects)
 }
 
 // Clone a generic AstStruct template as a concrete monomorphization.
@@ -374,6 +394,17 @@ fn walk_expr_mono(arena: *mut u8, interner: &mut Interner, prog: *mut AstProgram
         return;
     }
 
+    if expr.kind == expr_handle() {
+        let bi_len = expr.stmts.len;
+        let mut bi: i64 = 0;
+        while bi < bi_len {
+            let s = vec_get(&expr.stmts, bi);
+            walk_stmt_mono(arena, interner, prog, gf, gs, already_mono, s);
+            bi = bi + 1;
+        }
+        return;
+    }
+
     // Recurse into sub-expressions for all other node kinds
     if expr.left != 0 as *mut AstExpr {
         walk_expr_mono(arena, interner, prog, gf, gs, already_mono, expr.left);
@@ -420,8 +451,168 @@ fn walk_stmt_mono(arena: *mut u8, interner: &mut Interner, prog: *mut AstProgram
     }
 }
 
+pub struct HandlerIdCounter {
+    val: i64,
+}
+
+fn append_i64_to_buf(buf: &mut StringBuffer, n: i64) {
+    if n >= 10 {
+        append_i64_to_buf(buf, n / 10);
+    }
+    let digit = (n - (n / 10) * 10) as u8 + 48 as u8;
+    string_buffer_push_byte(buf, digit);
+}
+
+fn desugar_one_handler(prog: *mut AstProgram, handler: *mut AstHandler, counter: *mut HandlerIdCounter, interner: &mut Interner, arena: *mut u8) {
+    if handler == (0 as *mut AstHandler) {
+        return;
+    }
+    if handler.id != 0 {
+        return;
+    }
+    handler.id = counter.val;
+    counter.val = counter.val + 1;
+
+    let arm_len = handler.arms.len;
+    let mut ai: i64 = 0;
+    while ai < arm_len {
+        let arm = vec_get(&handler.arms, ai);
+
+        // Build function name: __handler_arm_<handler.id>_<op_name>
+        let mut fn_name_buf = string_buffer_new_in(arena);
+        string_buffer_push_str(&mut fn_name_buf, "__handler_arm_" as *const u8, 14);
+        append_i64_to_buf(&mut fn_name_buf, handler.id);
+        string_buffer_push_byte(&mut fn_name_buf, 95 as u8); // '_'
+        let op_name = interner_lookup(interner, arm.op_sym);
+        string_buffer_push_str(&mut fn_name_buf, op_name as *const u8, unsafe { strlen(op_name as *const u8) } as i64);
+        string_buffer_push_byte(&mut fn_name_buf, 0 as u8);
+        let fn_name_str = string_as_ptr(&fn_name_buf) as String;
+        let arm_fn_sym = interner_intern(interner, fn_name_str);
+        arm.fn_sym = arm_fn_sym;
+
+        // Build parameter list: k + arm.params
+        let mut fn_params: Vec<*mut AstParam> = vec_new_in(arena);
+        let cont_sym = interner_intern(interner, "Continuation");
+        let k_param = alloc_param(arena, arm.continuation_sym, cont_sym);
+        vec_push(&mut fn_params, k_param);
+        let mut pi: i64 = 0;
+        while pi < arm.params.len {
+            vec_push(&mut fn_params, vec_get(&arm.params, pi));
+            pi = pi + 1;
+        }
+
+        // Find return type from effect definition
+        let mut ret_ty_sym: i64 = 0;
+        let mut ei: i64 = 0;
+        while ei < prog.effects.len {
+            let eff = vec_get(&prog.effects, ei);
+            if eff.name_sym == handler.effect_sym {
+                let mut oi: i64 = 0;
+                while oi < eff.ops.len {
+                    let op = vec_get(&eff.ops, oi);
+                    if op.name_sym == arm.op_sym {
+                        ret_ty_sym = op.ret_ty_sym;
+                        break;
+                    }
+                    oi = oi + 1;
+                }
+                break;
+            }
+            ei = ei + 1;
+        }
+
+        let empty_yields: Vec<i64> = vec_new_in(arena);
+        let arm_fn = alloc_fn(arena, arm_fn_sym, fn_params, ret_ty_sym, arm.body, 0, empty_yields);
+        vec_push(&mut prog.functions, arm_fn);
+
+        ai = ai + 1;
+    }
+}
+
+fn walk_expr_desugar_handlers(prog: *mut AstProgram, expr: *mut AstExpr, counter: *mut HandlerIdCounter, interner: &mut Interner, arena: *mut u8) {
+    if expr == (0 as *mut AstExpr) {
+        return;
+    }
+    if expr.kind == expr_handle() {
+        let handler = expr.left as *mut AstHandler;
+        desugar_one_handler(prog, handler, counter, interner, arena);
+        let mut bi: i64 = 0;
+        while bi < expr.stmts.len {
+            let s = vec_get(&expr.stmts, bi);
+            walk_stmt_desugar_handlers(prog, s, counter, interner, arena);
+            bi = bi + 1;
+        }
+        return;
+    }
+    if expr.left != (0 as *mut AstExpr) {
+        walk_expr_desugar_handlers(prog, expr.left, counter, interner, arena);
+    }
+    if expr.right != (0 as *mut AstExpr) {
+        walk_expr_desugar_handlers(prog, expr.right, counter, interner, arena);
+    }
+    let mut ai: i64 = 0;
+    while ai < expr.args.len {
+        let arg = vec_get(&expr.args, ai);
+        walk_expr_desugar_handlers(prog, arg, counter, interner, arena);
+        ai = ai + 1;
+    }
+}
+
+fn walk_stmt_desugar_handlers(prog: *mut AstProgram, stmt: *mut AstStmt, counter: *mut HandlerIdCounter, interner: &mut Interner, arena: *mut u8) {
+    if stmt == (0 as *mut AstStmt) {
+        return;
+    }
+    if stmt.kind == stmt_handle() {
+        desugar_one_handler(prog, stmt.handler, counter, interner, arena);
+        let mut bi: i64 = 0;
+        while bi < stmt.then_stmts.len {
+            let s = vec_get(&stmt.then_stmts, bi);
+            walk_stmt_desugar_handlers(prog, s, counter, interner, arena);
+            bi = bi + 1;
+        }
+        return;
+    }
+    if stmt.expr != (0 as *mut AstExpr) {
+        walk_expr_desugar_handlers(prog, stmt.expr, counter, interner, arena);
+    }
+    if stmt.left != (0 as *mut AstExpr) {
+        walk_expr_desugar_handlers(prog, stmt.left, counter, interner, arena);
+    }
+    if stmt.right != (0 as *mut AstExpr) {
+        walk_expr_desugar_handlers(prog, stmt.right, counter, interner, arena);
+    }
+    let mut ti: i64 = 0;
+    while ti < stmt.then_stmts.len {
+        let s = vec_get(&stmt.then_stmts, ti);
+        walk_stmt_desugar_handlers(prog, s, counter, interner, arena);
+        ti = ti + 1;
+    }
+    let mut ei: i64 = 0;
+    while ei < stmt.else_stmts.len {
+        let s = vec_get(&stmt.else_stmts, ei);
+        walk_stmt_desugar_handlers(prog, s, counter, interner, arena);
+        ei = ei + 1;
+    }
+}
+
+pub fn desugar_handlers_program(prog: *mut AstProgram, interner: &mut Interner, arena: *mut u8) {
+    let mut counter = HandlerIdCounter { val: 1 };
+    let orig_fns_len = prog.functions.len;
+    let mut fi: i64 = 0;
+    while fi < orig_fns_len {
+        let f = vec_get(&prog.functions, fi);
+        let mut bi: i64 = 0;
+        while bi < f.body.len {
+            let s = vec_get(&f.body, bi);
+            walk_stmt_desugar_handlers(prog, s, &mut counter as *mut HandlerIdCounter, interner, arena);
+            bi = bi + 1;
+        }
+        fi = fi + 1;
+    }
+}
+
 // Monomorphization pre-pass: expand all turbofish generic instantiations in prog.
-pub fn monomorphize_program(prog: *mut AstProgram, interner: &mut Interner, arena: *mut u8) {
+pub fn monomorphize_program(prog: *mut AstProgram, interner: &mut Interner, arena: *mut u8) yields [Diagnostics] {
     // Build generic fn template map (name_str -> *mut AstFn)
     let mut gf: HashMap = hashmap_new_in(arena, 32);
     let fns_len = prog.functions.len;
@@ -524,6 +715,18 @@ fn verify_expr_concrete(expr: *mut AstExpr, interner: &Interner, arena: *mut u8)
                 return false;
             }
             i = i + 1;
+        }
+        return true;
+    }
+    if kind == expr_handle() {
+        let bi_len = expr.stmts.len;
+        let mut bi: i64 = 0;
+        while bi < bi_len {
+            let s = vec_get(&expr.stmts, bi);
+            if !verify_stmt_concrete(s, interner, arena) {
+                return false;
+            }
+            bi = bi + 1;
         }
         return true;
     }
@@ -630,6 +833,7 @@ pub fn compile_file(src_path: String, out_ll_path: String, out_exe_path: String)
             exit_code = 1;
         } else {
             forge_print("TGC: Type checking & solving refinements...");
+            desugar_handlers_program(prog, &mut interner, comp_reg);
             monomorphize_program(prog, &mut interner, comp_reg);
             let tc_ok = typecheck_program(prog, &mut interner, comp_reg);
             if !tc_ok || diag_has_errors() {
@@ -747,7 +951,7 @@ pub fn forge_run_build(args: &Vec<String>, arena: *mut u8) -> i64 yields [FS, Pr
 
 pub fn forge_run_exec(path: String, arena: *mut u8) -> i64 yields [FS, Process, Diagnostics, IO] {
     forge_print("forge: building binary for execution...");
-    let tmp_exe = "target/forge_run_tmp.exe";
+    let tmp_exe = ".\\target\\forge_run_tmp.exe";
     let tmp_ll = "target/forge_run_tmp.ll";
 
     let res = compile_file(path, tmp_ll, tmp_exe);
@@ -779,6 +983,7 @@ pub fn forge_run_test(arena: *mut u8) -> i64 yields [FS, Process, Diagnostics, I
     vec_push(&mut test_suites, "tests/refinement_test.tg");
     vec_push(&mut test_suites, "tests/region_escape_test.tg");
     vec_push(&mut test_suites, "tests/generics_test.tg");
+    vec_push(&mut test_suites, "tests/effects_test.tg");
 
     let mut passed: i64 = 0;
     let mut failed: i64 = 0;

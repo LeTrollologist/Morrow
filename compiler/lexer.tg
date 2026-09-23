@@ -124,6 +124,16 @@ pub fn tokenize(src: String, interner: &mut Interner, arena: *mut u8) -> Vec<*mu
                 kind = tok_kw_var();
             } else if unsafe { strcmp(s as *const u8, "type" as *const u8) == 0 } {
                 kind = tok_kw_type();
+            } else if unsafe { strcmp(s as *const u8, "effect" as *const u8) == 0 } {
+                kind = tok_kw_effect();
+            } else if unsafe { strcmp(s as *const u8, "perform" as *const u8) == 0 } {
+                kind = tok_kw_perform();
+            } else if unsafe { strcmp(s as *const u8, "handle" as *const u8) == 0 } {
+                kind = tok_kw_handle();
+            } else if unsafe { strcmp(s as *const u8, "with" as *const u8) == 0 } {
+                kind = tok_kw_with();
+            } else if unsafe { strcmp(s as *const u8, "resume" as *const u8) == 0 } {
+                kind = tok_kw_resume();
             }
 
             let sym = interner_intern(interner, s);
