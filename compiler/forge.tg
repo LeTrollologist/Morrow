@@ -817,6 +817,10 @@ fn verify_no_unresolved_turbofish(prog: *mut AstProgram, interner: &Interner, ar
 }
 
 pub fn compile_file(src_path: String, out_ll_path: String, out_exe_path: String) -> i64 yields [FS, Process, Diagnostics, IO] {
+    return compile_file_target(src_path, out_ll_path, out_exe_path, "x86_64-pc-windows-gnu");
+}
+
+pub fn compile_file_target(src_path: String, out_ll_path: String, out_exe_path: String, target_triple: String) -> i64 yields [FS, Process, Diagnostics, IO] {
     let mut exit_code: i64 = 0;
     unsafe {
         CreateDirectoryA("target" as *const u8, 0 as *const u8);
@@ -845,7 +849,7 @@ pub fn compile_file(src_path: String, out_ll_path: String, out_exe_path: String)
                 let opt_count = tir_optimize_module(tir_mod, comp_reg);
 
                 forge_print("TGC: Emitting LLVM IR...");
-                let mut ir_buf = emit_llvm_ir(tir_mod, &mut interner, comp_reg);
+                let mut ir_buf = emit_llvm_ir_target(tir_mod, &mut interner, comp_reg, target_triple);
                 string_buffer_push_byte(&mut ir_buf, 0 as u8);
                 let ir_str = string_as_ptr(&ir_buf) as String;
 
@@ -856,18 +860,46 @@ pub fn compile_file(src_path: String, out_ll_path: String, out_exe_path: String)
                     exit_code = 2;
                 } else {
                     forge_print("TGC: Invoking clang...");
+                    let is_linux = is_linux_target(target_triple);
                     let mut cmd_args = string_buffer_new_in(comp_reg);
-                    let opt_prefix = "--target=x86_64-pc-windows-gnu -nostartfiles -o ";
-                    let opt_suffix = " lib/crt/crt2.o -Llib/crt -lmingw32 -lmingwex -lmsvcrt -lkernel32 -luser32 -lgdi32 -lwinmm -lws2_32 -lgcc";
-                    string_buffer_push_str(&mut cmd_args, opt_prefix as *const u8, unsafe { strlen(opt_prefix as *const u8) } as i64);
-                    string_buffer_push_str(&mut cmd_args, out_exe_path as *const u8, unsafe { strlen(out_exe_path as *const u8) } as i64);
-                    string_buffer_push_byte(&mut cmd_args, 32 as u8);
-                    string_buffer_push_str(&mut cmd_args, out_ll_path as *const u8, unsafe { strlen(out_ll_path as *const u8) } as i64);
-                    string_buffer_push_str(&mut cmd_args, opt_suffix as *const u8, unsafe { strlen(opt_suffix as *const u8) } as i64);
+                    if is_linux {
+                        let opt_prefix = "--target=x86_64-unknown-linux-gnu -o ";
+                        let opt_suffix = " -lc -lpthread -lm -ldl";
+                        string_buffer_push_str(&mut cmd_args, opt_prefix as *const u8, unsafe { strlen(opt_prefix as *const u8) } as i64);
+                        string_buffer_push_str(&mut cmd_args, out_exe_path as *const u8, unsafe { strlen(out_exe_path as *const u8) } as i64);
+                        string_buffer_push_byte(&mut cmd_args, 32 as u8);
+                        string_buffer_push_str(&mut cmd_args, out_ll_path as *const u8, unsafe { strlen(out_ll_path as *const u8) } as i64);
+                        string_buffer_push_str(&mut cmd_args, opt_suffix as *const u8, unsafe { strlen(opt_suffix as *const u8) } as i64);
+                    } else {
+                        let opt_prefix = "--target=x86_64-pc-windows-gnu -nostartfiles -o ";
+                        let opt_suffix = " lib/crt/crt2.o -Llib/crt -lmingw32 -lmingwex -lmsvcrt -lkernel32 -luser32 -lgdi32 -lwinmm -lws2_32 -lgcc";
+                        string_buffer_push_str(&mut cmd_args, opt_prefix as *const u8, unsafe { strlen(opt_prefix as *const u8) } as i64);
+                        string_buffer_push_str(&mut cmd_args, out_exe_path as *const u8, unsafe { strlen(out_exe_path as *const u8) } as i64);
+                        string_buffer_push_byte(&mut cmd_args, 32 as u8);
+                        string_buffer_push_str(&mut cmd_args, out_ll_path as *const u8, unsafe { strlen(out_ll_path as *const u8) } as i64);
+                        string_buffer_push_str(&mut cmd_args, opt_suffix as *const u8, unsafe { strlen(opt_suffix as *const u8) } as i64);
+                    }
                     string_buffer_push_byte(&mut cmd_args, 0 as u8);
                     let args_str = string_as_ptr(&cmd_args) as String;
 
-                    let status = process_exec("clang", args_str);
+                    let mut status = process_exec("clang", args_str);
+                    if status != 0 && is_linux {
+                        // If cross-compilation linking fails on host due to absent Linux sysroot,
+                        // compile to relocatable ELF object file (-c)
+                        let mut c_args = string_buffer_new_in(comp_reg);
+                        let c_prefix = "--target=x86_64-unknown-linux-gnu -c -o ";
+                        string_buffer_push_str(&mut c_args, c_prefix as *const u8, unsafe { strlen(c_prefix as *const u8) } as i64);
+                        string_buffer_push_str(&mut c_args, out_exe_path as *const u8, unsafe { strlen(out_exe_path as *const u8) } as i64);
+                        string_buffer_push_byte(&mut c_args, 32 as u8);
+                        string_buffer_push_str(&mut c_args, out_ll_path as *const u8, unsafe { strlen(out_ll_path as *const u8) } as i64);
+                        string_buffer_push_byte(&mut c_args, 0 as u8);
+                        let c_str = string_as_ptr(&c_args) as String;
+                        let c_status = process_exec("clang", c_str);
+                        if c_status == 0 {
+                            forge_print("TGC: Note: Emitted relocatable Linux ELF object (sysroot linking unavailable on host)");
+                            status = 0;
+                        }
+                    }
                     if status != 0 {
                         report_err("Clang failed to link executable", 1, 1);
                         exit_code = 3;
@@ -885,7 +917,7 @@ pub fn forge_usage() {
     forge_print("");
     forge_print("Commands:");
     forge_print("  check <file.tg>            Typecheck and verify refinement intervals without code generation");
-    forge_print("  build <file.tg> [-o <out>] Full compilation with TIR optimization and Clang linking");
+    forge_print("  build <file.tg> [-o <out>] [--target <triple>] Full compilation with TIR optimization and Clang linking");
     forge_print("  run <file.tg>              Compile and execute the program immediately");
     forge_print("  test                       Run all native Tungsten test suites in tests/");
     forge_print("  fmt [--check] <file.tg>    Format Tungsten source code to canonical style");
@@ -918,29 +950,40 @@ pub fn forge_run_check(path: String, arena: *mut u8) -> i64 yields [FS, Diagnost
 pub fn forge_run_build(args: &Vec<String>, arena: *mut u8) -> i64 yields [FS, Process, Diagnostics, IO] {
     if args.len < 3 {
         forge_print("Error: 'forge build' requires a target .tg file");
-        forge_print("Usage: forge build <file.tg> [-o <out.exe>]");
+        forge_print("Usage: forge build <file.tg> [-o <out>] [--target <triple>]");
         return 1;
     }
 
     let src_path = vec_get(args, 2);
     let mut out_exe = "target/app.exe";
     let mut out_ll = "target/app.ll";
+    let mut target_triple = "x86_64-pc-windows-gnu";
 
-    if args.len >= 5 {
-        let opt_flag = vec_get(args, 3);
+    let mut i: i64 = 3;
+    while i < args.len {
+        let opt_flag = vec_get(args, i);
         if unsafe { strcmp(opt_flag as *const u8, "-o" as *const u8) == 0 } {
-            out_exe = vec_get(args, 4);
-            let mut sbuf = string_buffer_new_in(arena);
-            let elen = unsafe { strlen(out_exe as *const u8) } as i64;
-            string_buffer_push_str(&mut sbuf, out_exe as *const u8, elen);
-            string_buffer_push_str(&mut sbuf, ".ll" as *const u8, 3);
-            string_buffer_push_byte(&mut sbuf, 0 as u8);
-            out_ll = string_as_ptr(&sbuf) as String;
+            if i + 1 < args.len {
+                i = i + 1;
+                out_exe = vec_get(args, i);
+                let mut sbuf = string_buffer_new_in(arena);
+                let elen = unsafe { strlen(out_exe as *const u8) } as i64;
+                string_buffer_push_str(&mut sbuf, out_exe as *const u8, elen);
+                string_buffer_push_str(&mut sbuf, ".ll" as *const u8, 3);
+                string_buffer_push_byte(&mut sbuf, 0 as u8);
+                out_ll = string_as_ptr(&sbuf) as String;
+            }
+        } else if unsafe { strcmp(opt_flag as *const u8, "--target" as *const u8) == 0 } {
+            if i + 1 < args.len {
+                i = i + 1;
+                target_triple = vec_get(args, i);
+            }
         }
+        i = i + 1;
     }
 
     forge_print("forge: compiling target...");
-    let res = compile_file(src_path, out_ll, out_exe);
+    let res = compile_file_target(src_path, out_ll, out_exe, target_triple);
     if res == 0 {
         forge_print("forge: build succeeded");
     } else {

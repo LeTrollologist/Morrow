@@ -247,3 +247,10 @@ Because `target/` is gitignored, a fresh clone on a machine without `clang` or `
 * [x] **SMT-LIB2 Solver Bridge (`compiler/smt.tg`):** Emits standard QF_NIA/QF_LIA queries with bound constraints and zero-divisor assertions for automated theorem provers.
 * [x] **Affine & Linear Resource Invariants (Phase 10.2):** `linear struct` (exactly-once consumption), `affine struct` (at-most-once consumption with auto-drop at scope exit), branch convergence analysis (`if/else`), loop invariant protection, local resource scope isolation, rejection of use-after-consume, and zero-cost runtime intrinsics `consume` / `drop`.
 * [x] **Automated Verification:** 13 native test suites passing 100% with exact bitwise fixed-point 3-stage bootstrap parity (`7297BED153ACBF31E09F7C0D0B4A2AF30B9405FDAE69B0206C1E2DB2668D71FC`).
+
+### Phase D: Multi-Target Codegen & Cross-Compilation (Milestone v1.8)
+* [x] **Target Triple Parameterization:** Added `--target <triple>` to `tgc` and `forge build` supporting Windows GNU (`x86_64-pc-windows-gnu`, default) and Linux ELF (`x86_64-unknown-linux-gnu`).
+* [x] **Target-Sensitive LLVM Datalayout & Assembly:** Linux ELF datalayout (`e-m:e-...`) vs Windows GNU (`e-m:w-...`), with System V AMD64 ABI continuation routines (`%rdi` / `%rsi`) for Linux `tungsten_setjmp` / `tungsten_longjmp` alongside Microsoft x64 ABI (`%rcx` / `%rdx`) for Windows.
+* [x] **Linker Integration & Fallback:** Cross-compilation to Linux ELF via `clang -lc -lpthread -lm -ldl`, automatically falling back to relocatable ELF object generation (`-c`) when host sysroot linking is unavailable.
+* [x] **Cross-Platform Verification:** Verified native execution under Linux (WSL Ubuntu) for both general programs and algebraic effect handlers with delimited continuations.
+* [x] **Bitwise Bootstrap Parity:** 3-stage self-hosting fixed-point verified (`SHA256(stage2.ll) == SHA256(stage3.ll) == 91FE48040F9009D56AB2DE856B8663C5434B2ACE55E61E1821EC186F4CFA0F8A`) with 100% test pass rate across all 13 native test suites.

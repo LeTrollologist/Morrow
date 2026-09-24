@@ -23,6 +23,7 @@ import compiler::smt;
 extern "C" {
     fn strlen(s: *const u8) -> usize;
     fn strcmp(s1: *const u8, s2: *const u8) -> i32;
+    fn strncmp(s1: *const u8, s2: *const u8, n: usize) -> i32;
     fn GetCommandLineA() -> *const u8;
     fn puts(s: *const u8) -> i32;
     fn fflush(f: *const u8) -> i32;
@@ -106,25 +107,39 @@ fn main() -> i64 yields [FS, Process, Diagnostics, IO] {
         let mut src_path = "examples/bootstrap_sample.tg";
         let mut out_ll_path = "examples/bootstrap_sample.ll";
         let mut out_exe_path = "examples/bootstrap_sample.exe";
+        let mut target_triple = "x86_64-pc-windows-gnu";
 
         if args.len > 1 {
-            src_path = vec_get(&args, 1);
-            if args.len >= 4 {
-                let a2 = vec_get(&args, 2);
-                if unsafe { strcmp(a2 as *const u8, "-o" as *const u8) == 0 } {
-                    out_exe_path = vec_get(&args, 3);
-                    let mut ll_buf = string_buffer_new_in(main_reg);
-                    let exe_len = unsafe { strlen(out_exe_path as *const u8) } as i64;
-                    string_buffer_push_str(&mut ll_buf, out_exe_path as *const u8, exe_len);
-                    string_buffer_push_str(&mut ll_buf, ".ll" as *const u8, 3);
-                    string_buffer_push_byte(&mut ll_buf, 0 as u8);
-                    out_ll_path = string_as_ptr(&ll_buf) as String;
+            let mut i: i64 = 1;
+            while i < args.len {
+                let arg = vec_get(&args, i);
+                if unsafe { strcmp(arg as *const u8, "-o" as *const u8) == 0 } {
+                    if i + 1 < args.len {
+                        i = i + 1;
+                        out_exe_path = vec_get(&args, i);
+                        let mut ll_buf = string_buffer_new_in(main_reg);
+                        let exe_len = unsafe { strlen(out_exe_path as *const u8) } as i64;
+                        string_buffer_push_str(&mut ll_buf, out_exe_path as *const u8, exe_len);
+                        string_buffer_push_str(&mut ll_buf, ".ll" as *const u8, 3);
+                        string_buffer_push_byte(&mut ll_buf, 0 as u8);
+                        out_ll_path = string_as_ptr(&ll_buf) as String;
+                    }
+                } else if unsafe { strcmp(arg as *const u8, "--target" as *const u8) == 0 } {
+                    if i + 1 < args.len {
+                        i = i + 1;
+                        target_triple = vec_get(&args, i);
+                    }
+                } else {
+                    if unsafe { strncmp(arg as *const u8, "-" as *const u8, 1) != 0 } {
+                        src_path = arg;
+                    }
                 }
+                i = i + 1;
             }
         }
 
         print_msg("TGC: Starting Bootstrap Stage 1 compilation...");
-        let res = compile_file(src_path, out_ll_path, out_exe_path);
+        let res = compile_file_target(src_path, out_ll_path, out_exe_path, target_triple);
         if res == 0 {
             print_msg("TGC: Bootstrap Stage 1 compilation completed successfully!");
         } else {

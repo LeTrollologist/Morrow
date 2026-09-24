@@ -23,6 +23,7 @@ pub struct Codegen {
     allocated_vars: Vec<i64>,
     terminated: bool,
     handlers: Vec<*mut AstHandler>,
+    target_triple: String,
 }
 
 fn emit_i64_helper(cg: &mut Codegen, n: i64) {
@@ -54,7 +55,25 @@ pub fn emit_sym(cg: &mut Codegen, sym: i64) {
     emit_str(cg, s);
 }
 
+pub fn is_linux_target(target: String) -> bool {
+    let p = target as *const u8;
+    if unsafe { strcmp(p, "x86_64-unknown-linux-gnu" as *const u8) == 0 } {
+        return true;
+    }
+    if unsafe { strcmp(p, "linux" as *const u8) == 0 } {
+        return true;
+    }
+    if unsafe { strcmp(p, "x86_64-linux-gnu" as *const u8) == 0 } {
+        return true;
+    }
+    false
+}
+
 pub fn codegen_new_in(interner: &mut Interner, arena: *mut u8) -> Codegen {
+    return codegen_new_target_in(interner, arena, "x86_64-pc-windows-gnu");
+}
+
+pub fn codegen_new_target_in(interner: &mut Interner, arena: *mut u8, target_triple: String) -> Codegen {
     let sbuf = string_buffer_new_in(arena);
     let str_vec: Vec<String> = vec_new_in(arena);
     let vars_vec: Vec<i64> = vec_new_in(arena);
@@ -70,6 +89,7 @@ pub fn codegen_new_in(interner: &mut Interner, arena: *mut u8) -> Codegen {
         allocated_vars: vars_vec,
         terminated: false,
         handlers: handlers_vec,
+        target_triple: target_triple,
     }
 }
 
@@ -3255,7 +3275,11 @@ pub fn emit_tir_function(cg: &mut Codegen, tir_f: *mut TirFunction) {
 }
 
 pub fn emit_llvm_ir(tir_mod: *mut TirModule, interner: &mut Interner, arena: *mut u8) -> StringBuffer {
-    let mut cg = codegen_new_in(interner, arena);
+    return emit_llvm_ir_target(tir_mod, interner, arena, "x86_64-pc-windows-gnu");
+}
+
+pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, arena: *mut u8, target_triple: String) -> StringBuffer {
+    let mut cg = codegen_new_target_in(interner, arena, target_triple);
     let prog_ptr = tir_mod.left;
 
     // Collect all string literals and handlers from AST
@@ -3273,70 +3297,110 @@ pub fn emit_llvm_ir(tir_mod: *mut TirModule, interner: &mut Interner, arena: *mu
     }
 
     // Module Header
+    let is_linux = is_linux_target(target_triple);
     emit_str(&mut cg, "; ModuleID = 'tungsten_bootstrap'\n");
     emit_str(&mut cg, "source_filename = \"tungsten_bootstrap.tg\"\n");
-    emit_str(&mut cg, "target datalayout = \"e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128\"\n");
-    emit_str(&mut cg, "target triple = \"x86_64-pc-windows-gnu\"\n\n");
+    if is_linux {
+        emit_str(&mut cg, "target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128\"\n");
+        emit_str(&mut cg, "target triple = \"x86_64-unknown-linux-gnu\"\n\n");
+    } else {
+        emit_str(&mut cg, "target datalayout = \"e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128\"\n");
+        emit_str(&mut cg, "target triple = \"x86_64-pc-windows-gnu\"\n\n");
+    }
 
     emit_str(&mut cg, "%TungstenHandlerFrame = type { ptr, i64, ptr, [64 x i64], i64 }\n");
     emit_str(&mut cg, "%TungstenContinuation = type { ptr, [64 x i64], i64, i64 }\n");
     emit_str(&mut cg, "@tungsten_top_handler_frame = internal global ptr null\n\n");
 
-    emit_str(&mut cg, "module asm \".globl tungsten_setjmp\"\n");
-    emit_str(&mut cg, "module asm \"tungsten_setjmp:\"\n");
-    emit_str(&mut cg, "module asm \"    movq (%rsp), %rax\"\n");
-    emit_str(&mut cg, "module asm \"    movq %rax, 0(%rcx)\"\n");
-    emit_str(&mut cg, "module asm \"    movq %rsp, 8(%rcx)\"\n");
-    emit_str(&mut cg, "module asm \"    movq %rbp, 16(%rcx)\"\n");
-    emit_str(&mut cg, "module asm \"    movq %rbx, 24(%rcx)\"\n");
-    emit_str(&mut cg, "module asm \"    movq %r12, 32(%rcx)\"\n");
-    emit_str(&mut cg, "module asm \"    movq %r13, 40(%rcx)\"\n");
-    emit_str(&mut cg, "module asm \"    movq %r14, 48(%rcx)\"\n");
-    emit_str(&mut cg, "module asm \"    movq %r15, 56(%rcx)\"\n");
-    emit_str(&mut cg, "module asm \"    movq %rdi, 64(%rcx)\"\n");
-    emit_str(&mut cg, "module asm \"    movq %rsi, 72(%rcx)\"\n");
-    emit_str(&mut cg, "module asm \"    movdqu %xmm6, 80(%rcx)\"\n");
-    emit_str(&mut cg, "module asm \"    movdqu %xmm7, 96(%rcx)\"\n");
-    emit_str(&mut cg, "module asm \"    movdqu %xmm8, 112(%rcx)\"\n");
-    emit_str(&mut cg, "module asm \"    movdqu %xmm9, 128(%rcx)\"\n");
-    emit_str(&mut cg, "module asm \"    movdqu %xmm10, 144(%rcx)\"\n");
-    emit_str(&mut cg, "module asm \"    movdqu %xmm11, 160(%rcx)\"\n");
-    emit_str(&mut cg, "module asm \"    movdqu %xmm12, 176(%rcx)\"\n");
-    emit_str(&mut cg, "module asm \"    movdqu %xmm13, 192(%rcx)\"\n");
-    emit_str(&mut cg, "module asm \"    movdqu %xmm14, 208(%rcx)\"\n");
-    emit_str(&mut cg, "module asm \"    movdqu %xmm15, 224(%rcx)\"\n");
-    emit_str(&mut cg, "module asm \"    xorl %eax, %eax\"\n");
-    emit_str(&mut cg, "module asm \"    retq\"\n\n");
+    if is_linux {
+        emit_str(&mut cg, "module asm \".globl tungsten_setjmp\"\n");
+        emit_str(&mut cg, "module asm \"tungsten_setjmp:\"\n");
+        emit_str(&mut cg, "module asm \"    movq (%rsp), %rax\"\n");
+        emit_str(&mut cg, "module asm \"    movq %rax, 0(%rdi)\"\n");
+        emit_str(&mut cg, "module asm \"    movq %rsp, 8(%rdi)\"\n");
+        emit_str(&mut cg, "module asm \"    movq %rbp, 16(%rdi)\"\n");
+        emit_str(&mut cg, "module asm \"    movq %rbx, 24(%rdi)\"\n");
+        emit_str(&mut cg, "module asm \"    movq %r12, 32(%rdi)\"\n");
+        emit_str(&mut cg, "module asm \"    movq %r13, 40(%rdi)\"\n");
+        emit_str(&mut cg, "module asm \"    movq %r14, 48(%rdi)\"\n");
+        emit_str(&mut cg, "module asm \"    movq %r15, 56(%rdi)\"\n");
+        emit_str(&mut cg, "module asm \"    xorl %eax, %eax\"\n");
+        emit_str(&mut cg, "module asm \"    retq\"\n\n");
 
-    emit_str(&mut cg, "module asm \".globl tungsten_longjmp\"\n");
-    emit_str(&mut cg, "module asm \"tungsten_longjmp:\"\n");
-    emit_str(&mut cg, "module asm \"    movl %edx, %eax\"\n");
-    emit_str(&mut cg, "module asm \"    testl %eax, %eax\"\n");
-    emit_str(&mut cg, "module asm \"    jnz 1f\"\n");
-    emit_str(&mut cg, "module asm \"    movl $1, %eax\"\n");
-    emit_str(&mut cg, "module asm \"1:\"\n");
-    emit_str(&mut cg, "module asm \"    movdqu 80(%rcx), %xmm6\"\n");
-    emit_str(&mut cg, "module asm \"    movdqu 96(%rcx), %xmm7\"\n");
-    emit_str(&mut cg, "module asm \"    movdqu 112(%rcx), %xmm8\"\n");
-    emit_str(&mut cg, "module asm \"    movdqu 128(%rcx), %xmm9\"\n");
-    emit_str(&mut cg, "module asm \"    movdqu 144(%rcx), %xmm10\"\n");
-    emit_str(&mut cg, "module asm \"    movdqu 160(%rcx), %xmm11\"\n");
-    emit_str(&mut cg, "module asm \"    movdqu 176(%rcx), %xmm12\"\n");
-    emit_str(&mut cg, "module asm \"    movdqu 192(%rcx), %xmm13\"\n");
-    emit_str(&mut cg, "module asm \"    movdqu 208(%rcx), %xmm14\"\n");
-    emit_str(&mut cg, "module asm \"    movdqu 224(%rcx), %xmm15\"\n");
-    emit_str(&mut cg, "module asm \"    movq 72(%rcx), %rsi\"\n");
-    emit_str(&mut cg, "module asm \"    movq 64(%rcx), %rdi\"\n");
-    emit_str(&mut cg, "module asm \"    movq 56(%rcx), %r15\"\n");
-    emit_str(&mut cg, "module asm \"    movq 48(%rcx), %r14\"\n");
-    emit_str(&mut cg, "module asm \"    movq 40(%rcx), %r13\"\n");
-    emit_str(&mut cg, "module asm \"    movq 32(%rcx), %r12\"\n");
-    emit_str(&mut cg, "module asm \"    movq 24(%rcx), %rbx\"\n");
-    emit_str(&mut cg, "module asm \"    movq 16(%rcx), %rbp\"\n");
-    emit_str(&mut cg, "module asm \"    movq 8(%rcx), %rsp\"\n");
-    emit_str(&mut cg, "module asm \"    movq 0(%rcx), %rdx\"\n");
-    emit_str(&mut cg, "module asm \"    movq %rdx, (%rsp)\"\n");
-    emit_str(&mut cg, "module asm \"    retq\"\n\n");
+        emit_str(&mut cg, "module asm \".globl tungsten_longjmp\"\n");
+        emit_str(&mut cg, "module asm \"tungsten_longjmp:\"\n");
+        emit_str(&mut cg, "module asm \"    movl %esi, %eax\"\n");
+        emit_str(&mut cg, "module asm \"    testl %eax, %eax\"\n");
+        emit_str(&mut cg, "module asm \"    jnz 1f\"\n");
+        emit_str(&mut cg, "module asm \"    movl $1, %eax\"\n");
+        emit_str(&mut cg, "module asm \"1:\"\n");
+        emit_str(&mut cg, "module asm \"    movq 56(%rdi), %r15\"\n");
+        emit_str(&mut cg, "module asm \"    movq 48(%rdi), %r14\"\n");
+        emit_str(&mut cg, "module asm \"    movq 40(%rdi), %r13\"\n");
+        emit_str(&mut cg, "module asm \"    movq 32(%rdi), %r12\"\n");
+        emit_str(&mut cg, "module asm \"    movq 24(%rdi), %rbx\"\n");
+        emit_str(&mut cg, "module asm \"    movq 16(%rdi), %rbp\"\n");
+        emit_str(&mut cg, "module asm \"    movq 8(%rdi), %rsp\"\n");
+        emit_str(&mut cg, "module asm \"    movq 0(%rdi), %rdx\"\n");
+        emit_str(&mut cg, "module asm \"    movq %rdx, (%rsp)\"\n");
+        emit_str(&mut cg, "module asm \"    retq\"\n\n");
+    } else {
+        emit_str(&mut cg, "module asm \".globl tungsten_setjmp\"\n");
+        emit_str(&mut cg, "module asm \"tungsten_setjmp:\"\n");
+        emit_str(&mut cg, "module asm \"    movq (%rsp), %rax\"\n");
+        emit_str(&mut cg, "module asm \"    movq %rax, 0(%rcx)\"\n");
+        emit_str(&mut cg, "module asm \"    movq %rsp, 8(%rcx)\"\n");
+        emit_str(&mut cg, "module asm \"    movq %rbp, 16(%rcx)\"\n");
+        emit_str(&mut cg, "module asm \"    movq %rbx, 24(%rcx)\"\n");
+        emit_str(&mut cg, "module asm \"    movq %r12, 32(%rcx)\"\n");
+        emit_str(&mut cg, "module asm \"    movq %r13, 40(%rcx)\"\n");
+        emit_str(&mut cg, "module asm \"    movq %r14, 48(%rcx)\"\n");
+        emit_str(&mut cg, "module asm \"    movq %r15, 56(%rcx)\"\n");
+        emit_str(&mut cg, "module asm \"    movq %rdi, 64(%rcx)\"\n");
+        emit_str(&mut cg, "module asm \"    movq %rsi, 72(%rcx)\"\n");
+        emit_str(&mut cg, "module asm \"    movdqu %xmm6, 80(%rcx)\"\n");
+        emit_str(&mut cg, "module asm \"    movdqu %xmm7, 96(%rcx)\"\n");
+        emit_str(&mut cg, "module asm \"    movdqu %xmm8, 112(%rcx)\"\n");
+        emit_str(&mut cg, "module asm \"    movdqu %xmm9, 128(%rcx)\"\n");
+        emit_str(&mut cg, "module asm \"    movdqu %xmm10, 144(%rcx)\"\n");
+        emit_str(&mut cg, "module asm \"    movdqu %xmm11, 160(%rcx)\"\n");
+        emit_str(&mut cg, "module asm \"    movdqu %xmm12, 176(%rcx)\"\n");
+        emit_str(&mut cg, "module asm \"    movdqu %xmm13, 192(%rcx)\"\n");
+        emit_str(&mut cg, "module asm \"    movdqu %xmm14, 208(%rcx)\"\n");
+        emit_str(&mut cg, "module asm \"    movdqu %xmm15, 224(%rcx)\"\n");
+        emit_str(&mut cg, "module asm \"    xorl %eax, %eax\"\n");
+        emit_str(&mut cg, "module asm \"    retq\"\n\n");
+
+        emit_str(&mut cg, "module asm \".globl tungsten_longjmp\"\n");
+        emit_str(&mut cg, "module asm \"tungsten_longjmp:\"\n");
+        emit_str(&mut cg, "module asm \"    movl %edx, %eax\"\n");
+        emit_str(&mut cg, "module asm \"    testl %eax, %eax\"\n");
+        emit_str(&mut cg, "module asm \"    jnz 1f\"\n");
+        emit_str(&mut cg, "module asm \"    movl $1, %eax\"\n");
+        emit_str(&mut cg, "module asm \"1:\"\n");
+        emit_str(&mut cg, "module asm \"    movdqu 80(%rcx), %xmm6\"\n");
+        emit_str(&mut cg, "module asm \"    movdqu 96(%rcx), %xmm7\"\n");
+        emit_str(&mut cg, "module asm \"    movdqu 112(%rcx), %xmm8\"\n");
+        emit_str(&mut cg, "module asm \"    movdqu 128(%rcx), %xmm9\"\n");
+        emit_str(&mut cg, "module asm \"    movdqu 144(%rcx), %xmm10\"\n");
+        emit_str(&mut cg, "module asm \"    movdqu 160(%rcx), %xmm11\"\n");
+        emit_str(&mut cg, "module asm \"    movdqu 176(%rcx), %xmm12\"\n");
+        emit_str(&mut cg, "module asm \"    movdqu 192(%rcx), %xmm13\"\n");
+        emit_str(&mut cg, "module asm \"    movdqu 208(%rcx), %xmm14\"\n");
+        emit_str(&mut cg, "module asm \"    movdqu 224(%rcx), %xmm15\"\n");
+        emit_str(&mut cg, "module asm \"    movq 72(%rcx), %rsi\"\n");
+        emit_str(&mut cg, "module asm \"    movq 64(%rcx), %rdi\"\n");
+        emit_str(&mut cg, "module asm \"    movq 56(%rcx), %r15\"\n");
+        emit_str(&mut cg, "module asm \"    movq 48(%rcx), %r14\"\n");
+        emit_str(&mut cg, "module asm \"    movq 40(%rcx), %r13\"\n");
+        emit_str(&mut cg, "module asm \"    movq 32(%rcx), %r12\"\n");
+        emit_str(&mut cg, "module asm \"    movq 24(%rcx), %rbx\"\n");
+        emit_str(&mut cg, "module asm \"    movq 16(%rcx), %rbp\"\n");
+        emit_str(&mut cg, "module asm \"    movq 8(%rcx), %rsp\"\n");
+        emit_str(&mut cg, "module asm \"    movq 0(%rcx), %rdx\"\n");
+        emit_str(&mut cg, "module asm \"    movq %rdx, (%rsp)\"\n");
+        emit_str(&mut cg, "module asm \"    retq\"\n\n");
+    }
 
     // Standard Library C External Declarations
     emit_str(&mut cg, "declare ptr @malloc(i64)\n");
@@ -3356,7 +3420,9 @@ pub fn emit_llvm_ir(tir_mod: *mut TirModule, interner: &mut Interner, arena: *mu
     emit_str(&mut cg, "declare void @tungsten_longjmp(ptr, i32)\n");
     emit_str(&mut cg, "declare i64 @ftell(ptr)\n");
     emit_str(&mut cg, "declare i32 @system(ptr)\n");
-    emit_str(&mut cg, "declare ptr @GetCommandLineA()\n");
+    if !is_linux {
+        emit_str(&mut cg, "declare ptr @GetCommandLineA()\n");
+    }
     emit_str(&mut cg, "declare i32 @printf(ptr, ...)\n");
     emit_str(&mut cg, "declare i32 @puts(ptr)\n");
     emit_str(&mut cg, "declare i32 @fflush(ptr)\n\n");

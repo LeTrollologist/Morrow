@@ -24,8 +24,9 @@
 | **v1.2** | **Cross-Platform Linux & Containerization** | x86_64 Linux (ELF) Target, LLVM POSIX Runtime, Production Multi-Stage Docker (Stage-0 Rust) | **Completed** |
 | **v1.4** | **Compiler Integrity & Architecture Remediation** | Dynamic Struct Layouts, Type-Directed Indexing, Real Module Resolution, Error Propagation, CRT Isolation | **Completed** |
 | **v1.5** | **Direct TIR Codegen & Optimization Pipeline** | Direct TIR-to-LLVM IR Emission, Dynamic Element Strides, SSA Constant Folding & DCE, Bitwise Bootstrap Parity | **Completed** |
-| **v1.6** | **Language Feature Realization** | User-Defined Refinement Syntax, Region Escape Analysis, Parametric Generics with Call-Site Monomorphization, Algebraic Effect Lowering | **In Progress** |
-| **v1.7** | **Formal Verification & SMT Bridge** | Z3 Solver Bridge for Non-Linear Arithmetic, Automated Induction Proofs, Affine Handle Invariants | **Planned** |
+| **v1.6** | **Language Feature Realization** | User-Defined Refinement Syntax, Region Escape Analysis, Parametric Generics with Call-Site Monomorphization, Algebraic Effect Lowering | **Completed** |
+| **v1.7** | **Formal Verification & SMT Bridge** | Z3 Solver Bridge for Non-Linear Arithmetic, Automated Induction Proofs, Affine Handle Invariants | **Completed** |
+| **v1.8** | **Multi-Target Codegen & Cross-Compilation** | Linux ELF Target (`x86_64-unknown-linux-gnu`), System V AMD64 ABI Continuations, Multi-Target Linker Support | **In Progress** |
 
 ---
 
@@ -325,10 +326,21 @@
 ### Phase 11: Multi-Target Codegen & WebAssembly (v1.8)
 *Target: Universal systems development from bare metal to browsers.*
 
-- [x] **x86_64 Linux (ELF) Target & Docker Container**: Prototyped in Milestone v1.2 (Stage-0 Rust); scheduled for validation under the self-hosted compiler.
-- [ ] **AArch64 & macOS Targets**:
-  - ARM64 ELF and Mach-O binary emission via LLVM backend and LLD linker.
-  - Apple Silicon / ARM64 POSIX socket and syscall shims in `std/fs` and `std/net`.
-- [ ] **WebAssembly Target (`wasm32-unknown-unknown`)**:
-  - Direct compilation to Wasm bytecode.
-  - Algebraic effect mapping to JavaScript host promises and browser Web APIs without runtime shims.
+1. **Linux ELF (`x86_64-unknown-linux-gnu`) Codegen & Cross-Compilation (Phase 11.1)** ✅:
+   - Target triple parameterization (`--target <triple>`) supporting Windows GNU (`x86_64-pc-windows-gnu`, default) and Linux ELF (`x86_64-unknown-linux-gnu`) across `tgc` and `forge build`.
+   - Target-sensitive LLVM data layout and module headers: Linux ELF (`e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128`) and Windows GNU (`e-m:w-...`).
+   - ABI-sensitive assembly for algebraic effect continuation capture:
+     - Microsoft x64 ABI (`%rcx`, `%rdx`, `%r8`, `%r9`, XMM6–15 non-volatile) when targeting Windows.
+     - System V AMD64 ABI (`%rdi`, `%rsi`, `%rdx`, `%rcx`, `%r8`, `%r9`, RBP/RBX/R12–15 preserved) for Linux `tungsten_setjmp` and `tungsten_longjmp`.
+   - Toolchain and linker integration:
+     - Native Windows linking via clang with `-nostartfiles lib/crt/crt2.o -Llib/crt -lmingw32 ...`.
+     - Cross-compilation to Linux ELF with `--target=x86_64-unknown-linux-gnu -o <out> <out_ll> -lc -lpthread -lm -ldl`, automatically falling back to relocatable ELF object emission (`-c`) when host sysroot linking is unavailable.
+     - Verified native execution under Linux (WSL Ubuntu) for both general computation and algebraic effects with delimited continuations.
+   - 3-stage self-hosting bootstrap fixed-point parity verified: `SHA256(stage2.ll) == SHA256(stage3.ll) == 91FE48040F9009D56AB2DE856B8663C5434B2ACE55E61E1821EC186F4CFA0F8A`.
+   - 100% pass rate across all 13 native test suites.
+2. **AArch64 & macOS Targets**:
+   - ARM64 ELF and Mach-O binary emission via LLVM backend and LLD linker.
+   - Apple Silicon / ARM64 POSIX socket and syscall shims in `std/fs` and `std/net`.
+3. **WebAssembly Target (`wasm32-unknown-unknown`)**:
+   - Direct compilation to Wasm bytecode.
+   - Algebraic effect mapping to JavaScript host promises and browser Web APIs without runtime shims.
