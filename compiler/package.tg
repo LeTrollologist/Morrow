@@ -1,10 +1,11 @@
 // Tungsten Self-Hosting Compiler - Package Resolver & Manifest Parser (package.tg)
-// Parses Forge.toml manifests, validates package structure, and resolves dependencies
+// Parses Forge.toml manifests, validates package structure, and resolves dependencies deterministically
 
 import std::collections;
 import std::fs;
 import compiler::diagnostics;
 import compiler::interner;
+import compiler::fmt;
 
 extern "C" {
     fn strlen(s: *const u8) -> usize;
@@ -13,6 +14,8 @@ extern "C" {
     fn puts(s: *const u8) -> i32;
     fn fflush(f: *const u8) -> i32;
     fn tungsten_region_alloc(arena: *mut u8, size: usize, align: usize) -> *mut u8;
+    fn remove(path: *const u8) -> i32;
+    fn rename(oldpath: *const u8, newpath: *const u8) -> i32;
 }
 
 // -----------------------------------------------------------------------------
@@ -79,9 +82,215 @@ pub fn alloc_package_manifest(arena: *mut u8, name_sym: i64, version_str: String
 }
 
 // -----------------------------------------------------------------------------
+// Numeric SemVer Engine
+// -----------------------------------------------------------------------------
+pub struct SemVer {
+    major: i64,
+    minor: i64,
+    patch: i64,
+    valid: bool,
+}
+
+fn parse_nonneg_int(ptr: *const u8, start: i64, end: i64) -> i64 {
+    if start >= end {
+        return -1;
+    }
+    let mut val: i64 = 0;
+    let mut i = start;
+    while i < end {
+        let b = unsafe { ptr[i] };
+        if b < 48 as u8 || b > 57 as u8 {
+            return -1;
+        }
+        val = val * 10 + (b - 48 as u8) as i64;
+        i = i + 1;
+    }
+    val
+}
+
+pub fn semver_parse(s: String) -> SemVer {
+    let invalid = SemVer { major: 0, minor: 0, patch: 0, valid: false };
+    let ptr = s as *const u8;
+    if ptr as usize == 0 {
+        return invalid;
+    }
+    let len = unsafe { strlen(ptr) } as i64;
+    if len < 5 {
+        return invalid;
+    }
+
+    let mut dot1: i64 = -1;
+    let mut dot2: i64 = -1;
+    let mut dot_count: i64 = 0;
+
+    let mut i: i64 = 0;
+    while i < len {
+        let b = unsafe { ptr[i] };
+        if b == 46 as u8 { // '.'
+            if dot_count == 0 {
+                dot1 = i;
+            } else if dot_count == 1 {
+                dot2 = i;
+            }
+            dot_count = dot_count + 1;
+        } else if b < 48 as u8 || b > 57 as u8 {
+            return invalid;
+        }
+        i = i + 1;
+    }
+
+    if dot_count != 2 {
+        return invalid;
+    }
+
+    let maj = parse_nonneg_int(ptr, 0, dot1);
+    let min = parse_nonneg_int(ptr, dot1 + 1, dot2);
+    let pat = parse_nonneg_int(ptr, dot2 + 1, len);
+
+    if maj < 0 || min < 0 || pat < 0 {
+        return invalid;
+    }
+
+    SemVer {
+        major: maj,
+        minor: min,
+        patch: pat,
+        valid: true,
+    }
+}
+
+pub fn semver_cmp(a: SemVer, b: SemVer) -> i64 {
+    if a.major < b.major { return -1; }
+    if a.major > b.major { return 1; }
+    if a.minor < b.minor { return -1; }
+    if a.minor > b.minor { return 1; }
+    if a.patch < b.patch { return -1; }
+    if a.patch > b.patch { return 1; }
+    0
+}
+
+pub fn semver_format(v: SemVer, arena: *mut u8) -> String {
+    let mut buf = string_buffer_new_in(arena);
+    fmt_append_i64(&mut buf, v.major);
+    string_buffer_push_byte(&mut buf, 46 as u8); // '.'
+    fmt_append_i64(&mut buf, v.minor);
+    string_buffer_push_byte(&mut buf, 46 as u8); // '.'
+    fmt_append_i64(&mut buf, v.patch);
+    string_buffer_push_byte(&mut buf, 0 as u8);
+    string_as_ptr(&buf) as String
+}
+
+pub fn semver_satisfies(req: String, ver_str: String) -> bool {
+    let v = semver_parse(ver_str);
+    if !v.valid {
+        return false;
+    }
+
+    let req_ptr = req as *const u8;
+    if req_ptr as usize == 0 {
+        return false;
+    }
+    let req_len = unsafe { strlen(req_ptr) } as i64;
+    if req_len == 0 {
+        return false;
+    }
+
+    // 1. Wildcard "*"
+    if req_len == 1 && unsafe { req_ptr[0] } == 42 as u8 { // '*'
+        return true;
+    }
+
+    // 2. Caret constraint "^X.Y.Z"
+    if unsafe { req_ptr[0] } == 94 as u8 { // '^'
+        if req_len < 6 {
+            return false;
+        }
+        let base_ptr = (req_ptr as usize + 1) as *const u8;
+        let base_len = req_len - 1;
+        let mut dot1: i64 = -1;
+        let mut dot2: i64 = -1;
+        let mut dot_count: i64 = 0;
+        let mut i: i64 = 0;
+        while i < base_len {
+            let b = unsafe { base_ptr[i] };
+            if b == 46 as u8 {
+                if dot_count == 0 { dot1 = i; }
+                else if dot_count == 1 { dot2 = i; }
+                dot_count = dot_count + 1;
+            } else if b < 48 as u8 || b > 57 as u8 {
+                return false;
+            }
+            i = i + 1;
+        }
+        if dot_count != 2 {
+            return false;
+        }
+        let maj = parse_nonneg_int(base_ptr, 0, dot1);
+        let min = parse_nonneg_int(base_ptr, dot1 + 1, dot2);
+        let pat = parse_nonneg_int(base_ptr, dot2 + 1, base_len);
+        if maj < 0 || min < 0 || pat < 0 {
+            return false;
+        }
+        let base = SemVer { major: maj, minor: min, patch: pat, valid: true };
+
+        // Must be >= base
+        if semver_cmp(v, base) < 0 {
+            return false;
+        }
+
+        // Upper boundary rules:
+        // ^1.2.3 => >= 1.2.3 and < 2.0.0 (v.major == base.major)
+        // ^0.2.3 => >= 0.2.3 and < 0.3.0 (v.major == 0 && v.minor == base.minor)
+        // ^0.0.3 => >= 0.0.3 and < 0.0.4 (v.major == 0 && v.minor == 0 && v.patch == base.patch)
+        if base.major > 0 {
+            return v.major == base.major;
+        }
+        if base.minor > 0 {
+            return v.major == 0 && v.minor == base.minor;
+        }
+        return v.major == 0 && v.minor == 0 && v.patch == base.patch;
+    }
+
+    // 3. Partial wildcards "X.*" or "X.Y.*"
+    if req_len >= 3 && unsafe { req_ptr[req_len - 2] } == 46 as u8 && unsafe { req_ptr[req_len - 1] } == 42 as u8 {
+        let prefix_len = req_len - 2;
+        let mut dot_idx: i64 = -1;
+        let mut d_count: i64 = 0;
+        let mut j: i64 = 0;
+        while j < prefix_len {
+            if unsafe { req_ptr[j] } == 46 as u8 {
+                dot_idx = j;
+                d_count = d_count + 1;
+            } else if unsafe { req_ptr[j] } < 48 as u8 || unsafe { req_ptr[j] } > 57 as u8 {
+                return false;
+            }
+            j = j + 1;
+        }
+        if d_count == 0 {
+            let req_maj = parse_nonneg_int(req_ptr, 0, prefix_len);
+            return req_maj >= 0 && v.major == req_maj;
+        }
+        if d_count == 1 {
+            let req_maj = parse_nonneg_int(req_ptr, 0, dot_idx);
+            let req_min = parse_nonneg_int(req_ptr, dot_idx + 1, prefix_len);
+            return req_maj >= 0 && req_min >= 0 && v.major == req_maj && v.minor == req_min;
+        }
+        return false;
+    }
+
+    // 4. Exact match "X.Y.Z"
+    let target = semver_parse(req);
+    if target.valid {
+        return semver_cmp(v, target) == 0;
+    }
+
+    false
+}
+
+// -----------------------------------------------------------------------------
 // Forge.toml Parser
 // -----------------------------------------------------------------------------
-fn extract_quoted_string(line: *const u8, line_len: i64, arena: *mut u8) -> String {
+pub fn extract_quoted_string(line: *const u8, line_len: i64, arena: *mut u8) -> String {
     let mut i: i64 = 0;
     while i < line_len && unsafe { line[i] } != 34 { // find first "
         i = i + 1;
@@ -104,7 +313,7 @@ fn extract_quoted_string(line: *const u8, line_len: i64, arena: *mut u8) -> Stri
     ""
 }
 
-fn starts_with(line: *const u8, line_len: i64, prefix: *const u8, prefix_len: i64) -> bool {
+pub fn starts_with(line: *const u8, line_len: i64, prefix: *const u8, prefix_len: i64) -> bool {
     if line_len < prefix_len {
         return false;
     }
@@ -127,13 +336,11 @@ pub fn parse_manifest(toml_content: String, interner: &mut Interner, arena: *mut
     let mut line_start: i64 = 0;
 
     while line_start < total_len {
-        // Find line end
         let mut line_end = line_start;
         while line_end < total_len && unsafe { content_ptr[line_end] } != 10 && unsafe { content_ptr[line_end] } != 13 {
             line_end = line_end + 1;
         }
 
-        // Trim leading whitespace
         let mut p = line_start;
         while p < line_end && (unsafe { content_ptr[p] } == 32 || unsafe { content_ptr[p] } == 9) {
             p = p + 1;
@@ -148,7 +355,6 @@ pub fn parse_manifest(toml_content: String, interner: &mut Interner, arena: *mut
             } else if starts_with(line, line_len, "[dependencies]" as *const u8, 14) {
                 current_section = 2;
             } else if current_section == 1 {
-                // In [package]
                 if starts_with(line, line_len, "name" as *const u8, 4) {
                     let s = extract_quoted_string(line, line_len, arena);
                     pkg_name_sym = interner_intern(interner, s);
@@ -162,14 +368,11 @@ pub fn parse_manifest(toml_content: String, interner: &mut Interner, arena: *mut
                     manifest.op = pkg_edition_sym;
                 }
             } else if current_section == 2 {
-                // In [dependencies]
-                // Parse: dep_name = ...
                 let mut eq_pos: i64 = 0;
                 while eq_pos < line_len && unsafe { line[eq_pos] } != 61 { // '='
                     eq_pos = eq_pos + 1;
                 }
                 if eq_pos < line_len {
-                    // Extract dep_name
                     let mut name_end = eq_pos;
                     while name_end > 0 && (unsafe { line[name_end - 1] } == 32 || unsafe { line[name_end - 1] } == 9) {
                         name_end = name_end - 1;
@@ -179,14 +382,13 @@ pub fn parse_manifest(toml_content: String, interner: &mut Interner, arena: *mut
                     let dep_name = string_as_ptr(&sbuf) as String;
                     let dep_name_sym = interner_intern(interner, dep_name);
 
-                    // Value part after '='
                     let val_ptr = (line as usize + (eq_pos + 1) as usize) as *const u8;
                     let val_len = line_len - (eq_pos + 1);
 
                     let mut dep_path = "";
                     let mut dep_ver = "1.0.0";
 
-                    // Check if path is specified: path = "..."
+                    // Check path = "..."
                     let mut k: i64 = 0;
                     while k < val_len - 4 {
                         let sub = (val_ptr as usize + k as usize) as *const u8;
@@ -197,20 +399,32 @@ pub fn parse_manifest(toml_content: String, interner: &mut Interner, arena: *mut
                         k = k + 1;
                     }
 
-                    // Check version
-                    let v_str = extract_quoted_string(val_ptr, val_len, arena);
-                    if unsafe { strlen(v_str as *const u8) } > 0 {
-                        dep_ver = v_str;
+                    // Check version = "..."
+                    let mut has_version_key = false;
+                    let mut kv: i64 = 0;
+                    while kv < val_len - 7 {
+                        let sub = (val_ptr as usize + kv as usize) as *const u8;
+                        if starts_with(sub, val_len - kv, "version" as *const u8, 7) {
+                            dep_ver = extract_quoted_string(sub, val_len - kv, arena);
+                            has_version_key = true;
+                            break;
+                        }
+                        kv = kv + 1;
                     }
-                    let dep_ver_sym = interner_intern(interner, dep_ver);
+                    if !has_version_key {
+                        let v_str = extract_quoted_string(val_ptr, val_len, arena);
+                        if unsafe { strlen(v_str as *const u8) } > 0 {
+                            dep_ver = v_str;
+                        }
+                    }
 
+                    let dep_ver_sym = interner_intern(interner, dep_ver);
                     let dep = alloc_package_dep(arena, dep_name_sym, dep_ver_sym, dep_path);
                     vec_push(&mut manifest.args, dep);
                 }
             }
         }
 
-        // Advance past newline
         while line_end < total_len && (unsafe { content_ptr[line_end] } == 10 || unsafe { content_ptr[line_end] } == 13) {
             line_end = line_end + 1;
         }
@@ -246,4 +460,497 @@ pub fn package_print_info(manifest: *mut PackageManifest, interner: &Interner) {
         puts(manifest.str_val as *const u8);
         fflush(0 as *const u8);
     }
+}
+
+// -----------------------------------------------------------------------------
+// Resolved Graph & Deterministic Lockfile Generator
+// Conforms to Tungsten's standard 8-field rectangular layout:
+// kind: 0, sym: 1, int_val: 2, str_val: 3, op: 4, left: 5, right: 6, args: 7
+// -----------------------------------------------------------------------------
+pub struct ResolvedPackage {
+    kind: i64,                  // state: 0 = UNVISITED, 1 = RESOLVING, 2 = RESOLVED
+    sym: i64,
+    int_val: i64,
+    str_val: String,            // name
+    op: i64,
+    left: String,               // version
+    right: String,              // path
+    args: Vec<String>,          // formatted list of "child_name child_version"
+}
+
+pub struct ResolvedGraph {
+    kind: i64,
+    sym: i64,
+    int_val: i64,
+    str_val: String,
+    op: i64,
+    left: *mut ResolvedPackage,
+    right: *mut ResolvedPackage,
+    args: Vec<*mut ResolvedPackage>, // packages
+}
+
+pub fn alloc_resolved_package(arena: *mut u8, name: String, version: String, path: String) -> *mut ResolvedPackage {
+    let p = unsafe {
+        tungsten_region_alloc(arena, 128, 8) as *mut ResolvedPackage
+    };
+    let empty_deps: Vec<String> = vec_new_in(arena);
+    unsafe {
+        p.kind = 0;       // state: 0 = UNVISITED
+        p.sym = 0;
+        p.int_val = 0;
+        p.str_val = name; // name
+        p.op = 0;
+        p.left = version; // version
+        p.right = path;   // path
+        p.args = empty_deps;
+    }
+    p
+}
+
+pub fn alloc_resolved_graph(arena: *mut u8) -> *mut ResolvedGraph {
+    let g = unsafe {
+        tungsten_region_alloc(arena, 128, 8) as *mut ResolvedGraph
+    };
+    let pkgs: Vec<*mut ResolvedPackage> = vec_new_in(arena);
+    let null_pkg = 0 as *mut ResolvedPackage;
+    unsafe {
+        g.kind = 0;
+        g.sym = 0;
+        g.int_val = 0;
+        g.str_val = "";
+        g.op = 0;
+        g.left = null_pkg;
+        g.right = null_pkg;
+        g.args = pkgs;
+    }
+    g
+}
+
+pub fn graph_find_package(graph: *mut ResolvedGraph, name: String) -> *mut ResolvedPackage {
+    let mut i: i64 = 0;
+    let name_p = name as *const u8;
+    while i < graph.args.len {
+        let pkg = vec_get(&graph.args, i);
+        if unsafe { strcmp(pkg.str_val as *const u8, name_p) == 0 } {
+            return pkg;
+        }
+        i = i + 1;
+    }
+    0 as *mut ResolvedPackage
+}
+
+pub fn graph_sort_packages(graph: *mut ResolvedGraph) {
+    let n = graph.args.len;
+    let mut i: i64 = 0;
+    while i < n {
+        let mut j: i64 = 0;
+        while j < n - 1 - i {
+            let p1 = vec_get(&graph.args, j);
+            let p2 = vec_get(&graph.args, j + 1);
+            if unsafe { strcmp(p1.str_val as *const u8, p2.str_val as *const u8) > 0 } {
+                vec_set(&mut graph.args, j, p2);
+                vec_set(&mut graph.args, j + 1, p1);
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+}
+
+pub fn package_sort_deps(pkg: *mut ResolvedPackage) {
+    let n = pkg.args.len;
+    let mut i: i64 = 0;
+    while i < n {
+        let mut j: i64 = 0;
+        while j < n - 1 - i {
+            let d1 = vec_get(&pkg.args, j);
+            let d2 = vec_get(&pkg.args, j + 1);
+            if unsafe { strcmp(d1 as *const u8, d2 as *const u8) > 0 } {
+                vec_set(&mut pkg.args, j, d2);
+                vec_set(&mut pkg.args, j + 1, d1);
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+}
+
+pub fn generate_lockfile_content(graph: *mut ResolvedGraph, arena: *mut u8) -> String {
+    graph_sort_packages(graph);
+    let mut k: i64 = 0;
+    while k < graph.args.len {
+        let p = vec_get(&graph.args, k);
+        package_sort_deps(p);
+        k = k + 1;
+    }
+
+    let mut buf = string_buffer_new_in(arena);
+    fmt_append_str(&mut buf, "# This file is automatically generated by Forge. Do not edit.\nversion = 1\n");
+
+    let mut p_idx: i64 = 0;
+    while p_idx < graph.args.len {
+        let pkg = vec_get(&graph.args, p_idx);
+        fmt_append_str(&mut buf, "\n[[package]]\nname = \"");
+        fmt_append_str(&mut buf, pkg.str_val);
+        fmt_append_str(&mut buf, "\"\nversion = \"");
+        fmt_append_str(&mut buf, pkg.left);
+        fmt_append_str(&mut buf, "\"\nsource = \"local\"\npath = \"");
+        fmt_append_str(&mut buf, pkg.right);
+        fmt_append_str(&mut buf, "\"\n");
+
+        if pkg.args.len > 0 {
+            fmt_append_str(&mut buf, "dependencies = [\n");
+            let mut d_idx: i64 = 0;
+            while d_idx < pkg.args.len {
+                let dep_entry = vec_get(&pkg.args, d_idx);
+                fmt_append_str(&mut buf, "    \"");
+                fmt_append_str(&mut buf, dep_entry);
+                fmt_append_str(&mut buf, "\",\n");
+                d_idx = d_idx + 1;
+            }
+            fmt_append_str(&mut buf, "]\n");
+        }
+
+        p_idx = p_idx + 1;
+    }
+
+    string_buffer_push_byte(&mut buf, 0 as u8);
+    string_as_ptr(&buf) as String
+}
+
+pub fn parse_lockfile(lock_content: String, arena: *mut u8) -> *mut ResolvedGraph {
+    let graph = alloc_resolved_graph(arena);
+    let content_ptr = lock_content as *const u8;
+    let total_len = unsafe { strlen(content_ptr) } as i64;
+
+    let mut cur_pkg = 0 as *mut ResolvedPackage;
+    let mut in_deps_array = false;
+    let mut line_start: i64 = 0;
+
+    while line_start < total_len {
+        let mut line_end = line_start;
+        while line_end < total_len && unsafe { content_ptr[line_end] } != 10 && unsafe { content_ptr[line_end] } != 13 {
+            line_end = line_end + 1;
+        }
+
+        let mut p = line_start;
+        while p < line_end && (unsafe { content_ptr[p] } == 32 || unsafe { content_ptr[p] } == 9) {
+            p = p + 1;
+        }
+
+        let line_len = line_end - p;
+        let line = (content_ptr as usize + p as usize) as *const u8;
+
+        if line_len > 0 && unsafe { line[0] } != 35 { // skip '#'
+            if starts_with(line, line_len, "[[package]]" as *const u8, 11) {
+                if cur_pkg as usize != 0 {
+                    vec_push(&mut graph.args, cur_pkg);
+                }
+                cur_pkg = alloc_resolved_package(arena, "", "", "");
+                in_deps_array = false;
+            } else if in_deps_array {
+                if starts_with(line, line_len, "]" as *const u8, 1) {
+                    in_deps_array = false;
+                } else {
+                    let dep_str = extract_quoted_string(line, line_len, arena);
+                    if unsafe { strlen(dep_str as *const u8) } > 0 && cur_pkg as usize != 0 {
+                        vec_push(&mut cur_pkg.args, dep_str);
+                    }
+                }
+            } else if cur_pkg as usize != 0 {
+                if starts_with(line, line_len, "name" as *const u8, 4) {
+                    cur_pkg.str_val = extract_quoted_string(line, line_len, arena);
+                } else if starts_with(line, line_len, "version" as *const u8, 7) {
+                    cur_pkg.left = extract_quoted_string(line, line_len, arena);
+                } else if starts_with(line, line_len, "path" as *const u8, 4) {
+                    cur_pkg.right = extract_quoted_string(line, line_len, arena);
+                } else if starts_with(line, line_len, "dependencies" as *const u8, 12) {
+                    in_deps_array = true;
+                }
+            }
+        }
+
+        while line_end < total_len && (unsafe { content_ptr[line_end] } == 10 || unsafe { content_ptr[line_end] } == 13) {
+            line_end = line_end + 1;
+        }
+        line_start = line_end;
+    }
+
+    if cur_pkg as usize != 0 {
+        vec_push(&mut graph.args, cur_pkg);
+    }
+
+    graph
+}
+
+pub fn dep_entry_name(entry: String, arena: *mut u8) -> String {
+    let ptr = entry as *const u8;
+    let len = unsafe { strlen(ptr) } as i64;
+    let mut space_pos: i64 = -1;
+    let mut i: i64 = 0;
+    while i < len {
+        if unsafe { ptr[i] } == 32 as u8 {
+            space_pos = i;
+            break;
+        }
+        i = i + 1;
+    }
+    if space_pos <= 0 {
+        return "";
+    }
+    let mut buf = string_buffer_from_utf8_in(arena, ptr, space_pos);
+    string_buffer_push_byte(&mut buf, 0 as u8);
+    string_as_ptr(&buf) as String
+}
+
+pub fn dep_entry_version(entry: String, arena: *mut u8) -> String {
+    let ptr = entry as *const u8;
+    let len = unsafe { strlen(ptr) } as i64;
+    let mut space_pos: i64 = -1;
+    let mut i: i64 = 0;
+    while i < len {
+        if unsafe { ptr[i] } == 32 as u8 {
+            space_pos = i;
+            break;
+        }
+        i = i + 1;
+    }
+    if space_pos < 0 || space_pos + 1 >= len {
+        return "";
+    }
+    let ver_ptr = (ptr as usize + (space_pos + 1) as usize) as *const u8;
+    let ver_len = len - (space_pos + 1);
+    let mut buf = string_buffer_from_utf8_in(arena, ver_ptr, ver_len);
+    string_buffer_push_byte(&mut buf, 0 as u8);
+    string_as_ptr(&buf) as String
+}
+
+pub fn verify_lockfile_graph(graph: *mut ResolvedGraph, root_manifest: *mut PackageManifest, interner: &Interner, arena: *mut u8) -> bool yields [Diagnostics] {
+    // 1. Check duplicate package names in lockfile
+    let mut i: i64 = 0;
+    while i < graph.args.len {
+        let p1 = vec_get(&graph.args, i);
+        let mut j: i64 = i + 1;
+        while j < graph.args.len {
+            let p2 = vec_get(&graph.args, j);
+            if unsafe { strcmp(p1.str_val as *const u8, p2.str_val as *const u8) == 0 } {
+                report_err("Lockfile validation error: duplicate package entry", 1, 1);
+                return false;
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    // 2. Graph closure: every dependency edge in every package must exist in graph.args
+    let mut p_idx: i64 = 0;
+    while p_idx < graph.args.len {
+        let pkg = vec_get(&graph.args, p_idx);
+        let mut d_idx: i64 = 0;
+        while d_idx < pkg.args.len {
+            let entry = vec_get(&pkg.args, d_idx);
+            let d_name = dep_entry_name(entry, arena);
+            let d_ver = dep_entry_version(entry, arena);
+
+            let target = graph_find_package(graph, d_name);
+            if target as usize == 0 {
+                report_err("Lockfile graph closure violation: referenced dependency not in lockfile", 1, 1);
+                return false;
+            }
+            if unsafe { strcmp(target.left as *const u8, d_ver as *const u8) != 0 } {
+                report_err("Lockfile graph closure violation: dependency version mismatch", 1, 1);
+                return false;
+            }
+            d_idx = d_idx + 1;
+        }
+        p_idx = p_idx + 1;
+    }
+
+    // 3. Root manifest constraints check
+    let mut m_idx: i64 = 0;
+    while m_idx < root_manifest.args.len {
+        let dep = vec_get(&root_manifest.args, m_idx);
+        let dep_name = interner_lookup(interner, dep.sym);
+        let dep_req = interner_lookup(interner, dep.op);
+
+        let target = graph_find_package(graph, dep_name);
+        if target as usize == 0 {
+            report_err("Lockfile missing dependency declared in Forge.toml", 1, 1);
+            return false;
+        }
+        if !semver_satisfies(dep_req, target.left) {
+            report_err("Locked package version does not satisfy Forge.toml constraint", 1, 1);
+            return false;
+        }
+        m_idx = m_idx + 1;
+    }
+
+    true
+}
+
+pub fn write_lockfile_atomic(lock_path: String, graph: *mut ResolvedGraph, root_manifest: *mut PackageManifest, interner: &Interner, arena: *mut u8) -> bool yields [FS, Diagnostics] {
+    let content = generate_lockfile_content(graph, arena);
+    let tmp_path = ".Forge.lock.tmp";
+    fs_write_string(tmp_path, content);
+
+    let parsed_graph = parse_lockfile(content, arena);
+    let ok = verify_lockfile_graph(parsed_graph, root_manifest, interner, arena);
+    if !ok {
+        unsafe { remove(tmp_path as *const u8); }
+        return false;
+    }
+
+    unsafe {
+        remove(lock_path as *const u8);
+        rename(tmp_path as *const u8, lock_path as *const u8);
+    }
+    true
+}
+
+// -----------------------------------------------------------------------------
+// 3-State Dependency Resolver
+// -----------------------------------------------------------------------------
+pub fn resolve_package_node(
+    graph: *mut ResolvedGraph,
+    pkg_name: String,
+    req_constraint: String,
+    pkg_path: String,
+    interner: &mut Interner,
+    arena: *mut u8
+) -> bool yields [FS, Diagnostics] {
+    let existing = graph_find_package(graph, pkg_name);
+    if existing as usize != 0 {
+        if existing.kind == 1 {
+            report_err("Circular dependency detected", 1, 1);
+            return false;
+        }
+        if existing.kind == 2 {
+            if !semver_satisfies(req_constraint, existing.left) {
+                report_err("Dependency version conflict in diamond graph", 1, 1);
+                return false;
+            }
+            return true;
+        }
+    }
+
+    // Locate dependency manifest
+    let mut m_path = pkg_path;
+    let p_len = unsafe { strlen(pkg_path as *const u8) } as i64;
+    if p_len == 0 {
+        let mut b1 = string_buffer_new_in(arena);
+        fmt_append_str(&mut b1, "packages/");
+        fmt_append_str(&mut b1, pkg_name);
+        fmt_append_str(&mut b1, "/Forge.toml");
+        string_buffer_push_byte(&mut b1, 0 as u8);
+        let cand1 = string_as_ptr(&b1) as String;
+        if fs_exists(cand1) {
+            m_path = cand1;
+        } else {
+            let mut b2 = string_buffer_new_in(arena);
+            fmt_append_str(&mut b2, "../");
+            fmt_append_str(&mut b2, pkg_name);
+            fmt_append_str(&mut b2, "/Forge.toml");
+            string_buffer_push_byte(&mut b2, 0 as u8);
+            let cand2 = string_as_ptr(&b2) as String;
+            if fs_exists(cand2) {
+                m_path = cand2;
+            }
+        }
+    } else {
+        if !fs_exists(m_path) {
+            let mut b = string_buffer_new_in(arena);
+            fmt_append_str(&mut b, pkg_path);
+            let last_b = unsafe { (pkg_path as *const u8)[p_len - 1] };
+            if last_b != 47 as u8 && last_b != 92 as u8 {
+                string_buffer_push_byte(&mut b, 47 as u8);
+            }
+            fmt_append_str(&mut b, "Forge.toml");
+            string_buffer_push_byte(&mut b, 0 as u8);
+            let cand = string_as_ptr(&b) as String;
+            if fs_exists(cand) {
+                m_path = cand;
+            }
+        }
+    }
+
+    if !fs_exists(m_path) {
+        report_err("Dependency package manifest Forge.toml not found", 1, 1);
+        return false;
+    }
+
+    let dep_manifest = package_load_manifest(m_path, interner, arena);
+    let dep_version = dep_manifest.str_val;
+    let sv = semver_parse(dep_version);
+    if !sv.valid {
+        report_err("Package manifest contains invalid SemVer version", 1, 1);
+        return false;
+    }
+
+    if !semver_satisfies(req_constraint, dep_version) {
+        report_err("Package version does not satisfy requirement constraint", 1, 1);
+        return false;
+    }
+
+    let node = alloc_resolved_package(arena, pkg_name, dep_version, pkg_path);
+    node.kind = 1; // RESOLVING
+    vec_push(&mut graph.args, node);
+
+    // Recursively resolve child dependencies
+    let mut i: i64 = 0;
+    while i < dep_manifest.args.len {
+        let child_dep = vec_get(&dep_manifest.args, i);
+        let child_name = interner_lookup(interner, child_dep.sym);
+        let child_req = interner_lookup(interner, child_dep.op);
+        let child_path = child_dep.str_val;
+
+        let ok = resolve_package_node(graph, child_name, child_req, child_path, interner, arena);
+        if !ok {
+            return false;
+        }
+
+        let child_node = graph_find_package(graph, child_name);
+        if child_node as usize != 0 {
+            let mut edge_buf = string_buffer_new_in(arena);
+            fmt_append_str(&mut edge_buf, child_name);
+            string_buffer_push_byte(&mut edge_buf, 32 as u8);
+            fmt_append_str(&mut edge_buf, child_node.left);
+            string_buffer_push_byte(&mut edge_buf, 0 as u8);
+            let edge = string_as_ptr(&edge_buf) as String;
+            vec_push(&mut node.args, edge);
+        }
+        i = i + 1;
+    }
+
+    node.kind = 2; // RESOLVED
+    true
+}
+
+pub fn package_resolve_manifest(
+    manifest_path: String,
+    graph: *mut ResolvedGraph,
+    interner: &mut Interner,
+    arena: *mut u8
+) -> bool yields [FS, Diagnostics] {
+    let manifest = package_load_manifest(manifest_path, interner, arena);
+    if manifest.sym == 0 && manifest.args.len == 0 {
+        let manifest_len = unsafe { strlen(manifest.str_val as *const u8) } as i64;
+        if manifest_len == 0 {
+            return false;
+        }
+    }
+
+    let mut i: i64 = 0;
+    while i < manifest.args.len {
+        let dep = vec_get(&manifest.args, i);
+        let dep_name = interner_lookup(interner, dep.sym);
+        let dep_req = interner_lookup(interner, dep.op);
+        let dep_path = dep.str_val;
+
+        let ok = resolve_package_node(graph, dep_name, dep_req, dep_path, interner, arena);
+        if !ok {
+            return false;
+        }
+        i = i + 1;
+    }
+    true
 }

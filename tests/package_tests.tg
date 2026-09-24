@@ -1,30 +1,203 @@
-// Pure Tungsten Test Suite: Package Manifest & Resolver
+// Pure Tungsten Test Suite: Package Manifest, SemVer Engine & Deterministic Resolver
 import std.test;
+import std.collections;
+import std.fs;
+import compiler.diagnostics;
 import compiler.interner;
 import compiler.package;
 
-fn main() {
+fn test_manifest_parsing(arena: *mut u8) {
+    let toml_sample = "[package]\nname = \"my_pkg\"\nversion = \"1.2.3\"\nedition = \"2026\"\n\n[dependencies]\nmath_lib = { version = \"2.0.0\", path = \"../math_lib\" }\n";
+    let mut interner = interner_new_in(arena);
+    let manifest = parse_manifest(toml_sample, &mut interner, arena);
+
+    let pkg_name = interner_lookup(&interner, manifest.sym);
+    assert_str_eq(pkg_name, "my_pkg", "Package name parsing");
+    assert_str_eq(manifest.str_val, "1.2.3", "Package version parsing");
+
+    let edition_name = interner_lookup(&interner, manifest.op);
+    assert_str_eq(edition_name, "2026", "Package edition parsing");
+    assert_eq(manifest.args.len, 1, "Dependency count");
+
+    let dep = vec_get(&manifest.args, 0);
+    let dep_name = interner_lookup(&interner, dep.sym);
+    assert_str_eq(dep_name, "math_lib", "Dependency name parsing");
+    assert_str_eq(dep.str_val, "../math_lib", "Dependency path parsing");
+}
+
+fn test_semver_parsing() {
+    let v1 = semver_parse("1.2.3");
+    assert(v1.valid, "Valid SemVer 1.2.3");
+    assert_eq(v1.major, 1, "SemVer 1.2.3 major");
+    assert_eq(v1.minor, 2, "SemVer 1.2.3 minor");
+    assert_eq(v1.patch, 3, "SemVer 1.2.3 patch");
+
+    let v2 = semver_parse("0.2.3");
+    assert(v2.valid, "Valid SemVer 0.2.3");
+    assert_eq(v2.major, 0, "SemVer 0.2.3 major");
+    assert_eq(v2.minor, 2, "SemVer 0.2.3 minor");
+    assert_eq(v2.patch, 3, "SemVer 0.2.3 patch");
+
+    let v3 = semver_parse("0.0.3");
+    assert(v3.valid, "Valid SemVer 0.0.3");
+    assert_eq(v3.major, 0, "SemVer 0.0.3 major");
+    assert_eq(v3.minor, 0, "SemVer 0.0.3 minor");
+    assert_eq(v3.patch, 3, "SemVer 0.0.3 patch");
+
+    // Rejection of invalid / non-numeric formats
+    let inv1 = semver_parse("1.2");
+    assert(!inv1.valid, "Reject incomplete SemVer 1.2");
+
+    let inv2 = semver_parse("1.2.3.4");
+    assert(!inv2.valid, "Reject 4-segment version 1.2.3.4");
+
+    let inv3 = semver_parse("1.2.3-alpha");
+    assert(!inv3.valid, "Reject prerelease tag 1.2.3-alpha in numeric subset");
+
+    let inv4 = semver_parse("1.2.3+build");
+    assert(!inv4.valid, "Reject build metadata 1.2.3+build in numeric subset");
+
+    let inv5 = semver_parse("invalid");
+    assert(!inv5.valid, "Reject non-numeric string");
+
+    let inv6 = semver_parse("");
+    assert(!inv6.valid, "Reject empty string");
+}
+
+fn test_semver_cmp_and_format(arena: *mut u8) {
+    let a = semver_parse("1.2.3");
+    let b = semver_parse("1.2.4");
+    let c = semver_parse("1.3.0");
+    let d = semver_parse("2.0.0");
+    let eq = semver_parse("1.2.3");
+
+    assert_eq(semver_cmp(a, eq), 0, "SemVer equality comparison");
+    assert_eq(semver_cmp(a, b), -1, "SemVer patch comparison (<)");
+    assert_eq(semver_cmp(b, a), 1, "SemVer patch comparison (>)");
+    assert_eq(semver_cmp(a, c), -1, "SemVer minor comparison (<)");
+    assert_eq(semver_cmp(a, d), -1, "SemVer major comparison (<)");
+
+    let fmt_str = semver_format(a, arena);
+    assert_str_eq(fmt_str, "1.2.3", "SemVer canonical formatting");
+}
+
+fn test_caret_and_wildcard_constraints() {
+    // Caret ^1.2.3 => >= 1.2.3 and < 2.0.0
+    assert(semver_satisfies("^1.2.3", "1.2.3"), "^1.2.3 satisfies exact base");
+    assert(semver_satisfies("^1.2.3", "1.2.4"), "^1.2.3 satisfies patch bump");
+    assert(semver_satisfies("^1.2.3", "1.3.0"), "^1.2.3 satisfies minor bump");
+    assert(!semver_satisfies("^1.2.3", "2.0.0"), "^1.2.3 rejects major bump");
+    assert(!semver_satisfies("^1.2.3", "1.2.2"), "^1.2.3 rejects lower patch");
+
+    // Caret ^0.2.3 => >= 0.2.3 and < 0.3.0
+    assert(semver_satisfies("^0.2.3", "0.2.3"), "^0.2.3 satisfies exact base");
+    assert(semver_satisfies("^0.2.3", "0.2.9"), "^0.2.3 satisfies patch bump");
+    assert(!semver_satisfies("^0.2.3", "0.3.0"), "^0.2.3 rejects minor bump");
+    assert(!semver_satisfies("^0.2.3", "0.2.2"), "^0.2.3 rejects lower patch");
+
+    // Caret ^0.0.3 => >= 0.0.3 and < 0.0.4
+    assert(semver_satisfies("^0.0.3", "0.0.3"), "^0.0.3 satisfies exact base");
+    assert(!semver_satisfies("^0.0.3", "0.0.4"), "^0.0.3 rejects patch bump");
+    assert(!semver_satisfies("^0.0.3", "0.0.2"), "^0.0.3 rejects lower patch");
+
+    // Wildcards
+    assert(semver_satisfies("*", "5.10.15"), "* satisfies any valid version");
+    assert(semver_satisfies("1.*", "1.7.2"), "1.* satisfies matching major");
+    assert(!semver_satisfies("1.*", "2.0.0"), "1.* rejects non-matching major");
+    assert(semver_satisfies("1.2.*", "1.2.8"), "1.2.* satisfies matching major and minor");
+    assert(!semver_satisfies("1.2.*", "1.3.0"), "1.2.* rejects non-matching minor");
+
+    // Exact
+    assert(semver_satisfies("1.2.3", "1.2.3"), "Exact match satisfies");
+    assert(!semver_satisfies("1.2.3", "1.2.4"), "Exact match rejects mismatch");
+}
+
+fn test_determinism_and_graph_closure(arena: *mut u8) yields [Diagnostics] {
+    // Construct graph in order B then A
+    let g1 = alloc_resolved_graph(arena);
+    let p_beta1 = alloc_resolved_package(arena, "beta_core", "2.1.0", "../beta_core");
+    let p_alpha1 = alloc_resolved_package(arena, "alpha_lib", "1.0.0", "../alpha_lib");
+    vec_push(&mut p_alpha1.args, "beta_core 2.1.0");
+    vec_push(&mut g1.args, p_beta1);
+    vec_push(&mut g1.args, p_alpha1);
+
+    let lock_str1 = generate_lockfile_content(g1, arena);
+
+    // Construct graph in order A then B
+    let g2 = alloc_resolved_graph(arena);
+    let p_alpha2 = alloc_resolved_package(arena, "alpha_lib", "1.0.0", "../alpha_lib");
+    let p_beta2 = alloc_resolved_package(arena, "beta_core", "2.1.0", "../beta_core");
+    vec_push(&mut p_alpha2.args, "beta_core 2.1.0");
+    vec_push(&mut g2.args, p_alpha2);
+    vec_push(&mut g2.args, p_beta2);
+
+    let lock_str2 = generate_lockfile_content(g2, arena);
+
+    // Gate C: byte-identical lockfile regeneration regardless of insertion/declaration order
+    assert_str_eq(lock_str1, lock_str2, "Gate C: Deterministic lockfile declaration-order independence");
+
+    // Parse lockfile back and verify graph closure
+    let parsed_g = parse_lockfile(lock_str1, arena);
+    assert_eq(parsed_g.args.len, 2, "Parsed lockfile contains 2 packages");
+
+    let mut interner = interner_new_in(arena);
+    let mock_manifest = alloc_package_manifest(arena, interner_intern(&mut interner, "root"), "0.1.0", 0);
+    let alpha_sym = interner_intern(&mut interner, "alpha_lib");
+    let alpha_ver_sym = interner_intern(&mut interner, "^1.0.0");
+    let dep1 = alloc_package_dep(arena, alpha_sym, alpha_ver_sym, "../alpha_lib");
+    vec_push(&mut mock_manifest.args, dep1);
+
+    let is_valid = verify_lockfile_graph(parsed_g, mock_manifest, &interner, arena);
+    assert(is_valid, "Lockfile graph closure and manifest constraint verification passed");
+}
+
+fn test_diamond_dag_resolution(arena: *mut u8) yields [Diagnostics] {
+    // Simulate diamond DAG:
+    // Root -> LibA (^1.0.0), Root -> LibB (^1.0.0)
+    // LibA -> Shared (^1.0.0)
+    // LibB -> Shared (1.*)
+    // Both resolve to Shared 1.2.0
+    let g = alloc_resolved_graph(arena);
+    let p_liba = alloc_resolved_package(arena, "lib_a", "1.0.0", "../lib_a");
+    let p_libb = alloc_resolved_package(arena, "lib_b", "1.0.0", "../lib_b");
+    let p_shared = alloc_resolved_package(arena, "shared_core", "1.2.0", "../shared_core");
+
+    vec_push(&mut p_liba.args, "shared_core 1.2.0");
+    vec_push(&mut p_libb.args, "shared_core 1.2.0");
+
+    p_shared.kind = 2; // RESOLVED
+    p_liba.kind = 2;   // RESOLVED
+    p_libb.kind = 2;   // RESOLVED
+
+    vec_push(&mut g.args, p_liba);
+    vec_push(&mut g.args, p_libb);
+    vec_push(&mut g.args, p_shared);
+
+    let lock = generate_lockfile_content(g, arena);
+    let parsed = parse_lockfile(lock, arena);
+
+    let mut interner = interner_new_in(arena);
+    let root_manifest = alloc_package_manifest(arena, interner_intern(&mut interner, "root"), "0.1.0", 0);
+    let liba_sym = interner_intern(&mut interner, "lib_a");
+    let libb_sym = interner_intern(&mut interner, "lib_b");
+    let req1 = interner_intern(&mut interner, "^1.0.0");
+    vec_push(&mut root_manifest.args, alloc_package_dep(arena, liba_sym, req1, "../lib_a"));
+    vec_push(&mut root_manifest.args, alloc_package_dep(arena, libb_sym, req1, "../lib_b"));
+
+    let closure_ok = verify_lockfile_graph(parsed, root_manifest, &interner, arena);
+    assert(closure_ok, "Diamond DAG graph closure verified successfully");
+}
+
+fn main() yields [Diagnostics] {
     test_print("=== Running Package Resolver Test Suite ===");
 
     region test_reg {
-        var toml_sample = "[package]\nname = \"my_pkg\"\nversion = \"1.2.3\"\nedition = \"2026\"\n\n[dependencies]\nmath_lib = { version = \"2.0.0\", path = \"../math_lib\" }\n";
-        var interner = interner_new_in(test_reg);
-        var manifest = parse_manifest(toml_sample, &mut interner, test_reg);
-
-        var pkg_name = interner_lookup(&interner, manifest.sym);
-        assert_str_eq(pkg_name, "my_pkg", "Package name parsing");
-
-        assert_str_eq(manifest.str_val, "1.2.3", "Package version parsing");
-
-        var edition_name = interner_lookup(&interner, manifest.op);
-        assert_str_eq(edition_name, "2026", "Package edition parsing");
-
-        assert_eq(manifest.args.len, 1, "Dependency count");
-
-        var dep = vec_get(&manifest.args, 0);
-        var dep_name = interner_lookup(&interner, dep.sym);
-        assert_str_eq(dep_name, "math_lib", "Dependency name parsing");
-        assert_str_eq(dep.str_val, "../math_lib", "Dependency path parsing");
+        test_manifest_parsing(test_reg);
+        test_semver_parsing();
+        test_semver_cmp_and_format(test_reg);
+        test_caret_and_wildcard_constraints();
+        test_determinism_and_graph_closure(test_reg);
+        test_diamond_dag_resolution(test_reg);
     }
 
     test_print("All package resolver tests passed!");

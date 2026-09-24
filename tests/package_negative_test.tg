@@ -1,0 +1,107 @@
+// Pure Tungsten Test Suite: Package Resolver Negative Tests (Cycle, Diamond Conflict, Corrupt Lockfile)
+import std.test;
+import std.collections;
+import std.fs;
+import compiler.diagnostics;
+import compiler.interner;
+import compiler.package;
+
+fn test_cycle_detection(arena: *mut u8) yields [FS, Diagnostics] {
+    diag_reset();
+    let g = alloc_resolved_graph(arena);
+
+    // Simulate active DFS recursion stack: pkg_a is currently in state 1 (RESOLVING)
+    let p_a = alloc_resolved_package(arena, "pkg_a", "1.0.0", "../pkg_a");
+    p_a.kind = 1;
+    vec_push(&mut g.args, p_a);
+
+    let mut interner = interner_new_in(arena);
+    // Encountering pkg_a while state == 1 must trigger cycle detection
+    let ok = resolve_package_node(g, "pkg_a", "^1.0.0", "../pkg_a", &mut interner, arena);
+    assert(!ok, "Cycle detection: node with state=1 (RESOLVING) rejected");
+    assert(diag_has_errors(), "Cycle detection: error diagnostic recorded");
+    diag_reset();
+}
+
+fn test_diamond_conflict_detection(arena: *mut u8) yields [FS, Diagnostics] {
+    diag_reset();
+    let g = alloc_resolved_graph(arena);
+
+    // Fixed package: shared_core is in state 2 (RESOLVED) at version 1.2.0
+    let p_shared = alloc_resolved_package(arena, "shared_core", "1.2.0", "../shared_core");
+    p_shared.kind = 2;
+    vec_push(&mut g.args, p_shared);
+
+    let mut interner = interner_new_in(arena);
+    // Incoming conflicting requirement: ^2.0.0
+    let ok = resolve_package_node(g, "shared_core", "^2.0.0", "../shared_core", &mut interner, arena);
+    assert(!ok, "Diamond conflict: incompatible SemVer constraint rejected");
+    assert(diag_has_errors(), "Diamond conflict: error diagnostic recorded");
+    diag_reset();
+}
+
+fn test_malformed_semver_rejection() {
+    assert(!semver_satisfies("^1.0.0", "invalid_ver"), "Reject invalid version in constraint check");
+    assert(!semver_satisfies("bad_req", "1.0.0"), "Reject malformed requirement string");
+    assert(!semver_parse("1.x.3").valid, "Reject non-numeric minor version");
+    assert(!semver_parse("1.2.3.4").valid, "Reject 4-part version");
+    assert(!semver_parse("1.0.0-rc1").valid, "Reject prerelease in numeric SemVer subset");
+}
+
+fn test_corrupt_lockfile_closure_violation(arena: *mut u8) yields [Diagnostics] {
+    diag_reset();
+    let g = alloc_resolved_graph(arena);
+
+    // alpha_lib claims a dependency on ghost_lib 1.0.0, but ghost_lib is NOT in the lockfile
+    let p_alpha = alloc_resolved_package(arena, "alpha_lib", "1.0.0", "../alpha_lib");
+    vec_push(&mut p_alpha.args, "ghost_lib 1.0.0");
+    vec_push(&mut g.args, p_alpha);
+
+    let mut interner = interner_new_in(arena);
+    let mock_manifest = alloc_package_manifest(arena, interner_intern(&mut interner, "root"), "0.1.0", 0);
+    let alpha_sym = interner_intern(&mut interner, "alpha_lib");
+    let alpha_req = interner_intern(&mut interner, "^1.0.0");
+    vec_push(&mut mock_manifest.args, alloc_package_dep(arena, alpha_sym, alpha_req, "../alpha_lib"));
+
+    let is_valid = verify_lockfile_graph(g, mock_manifest, &interner, arena);
+    assert(!is_valid, "Graph closure violation: missing dependency in lockfile rejected");
+    assert(diag_has_errors(), "Graph closure violation: diagnostic reported");
+    diag_reset();
+}
+
+fn test_lockfile_version_mismatch(arena: *mut u8) yields [Diagnostics] {
+    diag_reset();
+    let g = alloc_resolved_graph(arena);
+
+    // alpha_lib claims dependency on beta_lib 2.0.0, but beta_lib is locked at 1.0.0
+    let p_alpha = alloc_resolved_package(arena, "alpha_lib", "1.0.0", "../alpha_lib");
+    let p_beta = alloc_resolved_package(arena, "beta_lib", "1.0.0", "../beta_lib");
+    vec_push(&mut p_alpha.args, "beta_lib 2.0.0");
+    vec_push(&mut g.args, p_alpha);
+    vec_push(&mut g.args, p_beta);
+
+    let mut interner = interner_new_in(arena);
+    let mock_manifest = alloc_package_manifest(arena, interner_intern(&mut interner, "root"), "0.1.0", 0);
+    let alpha_sym = interner_intern(&mut interner, "alpha_lib");
+    let alpha_req = interner_intern(&mut interner, "^1.0.0");
+    vec_push(&mut mock_manifest.args, alloc_package_dep(arena, alpha_sym, alpha_req, "../alpha_lib"));
+
+    let is_valid = verify_lockfile_graph(g, mock_manifest, &interner, arena);
+    assert(!is_valid, "Lockfile version mismatch between edge and locked package rejected");
+    assert(diag_has_errors(), "Lockfile version mismatch: diagnostic reported");
+    diag_reset();
+}
+
+fn main() yields [FS, Diagnostics] {
+    test_print("=== Running Package Negative Test Suite ===");
+
+    region test_reg {
+        test_cycle_detection(test_reg);
+        test_diamond_conflict_detection(test_reg);
+        test_malformed_semver_rejection();
+        test_corrupt_lockfile_closure_violation(test_reg);
+        test_lockfile_version_mismatch(test_reg);
+    }
+
+    test_print("All package negative tests passed!");
+}

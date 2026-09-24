@@ -26,7 +26,8 @@
 | **v1.5** | **Direct TIR Codegen & Optimization Pipeline** | Direct TIR-to-LLVM IR Emission, Dynamic Element Strides, SSA Constant Folding & DCE, Bitwise Bootstrap Parity | **Completed** |
 | **v1.6** | **Language Feature Realization** | User-Defined Refinement Syntax, Region Escape Analysis, Parametric Generics with Call-Site Monomorphization, Algebraic Effect Lowering | **Completed** |
 | **v1.7** | **Formal Verification & SMT Bridge** | Z3 Solver Bridge for Non-Linear Arithmetic, Automated Induction Proofs, Affine Handle Invariants | **Completed** |
-| **v1.8** | **Multi-Target Codegen & Cross-Compilation** | Linux ELF Target (`x86_64-unknown-linux-gnu`), System V AMD64 ABI Continuations, Multi-Target Linker Support | **In Progress** |
+| **v1.8** | **Multi-Target Codegen & Cross-Compilation** | Linux ELF Target (`x86_64-unknown-linux-gnu`), Linux AArch64 Target, WebAssembly Target (`wasm32-unknown-unknown`) | **Completed** |
+| **v2.0** | **Production Ecosystem & Self-Hosting Standard Library** | Package Registry & Dependency Solver (`Forge.lock`), SemVer Caret & Diamond DAG Resolution, Extended Stdlib | **In Progress** |
 
 ---
 
@@ -376,10 +377,18 @@
 ### Phase 12: Production Ecosystem & Self-Hosting Standard Library (v2.0)
 *Target: Full package management, dependency resolution, and rich standard library.*
 
-1. **Package Registry, Lockfile & Dependency Solver (Phase 12.1)**:
-   - Expand `compiler/package.tg` with `forge add <package>`, semantic versioning (SemVer), and dependency graph resolution.
-   - Deterministic lockfile generation (`Forge.lock`) pinning exact package versions and integrity hashes.
-   - Multi-package workspace builds and version conflict diagnostics.
+1. **Package Registry, Lockfile & Dependency Solver (Phase 12.1)** ✅:
+   - Implemented SemVer numeric subset (`X.Y.Z`) parser, comparator, and requirement matcher supporting exact (`=1.2.3`), caret compatibility (`^1.2.3` $\implies [1.2.3, 2.0.0)$, `^0.2.3` $\implies [0.2.3, 0.3.0)$, `^0.0.3` $\implies [0.0.3, 0.0.4)$), and wildcards (`*`, `1.*`, `1.2.*`).
+   - Implemented 3-state dependency graph resolution (`0 = UNVISITED`, `1 = RESOLVING`, `2 = RESOLVED`): detects and reports circular dependencies ($A \to B \to A$) while correctly supporting compatible diamond dependency DAGs ($A \to B \to D$, $A \to C \to D$).
+   - Standardized `Forge.lock` deterministic format: packages and dependency edges sorted alphabetically for byte-identical determinism regardless of `Forge.toml` declaration order.
+   - Enforced lockfile graph closure invariant: every dependency edge in a locked package must resolve to a valid top-level `[[package]]` entry with matching version in `Forge.lock`.
+   - Transactional mutation for `forge add [--path <p>] [--version <v>] [--force]`: writes to `.Forge.toml.tmp`, resolves dependency graph, verifies lockfile graph closure, and atomically commits changes or rolls back on conflict.
+   - CLI commands added to `forge.tg`: `forge resolve`, `forge lock`, and `forge add`.
+   - Comprehensive test suites:
+     - `tests/package_tests.tg` (34 positive tests: SemVer parsing, caret boundary enforcement, wildcards, deterministic lockfile formatting, diamond DAG resolution).
+     - `tests/package_negative_test.tg` (12 negative tests: cycle detection, diamond version conflict diagnostics, malformed requirement rejection, lockfile graph closure violation detection).
+   - Gate B 3-stage self-hosting bootstrap fixed-point parity verified: `SHA256(stage2.ll) == SHA256(stage3.ll) == 580CFB295F89E50639D2A952B7DD1565C577F836D9E4894A54FBB8E4B83510E7`.
+   - 100% pass rate across all 14 native test suites (`tgc.exe test`).
 2. **Standard Library Expansion (Phase 12.2)**:
    - Extended standard library modules: `std.io`, `std.crypto`, `std.sql`.
    - Production testing and documentation.

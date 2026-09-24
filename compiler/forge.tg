@@ -25,6 +25,8 @@ extern "C" {
     fn fflush(f: *const u8) -> i32;
     fn CreateDirectoryA(lpPathName: *const u8, lpSecurityAttributes: *const u8) -> i32;
     fn Sleep(dwMilliseconds: i32);
+    fn remove(path: *const u8) -> i32;
+    fn rename(oldpath: *const u8, newpath: *const u8) -> i32;
 }
 
 fn forge_print(msg: String) {
@@ -944,6 +946,8 @@ pub fn forge_usage() {
     forge_print("  fmt [--check] <file.tg>    Format Tungsten source code to canonical style");
     forge_print("  lsp                        Start Tungsten Language Server Protocol stdio daemon");
     forge_print("  new <project_name>         Scaffold a new Tungsten project with Forge.toml");
+    forge_print("  add <name> [--path <p>] [--version <v>] [--force] Add a dependency to Forge.toml and resolve");
+    forge_print("  resolve                    Resolve dependencies in Forge.toml and write Forge.lock");
     forge_print("  clean                      Clean compilation artifacts in target/");
     forge_print("  version                    Print forge and compiler toolchain version");
     forge_print("  help                       Display this help message");
@@ -1040,6 +1044,7 @@ pub fn forge_run_test(arena: *mut u8) -> i64 yields [FS, Process, Diagnostics, I
     vec_push(&mut test_suites, "tests/tir_optimizer.tg");
     vec_push(&mut test_suites, "tests/formatter_tests.tg");
     vec_push(&mut test_suites, "tests/package_tests.tg");
+    vec_push(&mut test_suites, "tests/package_negative_test.tg");
     vec_push(&mut test_suites, "tests/bootstrap_tests.tg");
     vec_push(&mut test_suites, "tests/error_handling_tests.tg");
     vec_push(&mut test_suites, "tests/win32_gdi_callback_test.tg");
@@ -1146,6 +1151,211 @@ pub fn forge_run_new(name: String, arena: *mut u8) -> i64 yields [FS, IO] {
     0
 }
 
+pub fn forge_run_resolve(arena: *mut u8) -> i64 yields [FS, Diagnostics, IO] {
+    if !fs_exists("Forge.toml") {
+        forge_print("forge: no Forge.toml found in current directory");
+        return 1;
+    }
+    forge_print("forge: resolving dependencies...");
+    let mut interner = interner_new_in(arena);
+    let root_manifest = package_load_manifest("Forge.toml", &mut interner, arena);
+    if diag_has_errors() {
+        forge_print("forge: failed to parse Forge.toml");
+        return 1;
+    }
+
+    let graph = alloc_resolved_graph(arena);
+    let ok = package_resolve_manifest("Forge.toml", graph, &mut interner, arena);
+    if !ok || diag_has_errors() {
+        forge_print("forge: dependency resolution failed");
+        return 1;
+    }
+
+    let written = write_lockfile_atomic("Forge.lock", graph, root_manifest, &interner, arena);
+    if !written {
+        forge_print("forge: failed to write Forge.lock: graph closure or constraint verification failed");
+        return 1;
+    }
+
+    forge_print("forge: dependencies successfully resolved and Forge.lock updated");
+    0
+}
+
+pub fn forge_run_add(args: &Vec<String>, arena: *mut u8) -> i64 yields [FS, Diagnostics, IO] {
+    if args.len < 3 {
+        forge_print("Error: 'forge add' requires a package name");
+        forge_print("Usage: forge add <name> [--path <p>] [--version <v>] [--force]");
+        return 1;
+    }
+
+    let pkg_name = vec_get(args, 2);
+    let mut pkg_path = "";
+    let mut pkg_ver = "^1.0.0";
+    let mut force = false;
+
+    let mut i: i64 = 3;
+    while i < args.len {
+        let opt = vec_get(args, i);
+        if unsafe { strcmp(opt as *const u8, "--path" as *const u8) == 0 } {
+            if i + 1 < args.len {
+                i = i + 1;
+                pkg_path = vec_get(args, i);
+            }
+        } else if unsafe { strcmp(opt as *const u8, "--version" as *const u8) == 0 } {
+            if i + 1 < args.len {
+                i = i + 1;
+                pkg_ver = vec_get(args, i);
+            }
+        } else if unsafe { strcmp(opt as *const u8, "--force" as *const u8) == 0 } {
+            force = true;
+        }
+        i = i + 1;
+    }
+
+    if !fs_exists("Forge.toml") {
+        forge_print("forge: no Forge.toml found in current directory");
+        return 1;
+    }
+
+    let orig_toml = fs_read_to_string_in("Forge.toml", arena);
+    let mut interner = interner_new_in(arena);
+    let root_manifest = parse_manifest(orig_toml, &mut interner, arena);
+
+    let mut existing_idx: i64 = -1;
+    let mut m_idx: i64 = 0;
+    while m_idx < root_manifest.args.len {
+        let dep = vec_get(&root_manifest.args, m_idx);
+        let d_name = interner_lookup(&interner, dep.sym);
+        if unsafe { strcmp(d_name as *const u8, pkg_name as *const u8) == 0 } {
+            existing_idx = m_idx;
+            break;
+        }
+        m_idx = m_idx + 1;
+    }
+
+    if existing_idx >= 0 {
+        let dep = vec_get(&root_manifest.args, existing_idx);
+        let d_ver = interner_lookup(&interner, dep.op);
+        let d_path = dep.str_val;
+        let same_ver = unsafe { strcmp(d_ver as *const u8, pkg_ver as *const u8) == 0 };
+        let same_path = unsafe { strcmp(d_path as *const u8, pkg_path as *const u8) == 0 };
+        if same_ver && same_path {
+            forge_print("Package already present with identical specification. No changes made.");
+            return 0;
+        }
+        if !force {
+            forge_print("Error: Package already exists in Forge.toml with a different specification. Use --force to overwrite.");
+            return 1;
+        }
+    }
+
+    let mut dep_line = string_buffer_new_in(arena);
+    fmt_append_str(&mut dep_line, pkg_name);
+    if unsafe { strlen(pkg_path as *const u8) } > 0 {
+        fmt_append_str(&mut dep_line, " = { version = \"");
+        fmt_append_str(&mut dep_line, pkg_ver);
+        fmt_append_str(&mut dep_line, "\", path = \"");
+        fmt_append_str(&mut dep_line, pkg_path);
+        fmt_append_str(&mut dep_line, "\" }\n");
+    } else {
+        fmt_append_str(&mut dep_line, " = \"");
+        fmt_append_str(&mut dep_line, pkg_ver);
+        fmt_append_str(&mut dep_line, "\"\n");
+    }
+    string_buffer_push_byte(&mut dep_line, 0 as u8);
+    let new_dep_line_str = string_as_ptr(&dep_line) as String;
+
+    let mut new_toml_buf = string_buffer_new_in(arena);
+    let content_ptr = orig_toml as *const u8;
+    let total_len = unsafe { strlen(content_ptr) } as i64;
+
+    let mut current_sec: i64 = 0;
+    let mut replaced = false;
+    let mut has_deps_sec = false;
+    let mut line_start: i64 = 0;
+
+    while line_start < total_len {
+        let mut line_end = line_start;
+        while line_end < total_len && unsafe { content_ptr[line_end] } != 10 && unsafe { content_ptr[line_end] } != 13 {
+            line_end = line_end + 1;
+        }
+
+        let mut p = line_start;
+        while p < line_end && (unsafe { content_ptr[p] } == 32 || unsafe { content_ptr[p] } == 9) {
+            p = p + 1;
+        }
+        let line_len = line_end - p;
+        let line = (content_ptr as usize + p as usize) as *const u8;
+
+        if starts_with(line, line_len, "[dependencies]" as *const u8, 14) {
+            current_sec = 2;
+            has_deps_sec = true;
+        } else if starts_with(line, line_len, "[" as *const u8, 1) {
+            current_sec = 1;
+        }
+
+        let mut is_target_dep = false;
+        if current_sec == 2 && starts_with(line, line_len, pkg_name as *const u8, unsafe { strlen(pkg_name as *const u8) } as i64) {
+            let nlen = unsafe { strlen(pkg_name as *const u8) } as i64;
+            if line_len > nlen {
+                let next_c = unsafe { line[nlen] };
+                if next_c == 32 as u8 || next_c == 9 as u8 || next_c == 61 as u8 {
+                    is_target_dep = true;
+                }
+            }
+        }
+
+        if is_target_dep {
+            fmt_append_str(&mut new_toml_buf, new_dep_line_str);
+            replaced = true;
+        } else {
+            let raw_line_len = line_end - line_start;
+            string_buffer_push_str(&mut new_toml_buf, (content_ptr as usize + line_start as usize) as *const u8, raw_line_len);
+            string_buffer_push_byte(&mut new_toml_buf, 10 as u8);
+        }
+
+        while line_end < total_len && (unsafe { content_ptr[line_end] } == 10 || unsafe { content_ptr[line_end] } == 13) {
+            line_end = line_end + 1;
+        }
+        line_start = line_end;
+    }
+
+    if !replaced {
+        if !has_deps_sec {
+            fmt_append_str(&mut new_toml_buf, "\n[dependencies]\n");
+        }
+        fmt_append_str(&mut new_toml_buf, new_dep_line_str);
+    }
+
+    string_buffer_push_byte(&mut new_toml_buf, 0 as u8);
+    let new_toml_content = string_as_ptr(&new_toml_buf) as String;
+
+    fs_write_string(".Forge.toml.tmp", new_toml_content);
+
+    let test_graph = alloc_resolved_graph(arena);
+    let mut test_interner = interner_new_in(arena);
+    let test_manifest = package_load_manifest(".Forge.toml.tmp", &mut test_interner, arena);
+    let ok = package_resolve_manifest(".Forge.toml.tmp", test_graph, &mut test_interner, arena);
+
+    if ok && !diag_has_errors() {
+        let lock_written = write_lockfile_atomic("Forge.lock", test_graph, test_manifest, &test_interner, arena);
+        if lock_written {
+            fs_write_string("Forge.toml", new_toml_content);
+            unsafe { remove(".Forge.toml.tmp" as *const u8); }
+            forge_print("forge: successfully added package and updated Forge.lock");
+            return 0;
+        }
+    }
+
+    unsafe {
+        remove(".Forge.toml.tmp" as *const u8);
+        remove(".Forge.lock.tmp" as *const u8);
+    }
+    diag_reset();
+    forge_print("forge: failed to add package: resolution or validation failed. Forge.toml and Forge.lock preserved.");
+    1
+}
+
 pub fn forge_main(args: Vec<String>, arena: *mut u8) -> i64 yields [FS, Process, Diagnostics, IO] {
     if args.len < 2 {
         forge_usage();
@@ -1154,6 +1364,14 @@ pub fn forge_main(args: Vec<String>, arena: *mut u8) -> i64 yields [FS, Process,
 
     let cmd = vec_get(&args, 1);
     let p_cmd = cmd as *const u8;
+
+    if unsafe { strcmp(p_cmd, "add" as *const u8) == 0 } {
+        return forge_run_add(&args, arena);
+    }
+
+    if unsafe { strcmp(p_cmd, "resolve" as *const u8) == 0 || strcmp(p_cmd, "lock" as *const u8) == 0 } {
+        return forge_run_resolve(arena);
+    }
 
     if unsafe { strcmp(p_cmd, "check" as *const u8) == 0 } {
         if args.len < 3 {

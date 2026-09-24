@@ -276,4 +276,23 @@ Because `target/` is gitignored, a fresh clone on a machine without `clang` or `
   - 3-stage bootstrap fixed-point parity verified: `SHA256(stage2.ll) == SHA256(stage3.ll) == 99CF008ABFD54758FC850864DCACC5A2B912607D7306EED50D55DD758B19B0DC`.
   - 100% pass rate across all 13 native test suites (`tgc.exe test`).
 
+### Phase E: Production Ecosystem & Package Dependency Solver (Milestone v2.0 - Phase 12.1)
+* [x] **SemVer Numeric Subset Engine (`compiler/package.tg`):**
+  - Full parser and comparator for numeric versions `X.Y.Z`.
+  - Constraint satisfaction supporting exact match (`=1.2.3`), wildcards (`*`, `1.*`, `1.2.*`), and caret boundary rules (`^1.2.3` $\implies [1.2.3, 2.0.0)$, `^0.2.3` $\implies [0.2.3, 0.3.0)$, `^0.0.3` $\implies [0.0.3, 0.0.4)$).
+* [x] **Deterministic 3-State Dependency Resolver (`compiler/package.tg`):**
+  - 3-state node traversal (`0 = UNVISITED`, `1 = RESOLVING`, `2 = RESOLVED`) detecting cycle loops ($A \to B \to A$) and correctly validating compatible diamond dependency DAGs ($A \to B \to D$, $A \to C \to D$).
+  - Canonical alphabetical sorting of packages and dependency edges guaranteeing byte-identical lockfile regeneration regardless of input declaration order.
+* [x] **Deterministic Lockfile & Graph Closure Invariant (`Forge.lock`):**
+  - Format tracking both `[[package]]` entries and their outbound `dependencies` edges.
+  - Strict graph closure verification: every dependency edge in a locked package must resolve to a valid top-level package in `Forge.lock` with matching version.
+* [x] **Transactional Package CLI (`compiler/forge.tg`):**
+  - Added `forge resolve`, `forge lock`, and `forge add [--path <p>] [--version <v>] [--force]`.
+  - Transactional staging: writes `.Forge.toml.tmp`, resolves and verifies graph closure before committing, rolling back automatically on failure.
+* [x] **Automated Verification:**
+  - 34 positive tests in `tests/package_tests.tg` and 12 negative tests in `tests/package_negative_test.tg`.
+  - 100% pass rate across all 14 native test suites (`tgc.exe test`).
+  - Gate B 3-stage bootstrap fixed-point parity verified: `SHA256(stage2.ll) == SHA256(stage3.ll) == 580CFB295F89E50639D2A952B7DD1565C577F836D9E4894A54FBB8E4B83510E7`.
+
+
 
