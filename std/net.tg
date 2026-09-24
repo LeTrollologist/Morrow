@@ -7,7 +7,7 @@ effect Net {
     fn connect(host: String, port: Port) -> i64;
     fn read(conn: i64, max_bytes: i64) -> String;
     fn write(conn: i64, data: String) -> i64;
-    fn close(conn: i64) -> ();
+    fn close(conn: i64) -> i64;
 }
 
 struct TcpListener {
@@ -20,7 +20,7 @@ struct TcpStream {
 }
 
 fn tcp_listen(port: Port) -> TcpListener yields [Net] {
-    let fd = Net::listen(port);
+    let fd = perform Net.listen(port);
     TcpListener {
         socket_id: fd,
         port: port,
@@ -28,27 +28,27 @@ fn tcp_listen(port: Port) -> TcpListener yields [Net] {
 }
 
 fn tcp_accept(listener: &TcpListener) -> TcpStream yields [Net] {
-    let conn_fd = Net::accept(listener.socket_id);
+    let conn_fd = perform Net.accept(listener.socket_id);
     TcpStream {
         socket_id: conn_fd,
     }
 }
 
 fn tcp_connect(host: String, port: Port) -> TcpStream yields [Net] {
-    let conn_fd = Net::connect(host, port);
+    let conn_fd = perform Net.connect(host, port);
     TcpStream {
         socket_id: conn_fd,
     }
 }
 
 fn tcp_read(stream: &TcpStream, max_len: i64) -> String yields [Net] {
-    Net::read(stream.socket_id, max_len)
+    perform Net.read(stream.socket_id, max_len)
 }
 
 fn tcp_write(stream: &TcpStream, msg: String) -> i64 yields [Net] {
-    Net::write(stream.socket_id, msg)
+    perform Net.write(stream.socket_id, msg)
 }
 
-fn tcp_close(stream: &TcpStream) -> () yields [Net] {
-    Net::close(stream.socket_id);
+fn tcp_close(stream: &TcpStream) yields [Net] {
+    perform Net.close(stream.socket_id);
 }

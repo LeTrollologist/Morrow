@@ -50,11 +50,11 @@ struct Player {
 
 // 2. Algebraic Effects instead of 'async' or 'Result'
 effect Database {
-    fn query(sql: String): String;
+    fn query(sql: String) -> String;
 }
 
-fn fetch_player(id: i64): Player yields [Database] {
-    var record = Database.query("SELECT name, hp FROM players WHERE id = 1");
+fn fetch_player(id: i64) -> Player yields [Database] {
+    let record = perform Database.query("SELECT name, hp FROM players WHERE id = 1");
     
     Player {
         name: "Arthur",
@@ -65,16 +65,20 @@ fn fetch_player(id: i64): Player yields [Database] {
 // 3. Scoped Regions: O(1) bulk memory cleanup
 fn process_batch() {
     region batch_reg {
-        var buffer = string_buffer_new_in(batch_reg);
+        let mut buffer = string_buffer_new_in(batch_reg);
         string_buffer_push_str(&mut buffer, "Processing region batch...");
-        println(string_as_ptr(&buffer));
     } // Entire arena memory reclaimed instantly here
 }
 
-// 4. Clean Entry Point
-fn main(): i64 {
-    var p = fetch_player(42);
-    println(p.name);
+// 4. Delimited Handlers & Clean Entry Point
+fn main() -> i64 {
+    let p = handle {
+        fetch_player(42)
+    } with Database {
+        fn query(k, sql: String) {
+            resume(k, "Arthur");
+        }
+    };
     0
 }
 ```

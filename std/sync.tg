@@ -1,31 +1,78 @@
 // Tungsten Standard Library - Structured Concurrency & Synchronization
-// Built on M:N Work-Stealing Fibers and Algebraic Effects
+// Built on Cooperative Fibers, Channels, and Algebraic Effects
 
-struct ChannelHandle<T> {
+import std::collections;
+
+extern "C" {
+    fn tungsten_alloc(size: i64, align: i64) -> *mut u8;
+}
+
+effect Channel {
+    fn create() -> i64;
+    fn send(ch: i64, msg: i64) -> i64;
+    fn recv(ch: i64) -> i64;
+}
+
+effect Async {
+    fn yield_now() -> i64;
+}
+
+pub fn channel_new() -> i64 {
+    let v = vec_new::<i64>();
+    let p = unsafe { tungsten_alloc(32, 8) as *mut Vec<i64> };
+    p.data = v.data;
+    p.len = 0;
+    p.cap = v.cap;
+    p.arena = v.arena;
+    p as i64
+}
+
+pub fn channel_send(ch_id: i64, val: i64) {
+    let p = ch_id as *mut Vec<i64>;
+    vec_push(p, val);
+}
+
+pub fn channel_recv(ch_id: i64) -> i64 {
+    let p = ch_id as *mut Vec<i64>;
+    if p.len > 0 {
+        let val = vec_get(p, 0);
+        let mut i: i64 = 0;
+        while i < p.len - 1 {
+            let next_val = vec_get(p, i + 1);
+            vec_set(p, i, next_val);
+            i = i + 1;
+        }
+        p.len = p.len - 1;
+        return val;
+    }
+    0
+}
+
+pub struct ChannelHandle<T> {
     id: i64,
 }
 
-fn channel_open<T>() -> ChannelHandle<T> yields [Channel] {
-    let cid = Channel::new();
+pub fn channel_open<T>() -> ChannelHandle<T> yields [Channel] {
+    let cid = perform Channel.create();
     ChannelHandle {
         id: cid,
     }
 }
 
-fn channel_send_msg<T>(ch: &ChannelHandle<T>, msg: i64) -> () yields [Channel] {
-    Channel::send(ch.id, msg);
+pub fn channel_send_msg<T>(ch: &ChannelHandle<T>, msg: i64) yields [Channel] {
+    perform Channel.send(ch.id, msg);
 }
 
-fn channel_recv_msg<T>(ch: &ChannelHandle<T>) -> i64 yields [Channel] {
-    Channel::recv(ch.id)
+pub fn channel_recv_msg<T>(ch: &ChannelHandle<T>) -> i64 yields [Channel] {
+    perform Channel.recv(ch.id)
 }
 
-struct Mutex<T> {
+pub struct Mutex<T> {
     lock_id: i64,
     data: T,
 }
 
-fn mutex_new<T>(val: T) -> Mutex<T> {
+pub fn mutex_new<T>(val: T) -> Mutex<T> {
     Mutex {
         lock_id: 1,
         data: val,

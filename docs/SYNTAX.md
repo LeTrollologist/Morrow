@@ -184,37 +184,46 @@ Tungsten eliminates the `async`/`await` and `Result`/`Option` function coloring 
 ### Effect Declarations
 ```tungsten
 effect Database {
-    fn query(sql: String): String;
-    fn execute(sql: String): i64;
+    fn query(sql: String) -> String;
+    fn execute(sql: String) -> i64;
 }
 
 effect Logger {
-    fn log(msg: String): void;
+    fn log(msg: String) -> i64;
 }
 ```
 
-### Effect Capability Annotations (`yields [...]`)
-Functions declare which effects they may yield during execution:
+### Effect Capability Annotations (`yields [...]`) & Operations (`perform`)
+Functions declare which effects they may yield during execution, and invoke operations via `perform`:
 ```tungsten
-fn find_user(id: i64): String yields [Database, Logger] {
-    Logger.log("Searching database...");
-    Database.query("SELECT name FROM users WHERE id = " + int_to_string(id))
+fn find_user(id: i64) -> String yields [Database, Logger] {
+    perform Logger.log("Searching database...\0");
+    perform Database.query("SELECT name FROM users WHERE id = 1\0")
 }
 ```
 
 ### Delimited Effect Handlers
-Callers handle effects explicitly, choosing between real production drivers, in-memory mocks, or async runtimes:
+Callers handle effects explicitly using `handle { ... } with Effect { fn op(k, ...) { ... } }`, choosing between real production drivers, in-memory mocks, or async runtimes:
 ```tungsten
-fn main() {
-    handle {
-        var name = find_user(101);
-        println("Found user: {}", name);
+fn main() -> i64 {
+    let name = handle {
+        handle {
+            find_user(101)
+        } with Logger {
+            fn log(k, msg: String) {
+                // Log and resume caller
+                resume(k, 0);
+            }
+        }
     } with Database {
-        query(sql) => "Alice",
-        execute(sql) => 1,
-    } with Logger {
-        log(msg) => println("[LOG] {}", msg),
-    }
+        fn query(k, sql: String) {
+            resume(k, "Alice");
+        }
+        fn execute(k, sql: String) {
+            resume(k, 1);
+        }
+    };
+    0
 }
 ```
 

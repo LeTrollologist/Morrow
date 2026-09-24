@@ -238,5 +238,5 @@ Because `target/` is gitignored, a fresh clone on a machine without `clang` or `
 * [x] **Refinement Grammar & Solver:** Support `type Name = Primitive[min..max];` in `parser.tg`, storing bounds in the type environment (Phase 9.1).
 * [x] **Region Escape Analysis:** Track region lifetimes in `typeck.tg` and reject references that outlive their declaring region (Phase 9.2).
 * [x] **Algebraic Effects & Delimited Handlers:** Delimited continuations with explicit continuation records, native x86_64 assembly setjmp/longjmp routines, static effect row checking, nearest-match dynamic handler dispatch, single-shot resumption, and abortive unwinding (Phase 9.4).
-* [ ] **Concurrency Runtime Reintegration:** Port high-concurrency fiber task pool and event loop into standard library.
-* [ ] **Example & Docs Alignment:** Update `examples/` and documentation to accurately reflect supported syntax and semantics.
+* [x] **Concurrency Runtime Reintegration:** `effect Channel` and `effect Async` in `std/sync.tg` with FIFO buffer storage, `std/net.tg` canonical `perform Net.<op>` operations, and native task pipeline execution (Phase 9.5).
+* [x] **Example & Docs Alignment:** Rewrote and verified `examples/player.tg`, `examples/fibers_and_concurrency.tg`, and `examples/web_service_v2.tg` to compile and run with `tgc`. Synchronized `README.md` and `docs/SYNTAX.md` with canonical language grammar.

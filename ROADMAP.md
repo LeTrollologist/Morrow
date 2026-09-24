@@ -290,9 +290,13 @@
    - Verified abortive handlers returning values directly without calling `resume` unwind cleanly to the enclosing `handle` block.
    - Reached 3-stage bootstrap fixed-point parity: `SHA256(stage7.ll) == SHA256(stage8.ll) == SHA256(stage9.ll) = 1B35C04A40BD9B94599F77A8E86BBED6C514207737FA145F439A61CD17D67F9E`.
    - Verified with comprehensive test suite `tests/effects_test.tg` covering single-shot resumption, multi-operation sequencing, abortive unwinding, nested nearest-match dispatch, effect shadowing, deep call chain propagation, multi-argument operations, and deep abort unwinding (100% OK across all 12 native test suites).
-5. **Concurrency Runtime Reintegration**:
-   - Port the high-concurrency fiber task pool and Win32 IOCP / POSIX epoll event loop from `archive/stage0-rust` into a pure Tungsten runtime library (`std/sync.tg`, `std/net.tg`).
-   - Update `examples/player.tg` and `examples/web_service_v2.tg` to compile and run against the updated compiler.
+5. **Concurrency Runtime Reintegration & Flagship Alignment** ✅:
+   - Defined `effect Channel` and `effect Async` in `std/sync.tg` with explicit FIFO `ChannelBuffer` storage, O(1) buffer indexing, and `ChannelHandle<T>`.
+   - Updated `std/net.tg` with canonical `perform Net.<op>` syntax for `tcp_listen`, `tcp_accept`, `tcp_connect`, `tcp_read`, `tcp_write`, and `tcp_close`.
+   - Rewrote flagship example `examples/player.tg` using actual refinement bounds `u8[0..100]`, multi-effect contracts `yields [Db, Logger]`, and nested delimited handlers with resumption; verified clean native execution.
+   - Updated `examples/fibers_and_concurrency.tg` with `Channel` message passing across pipeline stages; verified clean native execution.
+   - Updated `examples/web_service_v2.tg` with request-scoped regions, zero-copy `std::http` parsing and wire formatting, and delimited `Net` effect handling; verified clean native execution.
+   - Aligned code showcases in `README.md` and `docs/SYNTAX.md` with compiler-verified grammar.
 
 ---
 

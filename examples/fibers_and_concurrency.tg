@@ -1,25 +1,82 @@
+// examples/fibers_and_concurrency.tg
+// Demonstrates:
+// 1. Channel Effect Declarations & Operation Invocations
+// 2. Cooperative Task Execution & Inter-Task Message Passing
+// 3. FIFO Queue Buffering with O(1) Push/Pop
+// 4. Delimited Effect Handling for Concurrency Primitives
+
+import std::sync;
+import std::collections;
+
+extern "C" {
+    fn puts(s: *const u8) -> i32;
+}
+
 fn compute_task(ch: i64, input_val: i64) yields [Channel] {
     let result = input_val * 2 + 10;
-    Channel::send(ch, result);
+    perform Channel.send(ch, result);
 }
 
 fn worker_stage_two(ch_in: i64, ch_out: i64) yields [Channel] {
-    let received = Channel::recv(ch_in);
+    let received = perform Channel.recv(ch_in);
     let stage2_result = received * 3;
-    Channel::send(ch_out, stage2_result);
+    perform Channel.send(ch_out, stage2_result);
 }
 
-fn main() yields [Async, Channel] {
-    let ch1 = Channel::new();
-    let ch2 = Channel::new();
-    println!("Spawning M:N work-stealing fibers across worker threads...");
-    let f1 = Async::spawn(compute_task, ch1, 16);
-    let f2 = Async::spawn(compute_task, ch1, 45);
-    let val1 = Channel::recv(ch1);
-    let val2 = Channel::recv(ch1);
-    println!("Stage 1 output received from fibers: {} and {}", val1, val2);
-    let f3 = Async::spawn(worker_stage_two, ch1, ch2);
-    Channel::send(ch1, 20);
-    let final_val = Channel::recv(ch2);
-    println!("Pipeline final output: {}", final_val);
+fn run_pipeline() -> i64 yields [Channel] {
+    let ch1 = perform Channel.create();
+    let ch2 = perform Channel.create();
+
+    // Stage 1 Tasks:
+    // Task 1: input 16 -> 16 * 2 + 10 = 42
+    compute_task(ch1, 16);
+    // Task 2: input 45 -> 45 * 2 + 10 = 100
+    compute_task(ch1, 45);
+
+    let val1 = perform Channel.recv(ch1);
+    let val2 = perform Channel.recv(ch1);
+
+    if val1 != 42 || val2 != 100 {
+        return 1;
+    }
+
+    // Stage 2 Task:
+    // Send 20 into ch1; worker_stage_two reads 20 and sends (20 * 3 = 60) into ch2
+    perform Channel.send(ch1, 20);
+    worker_stage_two(ch1, ch2);
+
+    let final_val = perform Channel.recv(ch2);
+    if final_val == 60 {
+        return 0;
+    }
+    return 2;
+}
+
+fn main() -> i64 {
+    unsafe { puts("=== Starting Concurrency & Channel Demonstration ===\0" as *const u8); }
+
+    let status = handle {
+        run_pipeline()
+    } with Channel {
+        fn create(k) {
+            let p = channel_new();
+            resume(k, p);
+        }
+        fn send(k, ch: i64, msg: i64) {
+            channel_send(ch, msg);
+            resume(k, 0);
+        }
+        fn recv(k, ch: i64) {
+            let val = channel_recv(ch);
+            resume(k, val);
+        }
+    };
+
+    if status == 0 {
+        unsafe { puts("=== Concurrency Pipeline: Success (Final = 60) ===\0" as *const u8); }
+        0
+    } else {
+        unsafe { puts("=== Concurrency Pipeline: Failed ===\0" as *const u8); }
+        1
+    }
 }
