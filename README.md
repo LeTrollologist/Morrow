@@ -1,16 +1,66 @@
-# Morrow
+<div align="center">
 
-> **Morrow** is a modern systems-level programming language designed to provide fearless concurrency, zero-cost abstractions, and mathematical memory safety without garbage collection, borrow-checker lifetimes, or async function coloring.
+# 🌅 Morrow
 
-[![Release](https://img.shields.io/badge/Release-v2.0.0-blue.svg)](https://github.com/LeTrollologist/Tungsten/releases)
-[![Pure Morrow](https://img.shields.io/badge/Language-Pure%20Morrow-blue.svg)](compiler/)
-[![Self-Hosting](https://img.shields.io/badge/Self--Hosting-100%25%20Genesis-brightgreen.svg)](bin/)
-[![Convergence](https://img.shields.io/badge/Fixed--Point%20Convergence-Bitwise%20Identical-success.svg)](ROADMAP.md)
-[![License](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
+### *Next-Generation Systems Programming Language*
 
-For complete language grammar, types, and standard library reference, see [docs/SYNTAX.md](docs/SYNTAX.md).  
-For development history and upcoming milestones, see [ROADMAP.md](ROADMAP.md).  
-For the architecture audit and remediation matrix, see [AUDIT.md](AUDIT.md).
+**Fearless Concurrency &bull; Region-Based Memory &bull; Algebraic Effects &bull; Refinement Proofs**
+
+<br />
+
+<!-- Tier 1: Project Metadata & Quality Assurance Badges -->
+<p align="center">
+  <a href="https://github.com/LeTrollologist/Morrow/releases">
+    <img src="https://img.shields.io/badge/Release-v2.0.0_Standalone-6366F1?style=for-the-badge&logo=github&logoColor=white&labelColor=0f172a" alt="Release" />
+  </a>
+  <a href="compiler/">
+    <img src="https://img.shields.io/badge/Compiler-Pure_Morrow-8B5CF6?style=for-the-badge&logo=llvm&logoColor=white&labelColor=0f172a" alt="Compiler" />
+  </a>
+  <a href="bin/">
+    <img src="https://img.shields.io/badge/Self--Hosting-100%25_Genesis-10B981?style=for-the-badge&logo=git&logoColor=white&labelColor=0f172a" alt="Self-Hosting" />
+  </a>
+  <a href="ROADMAP.md">
+    <img src="https://img.shields.io/badge/Parity-Bitwise_Identical-06B6D4?style=for-the-badge&logo=target&logoColor=white&labelColor=0f172a" alt="Parity" />
+  </a>
+  <a href="tests/">
+    <img src="https://img.shields.io/badge/Tests-14%2F14_Passing-22C55E?style=for-the-badge&logo=checkmarx&logoColor=white&labelColor=0f172a" alt="Tests" />
+  </a>
+  <a href="LICENSE">
+    <img src="https://img.shields.io/badge/License-MIT_%2F_Apache--2.0-F59E0B?style=for-the-badge&logo=open-source-initiative&logoColor=white&labelColor=0f172a" alt="License" />
+  </a>
+</p>
+
+<!-- Tier 2: Supported Target Architectures -->
+<p align="center">
+  <img src="https://img.shields.io/badge/Target-Windows_x86__64-0078D4?style=flat-square&logo=windows&logoColor=white&labelColor=0f172a" alt="Windows x86_64" />
+  &nbsp;
+  <img src="https://img.shields.io/badge/Target-Linux_ELF_x86__64-FCC624?style=flat-square&logo=linux&logoColor=black&labelColor=0f172a" alt="Linux x86_64" />
+  &nbsp;
+  <img src="https://img.shields.io/badge/Target-Linux_AArch64-E95420?style=flat-square&logo=ubuntu&logoColor=white&labelColor=0f172a" alt="Linux AArch64" />
+  &nbsp;
+  <img src="https://img.shields.io/badge/Target-WebAssembly_wasm32-654FF0?style=flat-square&logo=webassembly&logoColor=white&labelColor=0f172a" alt="WebAssembly" />
+</p>
+
+<!-- Tier 3: Interactive Quick Navigation Buttons -->
+<p align="center">
+  <a href="#quickstart-building-from-source">
+    <img src="https://img.shields.io/badge/⚡_Quickstart-Run_Morrow-38BDF8?style=for-the-badge&logoColor=white&labelColor=0f172a" alt="Quickstart" />
+  </a>
+  &nbsp;
+  <a href="docs/SYNTAX.md">
+    <img src="https://img.shields.io/badge/📖_Language_Tour-Syntax_Guide-818CF8?style=for-the-badge&logoColor=white&labelColor=0f172a" alt="Syntax Guide" />
+  </a>
+  &nbsp;
+  <a href="ROADMAP.md">
+    <img src="https://img.shields.io/badge/🗺️_Roadmap-Milestones_&_Vision-34D399?style=for-the-badge&logoColor=white&labelColor=0f172a" alt="Roadmap" />
+  </a>
+  &nbsp;
+  <a href="AUDIT.md">
+    <img src="https://img.shields.io/badge/🛡️_Security-Audit_Report-F472B6?style=for-the-badge&logo=securityscorecard&logoColor=white&labelColor=0f172a" alt="Audit Report" />
+  </a>
+</p>
+
+</div>
 
 ---
 
