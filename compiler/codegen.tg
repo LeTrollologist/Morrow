@@ -75,6 +75,20 @@ pub fn is_aarch64_target(target: String) -> bool {
     false
 }
 
+pub fn is_wasm_target(target: String) -> bool {
+    let p = target as *const u8;
+    if unsafe { strcmp(p, "wasm32-unknown-unknown" as *const u8) == 0 } {
+        return true;
+    }
+    if unsafe { strcmp(p, "wasm32" as *const u8) == 0 } {
+        return true;
+    }
+    if unsafe { strcmp(p, "wasm" as *const u8) == 0 } {
+        return true;
+    }
+    false
+}
+
 pub fn is_linux_target(target: String) -> bool {
     let p = target as *const u8;
     if unsafe { strcmp(p, "x86_64-unknown-linux-gnu" as *const u8) == 0 } {
@@ -966,10 +980,11 @@ pub fn emit_expr(cg: &mut Codegen, expr_ptr: *mut AstExpr) -> i64 {
 
         if unsafe { strcmp(fn_name as *const u8, "GetCommandLineA" as *const u8) == 0 } {
             let is_linux = is_linux_target(cg.target_triple);
+            let is_wasm = is_wasm_target(cg.target_triple);
             let ptr_res = alloc_reg(cg);
             emit_str(cg, "    %t");
             emit_i64(cg, ptr_res);
-            if is_linux {
+            if is_linux || is_wasm {
                 emit_str(cg, " = call ptr @tungsten_get_cmd_line()\n");
             } else {
                 emit_str(cg, " = call ptr @GetCommandLineA()\n");
@@ -2519,10 +2534,11 @@ fn emit_tir_inst(cg: &mut Codegen, inst: *mut TirInst) {
 
         if unsafe { strcmp(fn_name as *const u8, "GetCommandLineA" as *const u8) == 0 } {
             let is_linux = is_linux_target(cg.target_triple);
+            let is_wasm = is_wasm_target(cg.target_triple);
             let ptr_res = alloc_reg(cg);
             emit_str(cg, "    %t");
             emit_i64(cg, ptr_res);
-            if is_linux {
+            if is_linux || is_wasm {
                 emit_str(cg, " = call ptr @tungsten_get_cmd_line()\n");
             } else {
                 emit_str(cg, " = call ptr @GetCommandLineA()\n");
@@ -3398,26 +3414,33 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
     // Module Header
     let is_linux = is_linux_target(target_triple);
     let is_arm64 = is_aarch64_target(target_triple);
+    let is_wasm = is_wasm_target(target_triple);
     emit_str(&mut cg, "; ModuleID = 'tungsten_bootstrap'\n");
     emit_str(&mut cg, "source_filename = \"tungsten_bootstrap.tg\"\n");
-    if is_arm64 {
+    if is_wasm {
+        emit_str(&mut cg, "target datalayout = \"e-m:e-p:32:32-p10:8:8-p20:8:8-i64:64-i128:128-n32:64-S128-ni:1:10:20\"\n");
+        emit_str(&mut cg, "target triple = \"wasm32-unknown-unknown\"\n\n");
+    } else if is_arm64 {
         emit_str(&mut cg, "target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128-Fn32\"\n");
         emit_str(&mut cg, "target triple = \"aarch64-unknown-linux-gnu\"\n\n");
+    } else if is_linux {
+        emit_str(&mut cg, "target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128\"\n");
+        emit_str(&mut cg, "target triple = \"x86_64-unknown-linux-gnu\"\n\n");
     } else {
-        if is_linux {
-            emit_str(&mut cg, "target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128\"\n");
-            emit_str(&mut cg, "target triple = \"x86_64-unknown-linux-gnu\"\n\n");
-        } else {
-            emit_str(&mut cg, "target datalayout = \"e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128\"\n");
-            emit_str(&mut cg, "target triple = \"x86_64-pc-windows-gnu\"\n\n");
-        }
+        emit_str(&mut cg, "target datalayout = \"e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128\"\n");
+        emit_str(&mut cg, "target triple = \"x86_64-pc-windows-gnu\"\n\n");
     }
 
     emit_str(&mut cg, "%TungstenHandlerFrame = type { ptr, i64, ptr, [64 x i64], i64 }\n");
     emit_str(&mut cg, "%TungstenContinuation = type { ptr, [64 x i64], i64, i64 }\n");
     emit_str(&mut cg, "@tungsten_top_handler_frame = internal global ptr null\n\n");
 
-    if is_arm64 {
+    if is_wasm {
+        emit_str(&mut cg, "define i32 @tungsten_setjmp(ptr %env) {\n");
+        emit_str(&mut cg, "    ret i32 0\n}\n\n");
+        emit_str(&mut cg, "define void @tungsten_longjmp(ptr %env, i32 %val) {\n");
+        emit_str(&mut cg, "    ret void\n}\n\n");
+    } else if is_arm64 {
         emit_str(&mut cg, "module asm \".globl tungsten_setjmp\"\n");
         emit_str(&mut cg, "module asm \"tungsten_setjmp:\"\n");
         emit_str(&mut cg, "module asm \"    mov x2, sp\"\n");
@@ -3559,14 +3582,16 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
     emit_str(&mut cg, "declare i64 @fread(ptr, i64, i64, ptr)\n");
     emit_str(&mut cg, "declare i64 @fwrite(ptr, i64, i64, ptr)\n");
     emit_str(&mut cg, "declare i32 @fseek(ptr, i64, i32)\n");
-    emit_str(&mut cg, "declare i32 @tungsten_setjmp(ptr)\n");
-    emit_str(&mut cg, "declare void @tungsten_longjmp(ptr, i32)\n");
+    if !is_wasm {
+        emit_str(&mut cg, "declare i32 @tungsten_setjmp(ptr)\n");
+        emit_str(&mut cg, "declare void @tungsten_longjmp(ptr, i32)\n");
+    }
     emit_str(&mut cg, "declare i64 @ftell(ptr)\n");
     emit_str(&mut cg, "declare i32 @system(ptr)\n");
     if is_linux {
         emit_str(&mut cg, "declare i32 @mkdir(ptr, i32)\n");
         emit_str(&mut cg, "declare i32 @usleep(i32)\n");
-    } else {
+    } else if !is_wasm {
         emit_str(&mut cg, "declare ptr @GetCommandLineA()\n");
         emit_str(&mut cg, "declare i32 @CreateDirectoryA(ptr, ptr)\n");
         emit_str(&mut cg, "declare void @Sleep(i32)\n");
@@ -3910,7 +3935,9 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
 
     // OS Platform Abstraction Helpers
     emit_str(&mut cg, "define i32 @tungsten_create_dir(ptr %path) {\n");
-    if is_linux {
+    if is_wasm {
+        emit_str(&mut cg, "    ret i32 0\n}\n\n");
+    } else if is_linux {
         emit_str(&mut cg, "    %res = call i32 @mkdir(ptr %path, i32 511)\n");
         emit_str(&mut cg, "    ret i32 %res\n}\n\n");
     } else {
@@ -3919,7 +3946,9 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
     }
 
     emit_str(&mut cg, "define void @tungsten_sleep_ms(i32 %ms) {\n");
-    if is_linux {
+    if is_wasm {
+        emit_str(&mut cg, "    ret void\n}\n\n");
+    } else if is_linux {
         emit_str(&mut cg, "    %usec = mul i32 %ms, 1000\n");
         emit_str(&mut cg, "    call i32 @usleep(i32 %usec)\n");
         emit_str(&mut cg, "    ret void\n}\n\n");
@@ -3929,7 +3958,9 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
     }
 
     emit_str(&mut cg, "define ptr @tungsten_get_cmd_line() {\n");
-    if is_linux {
+    if is_wasm {
+        emit_str(&mut cg, "    ret ptr @str_empty\n}\n\n");
+    } else if is_linux {
         emit_str(&mut cg, "    %fp = call ptr @fopen(ptr @str_proc_cmdline, ptr @str_mode_rb)\n");
         emit_str(&mut cg, "    %is_null = icmp eq ptr %fp, null\n");
         emit_str(&mut cg, "    br i1 %is_null, label %ret_empty, label %read_cmd\n");

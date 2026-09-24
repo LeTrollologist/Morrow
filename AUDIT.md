@@ -268,4 +268,12 @@ Because `target/` is gitignored, a fresh clone on a machine without `clang` or `
   - Removed macOS/Darwin from project scope to eliminate dependencies on proprietary Apple SDKs/headers.
   - 3-stage bootstrap fixed-point parity verified: `SHA256(stage2.ll) == SHA256(stage3.ll) == 7A82AE573BC4AA243AE9B5A13A8EE3BFCBA36AA0C36505A9F5F36D5D5761F1C3`.
   - 100% pass rate across all 13 native test suites (`tgc.exe test`).
+* [x] **WebAssembly Target Support (Phase 11.4):**
+  - Added 32-bit WebAssembly data layout (`e-m:e-p:32:32-p10:8:8-p20:8:8-i64:64-i128:128-n32:64-S128-ni:1:10:20`) and target triple `wasm32-unknown-unknown` in `compiler/codegen.tg`.
+  - Self-contained WebAssembly runtime: defined `@tungsten_setjmp`/`@tungsten_longjmp` and platform shims `@tungsten_create_dir`, `@tungsten_sleep_ms`, `@tungsten_get_cmd_line` without host assembly or uncalled extern declarations.
+  - Integrated Clang pipeline with `--target=wasm32-unknown-unknown -nostdlib -Wl,--no-entry -Wl,--export-all -Wl,--allow-undefined -o <file.wasm> <file.ll>` producing standalone `.wasm` binaries.
+  - Verified direct execution in Node.js V8 WebAssembly engine for `examples/bootstrap_sample.tg` and `examples/wasm_sample.tg` (`add`, `multiply`, `factorial`, `fibonacci`, `main`).
+  - 3-stage bootstrap fixed-point parity verified: `SHA256(stage2.ll) == SHA256(stage3.ll) == 99CF008ABFD54758FC850864DCACC5A2B912607D7306EED50D55DD758B19B0DC`.
+  - 100% pass rate across all 13 native test suites (`tgc.exe test`).
+
 

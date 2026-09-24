@@ -359,6 +359,27 @@
    - (Note: macOS/Darwin scope explicitly removed due to proprietary SDK prerequisites).
    - 3-stage self-hosting bootstrap fixed-point parity verified: `SHA256(stage2.ll) == SHA256(stage3.ll) == 7A82AE573BC4AA243AE9B5A13A8EE3BFCBA36AA0C36505A9F5F36D5D5761F1C3`.
    - 100% pass rate across all 13 native test suites (`tgc.exe test`).
-4. **WebAssembly Target (`wasm32-unknown-unknown`) (Phase 11.4)**:
-   - Direct compilation to Wasm bytecode.
-   - Algebraic effect mapping to JavaScript host promises and browser Web APIs without runtime shims.
+4. **WebAssembly Target (`wasm32-unknown-unknown`) (Phase 11.4)** ✅:
+   - Added 32-bit WebAssembly data layout (`e-m:e-p:32:32-p10:8:8-p20:8:8-i64:64-i128:128-n32:64-S128-ni:1:10:20`) and target triple `wasm32-unknown-unknown` in `compiler/codegen.tg`.
+   - Self-contained WebAssembly runtime in pure LLVM IR:
+     - `@tungsten_setjmp` and `@tungsten_longjmp` defined directly without target machine assembly.
+     - `@tungsten_create_dir`, `@tungsten_sleep_ms`, `@tungsten_get_cmd_line` provide clean zero-cost browser/Node.js host fallbacks without uncalled POSIX/Win32 symbol leaks.
+   - Toolchain pipeline in `compiler/forge.tg`: invokes Clang with `--target=wasm32-unknown-unknown -nostdlib -Wl,--no-entry -Wl,--export-all -Wl,--allow-undefined -o <file.wasm> <file.ll>` producing standalone `.wasm` binaries.
+   - Verified direct WebAssembly execution via Node.js V8 WebAssembly engine:
+     - `examples/bootstrap_sample.tg` (`add`, `factorial(5)`, `factorial(6)`, `main`).
+     - `examples/wasm_sample.tg` (`add`, `multiply`, `factorial`, iterative `fibonacci(10)` and `fibonacci(20)`, and `compute_summary`).
+   - 3-stage self-hosting bootstrap fixed-point parity verified: `SHA256(stage2.ll) == SHA256(stage3.ll) == 99CF008ABFD54758FC850864DCACC5A2B912607D7306EED50D55DD758B19B0DC`.
+   - 100% pass rate across all 13 native test suites (`tgc.exe test`).
+
+---
+
+### Phase 12: Production Ecosystem & Self-Hosting Standard Library (v2.0)
+*Target: Full package management, dependency resolution, and rich standard library.*
+
+1. **Package Registry, Lockfile & Dependency Solver (Phase 12.1)**:
+   - Expand `compiler/package.tg` with `forge add <package>`, semantic versioning (SemVer), and dependency graph resolution.
+   - Deterministic lockfile generation (`Forge.lock`) pinning exact package versions and integrity hashes.
+   - Multi-package workspace builds and version conflict diagnostics.
+2. **Standard Library Expansion (Phase 12.2)**:
+   - Extended standard library modules: `std.io`, `std.crypto`, `std.sql`.
+   - Production testing and documentation.

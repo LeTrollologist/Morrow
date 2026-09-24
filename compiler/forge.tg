@@ -862,8 +862,15 @@ pub fn compile_file_target(src_path: String, out_ll_path: String, out_exe_path: 
                     forge_print("TGC: Invoking clang...");
                     let is_linux = is_linux_target(target_triple);
                     let is_arm64 = is_aarch64_target(target_triple);
+                    let is_wasm = is_wasm_target(target_triple);
                     let mut cmd_args = string_buffer_new_in(comp_reg);
-                    if is_arm64 {
+                    if is_wasm {
+                        let opt_prefix = "--target=wasm32-unknown-unknown -nostdlib -Wl,--no-entry -Wl,--export-all -Wl,--allow-undefined -o ";
+                        string_buffer_push_str(&mut cmd_args, opt_prefix as *const u8, unsafe { strlen(opt_prefix as *const u8) } as i64);
+                        string_buffer_push_str(&mut cmd_args, out_exe_path as *const u8, unsafe { strlen(out_exe_path as *const u8) } as i64);
+                        string_buffer_push_byte(&mut cmd_args, 32 as u8);
+                        string_buffer_push_str(&mut cmd_args, out_ll_path as *const u8, unsafe { strlen(out_ll_path as *const u8) } as i64);
+                    } else if is_arm64 {
                         let opt_prefix = "--target=aarch64-unknown-linux-gnu -o ";
                         let opt_suffix = " -lc -lpthread -lm -ldl";
                         string_buffer_push_str(&mut cmd_args, opt_prefix as *const u8, unsafe { strlen(opt_prefix as *const u8) } as i64);

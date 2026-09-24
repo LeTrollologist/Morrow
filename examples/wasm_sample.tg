@@ -1,0 +1,54 @@
+// Tungsten WebAssembly Showcase (wasm32-unknown-unknown)
+// Demonstrates pure Tungsten compilation to WebAssembly bytecode.
+
+struct CalculationResult {
+    sum: i64,
+    fact: i64,
+    is_valid: bool,
+}
+
+pub fn add(a: i64, b: i64) -> i64 {
+    a + b
+}
+
+pub fn multiply(a: i64, b: i64) -> i64 {
+    a * b
+}
+
+pub fn factorial(n: i64) -> i64 {
+    if n <= 1 {
+        1
+    } else {
+        n * factorial(n - 1)
+    }
+}
+
+pub fn fibonacci(n: i64) -> i64 {
+    if n <= 0 {
+        return 0;
+    }
+    if n == 1 {
+        return 1;
+    }
+    let mut prev: i64 = 0;
+    let mut curr: i64 = 1;
+    let mut i: i64 = 2;
+    while i <= n {
+        let next = prev + curr;
+        prev = curr;
+        curr = next;
+        i = i + 1;
+    }
+    curr
+}
+
+pub fn compute_summary(n: i64) -> i64 {
+    let s = add(n, 100);
+    let f = factorial(5);
+    s + f
+}
+
+pub fn main() -> i64 {
+    let f10 = fibonacci(10);
+    f10
+}
