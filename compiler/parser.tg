@@ -862,6 +862,9 @@ pub fn parse_program(tokens: Vec<*mut Token>, interner: &mut Interner, arena: *m
             if unsafe { strcmp(s as *const u8, "linear" as *const u8) == 0 || strcmp(s as *const u8, "resource" as *const u8) == 0 } {
                 advance(&mut p);
                 is_linear = 1;
+            } else if unsafe { strcmp(s as *const u8, "affine" as *const u8) == 0 } {
+                advance(&mut p);
+                is_linear = 2;
             }
         }
 

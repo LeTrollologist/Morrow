@@ -309,11 +309,15 @@
    - Modulo interval bounds calculation and `%` operator (`tok_percent`) integration across lexer, Pratt parser, TIR, optimizer, and LLVM codegen (`srem i64`).
    - Path-sensitive conditional interval narrowing (`if x >= A && x <= B`), narrowing variable ranges within conditional bodies and restoring outer scopes upon branch exit.
    - SMT-LIB2 bridge (`compiler/smt.tg`) producing standard QF_NIA and QF_LIA assertions, variable declarations, and `check-sat` queries compatible with automated theorem provers (Z3, CVC5).
-2. **Affine & Linear Resource Invariants** ✅:
-   - Static ownership tracking for OS handles and resources declared via `linear struct` or `resource struct`.
-   - Compile-time enforcement of exactly-once consumption: leak detection on return/exit (`Linear Resource Violation: resource dropped without being consumed (potential resource leak)`), transfer of ownership across function calls and returns, and rejection of use-after-consume (`Linear Resource Violation: use-after-consume of resource variable`).
+2. **Affine & Linear Resource Invariants (Phase 10.2)** ✅:
+   - Static ownership tracking for OS handles and resources declared via `linear struct` (mode 1) or `affine struct` (mode 2).
+   - Compile-time enforcement of exactly-once consumption for `linear struct`: leak detection on return/exit (`Linear Resource Violation: resource dropped without being consumed (potential resource leak)`), transfer of ownership across function calls and returns, and rejection of use-after-consume (`Linear Resource Violation: use-after-consume of resource variable`).
+   - At-most-once consumption semantics for `affine struct`: unconsumed affine resources safely auto-drop at scope exit without error, while use-after-consume remains strictly prohibited.
+   - Branch Convergence Analysis: static enforcement that linear resources reach identical consumption states along divergent control-flow paths (`if/else`), rejecting branch divergence (`Linear Resource Violation: branch divergence; resource consumed in 'then' branch but unconsumed in 'else' branch`) and conditional consumption in `if` without `else` (`Linear Resource Violation: resource consumed conditionally in 'if' without an 'else' branch (must be consumed along all execution paths)`).
+   - Loop Invariant Protection: rejection of consuming pre-existing resources within loop bodies (`Linear Resource Violation: resource variable consumed inside loop body (risk of use-after-consume on next iteration)`).
+   - Local Resource Isolation: nested blocks and branches verify local resource lifecycle without leaking across outer scopes.
    - First-class zero-cost runtime intrinsics `consume(x)` and `drop(x)`.
-   - Fixed-point 3-stage bootstrap parity verified across stages (`AABBCCAAF366647AD7879B67E464CD0E7C2ED0F9FC5F70F9FD88CB2C7BCACAF6`).
+   - Fixed-point 3-stage bootstrap parity verified across stages (`7297BED153ACBF31E09F7C0D0B4A2AF30B9405FDAE69B0206C1E2DB2668D71FC`).
    - Verified by comprehensive 13th native test suite `tests/formal_verification_test.tg` (100% OK across all 13 native test suites).
 
 ---

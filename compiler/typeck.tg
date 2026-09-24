@@ -106,6 +106,7 @@ pub struct TypeChecker {
     handled_effects: *mut Vec<i64>, // 6: Stack of active handled effect symbols
     linear_vars: *mut HashMap,      // 7: Map of var name -> i64 status (1=active, 2=consumed, 3=leaked/reported)
     linear_names: *mut Vec<String>, // 8: Vec of active linear resource variable names
+    linear_modes: *mut HashMap,     // 9: Map of var name -> i64 mode (1=linear, 2=affine)
 }
 
 pub fn typechecker_new_in(interner: *mut Interner, arena: *mut u8) -> TypeChecker {
@@ -120,21 +121,27 @@ pub fn typechecker_new_in(interner: *mut Interner, arena: *mut u8) -> TypeChecke
         handled_effects: 0 as *mut Vec<i64>,
         linear_vars: 0 as *mut HashMap,
         linear_names: 0 as *mut Vec<String>,
+        linear_modes: 0 as *mut HashMap,
     }
 }
 
-pub fn tc_is_linear_struct(tc: &TypeChecker, struct_defs: &HashMap, sym: i64) -> bool {
+pub fn tc_struct_linearity(tc: &TypeChecker, struct_defs: &HashMap, sym: i64) -> i64 {
     if sym == 0 {
-        return false;
+        return 0;
     }
     let interner_ref = tc.interner as &Interner;
     let s = interner_lookup(interner_ref, sym);
     let st_val = hashmap_get(struct_defs, s);
     if st_val != 0 - 1 {
         let st = st_val as *mut AstStruct;
-        return st.is_linear == 1;
+        return st.is_linear;
     }
-    false
+    0
+}
+
+pub fn tc_is_linear_struct(tc: &TypeChecker, struct_defs: &HashMap, sym: i64) -> bool {
+    let lin = tc_struct_linearity(tc, struct_defs, sym);
+    lin == 1 || lin == 2
 }
 
 pub fn tc_is_effect_covered(tc: &TypeChecker, eff_sym: i64) -> bool {
@@ -392,7 +399,10 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &HashMap, fn_defs: &HashMap, ext_defs
                     let arg_s = interner_lookup(interner_ref, arg0.sym);
                     if tc.linear_vars != (0 as *mut HashMap) {
                         let st = hashmap_get(tc.linear_vars, arg_s);
-                        if st == 1 {
+                        if st == 2 {
+                            report_err("Linear Resource Violation: use-after-consume of resource variable", 1, 1);
+                            tc.pos = tc.pos + 1;
+                        } else if st == 1 {
                             hashmap_insert(tc.linear_vars, arg_s, 2);
                         }
                     }
@@ -864,8 +874,12 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
             // Track linear struct resources
             if expr_ty.kind == ty_struct() && tc_is_linear_struct(tc, struct_defs, expr_ty.sym) {
                 if tc.linear_vars != (0 as *mut HashMap) {
+                    let mode = tc_struct_linearity(tc, struct_defs, expr_ty.sym);
                     hashmap_insert(tc.linear_vars, s, 1);
                     vec_push(tc.linear_names, s);
+                    if tc.linear_modes != (0 as *mut HashMap) {
+                        hashmap_insert(tc.linear_modes, s, mode);
+                    }
                 }
             }
         }
@@ -971,8 +985,9 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
 
     if kind == stmt_return() {
         let ret_expr = stmt.expr;
+        let mut actual_ty = 0 as *mut TcType;
         if ret_expr != (0 as *mut AstExpr) {
-            let actual_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_expr);
+            actual_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_expr);
 
             // Check if returning a linear resource
             if ret_expr.kind == expr_var() {
@@ -986,22 +1001,33 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
                     }
                 }
             }
+        }
 
-            // Check for linear resource leaks on return
-            if tc.linear_names != (0 as *mut Vec<String>) && tc.linear_vars != (0 as *mut HashMap) {
-                let l_len = tc.linear_names.len;
-                let mut li: i64 = 0;
-                while li < l_len {
-                    let name_str = vec_get(tc.linear_names, li);
-                    let st = hashmap_get(tc.linear_vars, name_str);
-                    if st == 1 {
+        // Check for linear resource leaks on return
+        if tc.linear_names != (0 as *mut Vec<String>) && tc.linear_vars != (0 as *mut HashMap) {
+            let l_len = tc.linear_names.len;
+            let mut li: i64 = 0;
+            while li < l_len {
+                let name_str = vec_get(tc.linear_names, li);
+                let st = hashmap_get(tc.linear_vars, name_str);
+                if st == 1 {
+                    let mut mode: i64 = 1;
+                    if tc.linear_modes != (0 as *mut HashMap) {
+                        mode = hashmap_get(tc.linear_modes, name_str);
+                    }
+                    if mode == 1 {
                         report_err("Linear Resource Violation: resource dropped without being consumed (potential resource leak)", 1, 1);
                         tc.pos = tc.pos + 1;
                         hashmap_insert(tc.linear_vars, name_str, 3);
+                    } else if mode == 2 {
+                        // Affine resource auto-drop at scope exit
+                        hashmap_insert(tc.linear_vars, name_str, 2);
                     }
-                    li = li + 1;
                 }
+                li = li + 1;
             }
+        }
+        if ret_expr != (0 as *mut AstExpr) {
             if ret_ty != (0 as *mut TcType) {
                 if actual_ty != (0 as *mut TcType) {
                     if ret_ty.sym != 0 {
@@ -1045,12 +1071,65 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
         let mut original_types: Vec<*mut TcType> = vec_new_in(tc.arena);
         tc_narrow_condition(tc, vars, stmt.expr, &mut modified_syms, &mut original_types);
 
+        // Snapshot linear resource states before branching
+        let mut pre_l_len: i64 = 0;
+        if tc.linear_names != (0 as *mut Vec<String>) {
+            pre_l_len = tc.linear_names.len;
+        }
+        let mut pre_states: Vec<i64> = vec_new_in(tc.arena);
+        if tc.linear_vars != (0 as *mut HashMap) {
+            let mut pli: i64 = 0;
+            while pli < pre_l_len {
+                let name_str = vec_get(tc.linear_names, pli);
+                let st = hashmap_get(tc.linear_vars, name_str);
+                vec_push(&mut pre_states, st);
+                pli = pli + 1;
+            }
+        }
+
         let then_len = stmt.then_stmts.len;
         let mut i: i64 = 0;
         while i < then_len {
             let s = vec_get(&stmt.then_stmts, i);
             tc_stmt(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, region_depth, cur_region_sym, s);
             i = i + 1;
+        }
+
+        // Record then-branch states and check local linear resources
+        let mut then_states: Vec<i64> = vec_new_in(tc.arena);
+        if tc.linear_vars != (0 as *mut HashMap) {
+            let mut ti: i64 = 0;
+            while ti < pre_l_len {
+                let name_str = vec_get(tc.linear_names, ti);
+                let st = hashmap_get(tc.linear_vars, name_str);
+                vec_push(&mut then_states, st);
+                ti = ti + 1;
+            }
+
+            let mut local_ti = pre_l_len;
+            while local_ti < tc.linear_names.len {
+                let name_str = vec_get(tc.linear_names, local_ti);
+                let st = hashmap_get(tc.linear_vars, name_str);
+                let mut mode: i64 = 1;
+                if tc.linear_modes != (0 as *mut HashMap) {
+                    mode = hashmap_get(tc.linear_modes, name_str);
+                }
+                if st == 1 && mode == 1 {
+                    report_err("Linear Resource Violation: resource dropped without being consumed (potential resource leak)", 1, 1);
+                    tc.pos = tc.pos + 1;
+                }
+                local_ti = local_ti + 1;
+            }
+            tc.linear_names.len = pre_l_len;
+
+            // Reset linear_vars back to pre_states before evaluating else branch
+            let mut rsti: i64 = 0;
+            while rsti < pre_l_len {
+                let name_str = vec_get(tc.linear_names, rsti);
+                let orig_st = vec_get(&pre_states, rsti);
+                hashmap_insert(tc.linear_vars, name_str, orig_st);
+                rsti = rsti + 1;
+            }
         }
 
         // Restore narrowed variables
@@ -1066,17 +1145,109 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
         }
 
         let else_len = stmt.else_stmts.len;
-        let mut j: i64 = 0;
-        while j < else_len {
-            let s = vec_get(&stmt.else_stmts, j);
-            tc_stmt(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, region_depth, cur_region_sym, s);
-            j = j + 1;
+        if else_len > 0 {
+            let mut j: i64 = 0;
+            while j < else_len {
+                let s = vec_get(&stmt.else_stmts, j);
+                tc_stmt(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, region_depth, cur_region_sym, s);
+                j = j + 1;
+            }
+
+            if tc.linear_vars != (0 as *mut HashMap) {
+                let mut else_states: Vec<i64> = vec_new_in(tc.arena);
+                let mut ei: i64 = 0;
+                while ei < pre_l_len {
+                    let name_str = vec_get(tc.linear_names, ei);
+                    let st = hashmap_get(tc.linear_vars, name_str);
+                    vec_push(&mut else_states, st);
+                    ei = ei + 1;
+                }
+
+                let mut local_ei = pre_l_len;
+                while local_ei < tc.linear_names.len {
+                    let name_str = vec_get(tc.linear_names, local_ei);
+                    let st = hashmap_get(tc.linear_vars, name_str);
+                    let mut mode: i64 = 1;
+                    if tc.linear_modes != (0 as *mut HashMap) {
+                        mode = hashmap_get(tc.linear_modes, name_str);
+                    }
+                    if st == 1 && mode == 1 {
+                        report_err("Linear Resource Violation: resource dropped without being consumed (potential resource leak)", 1, 1);
+                        tc.pos = tc.pos + 1;
+                    }
+                    local_ei = local_ei + 1;
+                }
+                tc.linear_names.len = pre_l_len;
+
+                // Converge and merge states for each pre-existing variable
+                let mut mi: i64 = 0;
+                while mi < pre_l_len {
+                    let name_str = vec_get(tc.linear_names, mi);
+                    let pre_st = vec_get(&pre_states, mi);
+                    let then_st = vec_get(&then_states, mi);
+                    let else_st = vec_get(&else_states, mi);
+
+                    if pre_st == 1 {
+                        if then_st == 2 && else_st == 1 {
+                            report_err("Linear Resource Violation: branch divergence; resource consumed in 'then' branch but unconsumed in 'else' branch", 1, 1);
+                            tc.pos = tc.pos + 1;
+                            hashmap_insert(tc.linear_vars, name_str, 2);
+                        } else if then_st == 1 && else_st == 2 {
+                            report_err("Linear Resource Violation: branch divergence; resource consumed in 'else' branch but unconsumed in 'then' branch", 1, 1);
+                            tc.pos = tc.pos + 1;
+                            hashmap_insert(tc.linear_vars, name_str, 2);
+                        } else if then_st == 2 && else_st == 2 {
+                            hashmap_insert(tc.linear_vars, name_str, 2);
+                        } else {
+                            hashmap_insert(tc.linear_vars, name_str, 1);
+                        }
+                    } else {
+                        hashmap_insert(tc.linear_vars, name_str, pre_st);
+                    }
+                    mi = mi + 1;
+                }
+            }
+        } else {
+            // No else branch: check for conditional consumption in 'if' without 'else'
+            if tc.linear_vars != (0 as *mut HashMap) {
+                let mut mi: i64 = 0;
+                while mi < pre_l_len {
+                    let name_str = vec_get(tc.linear_names, mi);
+                    let pre_st = vec_get(&pre_states, mi);
+                    let then_st = vec_get(&then_states, mi);
+
+                    if pre_st == 1 && then_st == 2 {
+                        report_err("Linear Resource Violation: resource consumed conditionally in 'if' without an 'else' branch (must be consumed along all execution paths)", 1, 1);
+                        tc.pos = tc.pos + 1;
+                        hashmap_insert(tc.linear_vars, name_str, 2);
+                    } else {
+                        hashmap_insert(tc.linear_vars, name_str, pre_st);
+                    }
+                    mi = mi + 1;
+                }
+            }
         }
         return true;
     }
 
     if kind == stmt_while() {
         tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, stmt.expr);
+
+        let mut pre_l_len: i64 = 0;
+        if tc.linear_names != (0 as *mut Vec<String>) {
+            pre_l_len = tc.linear_names.len;
+        }
+        let mut pre_states: Vec<i64> = vec_new_in(tc.arena);
+        if tc.linear_vars != (0 as *mut HashMap) {
+            let mut pli: i64 = 0;
+            while pli < pre_l_len {
+                let name_str = vec_get(tc.linear_names, pli);
+                let st = hashmap_get(tc.linear_vars, name_str);
+                vec_push(&mut pre_states, st);
+                pli = pli + 1;
+            }
+        }
+
         let body_len = stmt.then_stmts.len;
         let mut i: i64 = 0;
         while i < body_len {
@@ -1084,10 +1255,47 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
             tc_stmt(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, region_depth, cur_region_sym, s);
             i = i + 1;
         }
+
+        if tc.linear_vars != (0 as *mut HashMap) {
+            // Check local linear resources inside while body
+            let mut local_wi = pre_l_len;
+            while local_wi < tc.linear_names.len {
+                let name_str = vec_get(tc.linear_names, local_wi);
+                let st = hashmap_get(tc.linear_vars, name_str);
+                let mut mode: i64 = 1;
+                if tc.linear_modes != (0 as *mut HashMap) {
+                    mode = hashmap_get(tc.linear_modes, name_str);
+                }
+                if st == 1 && mode == 1 {
+                    report_err("Linear Resource Violation: resource dropped without being consumed (potential resource leak)", 1, 1);
+                    tc.pos = tc.pos + 1;
+                }
+                local_wi = local_wi + 1;
+            }
+            tc.linear_names.len = pre_l_len;
+
+            // Invariant: Pre-existing resource cannot be consumed inside a loop body
+            let mut wi: i64 = 0;
+            while wi < pre_l_len {
+                let name_str = vec_get(tc.linear_names, wi);
+                let pre_st = vec_get(&pre_states, wi);
+                let cur_st = hashmap_get(tc.linear_vars, name_str);
+                if pre_st == 1 && cur_st == 2 {
+                    report_err("Linear Resource Violation: resource variable consumed inside loop body (risk of use-after-consume on next iteration)", 1, 1);
+                    tc.pos = tc.pos + 1;
+                }
+                hashmap_insert(tc.linear_vars, name_str, pre_st);
+                wi = wi + 1;
+            }
+        }
         return true;
     }
 
     if kind == stmt_block() {
+        let mut pre_l_len: i64 = 0;
+        if tc.linear_names != (0 as *mut Vec<String>) {
+            pre_l_len = tc.linear_names.len;
+        }
         // Determine the region depth and sym for this block.
         // stmt.sym != 0 means it is a named region block: enter a new region scope.
         let mut blk_depth = region_depth;
@@ -1107,6 +1315,25 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
             let s = vec_get(&stmt.then_stmts, i);
             tc_stmt(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, blk_depth, blk_region_sym, s);
             i = i + 1;
+        }
+
+        // Check local linear resources inside block
+        if tc.linear_names != (0 as *mut Vec<String>) && tc.linear_vars != (0 as *mut HashMap) {
+            let mut bi = pre_l_len;
+            while bi < tc.linear_names.len {
+                let name_str = vec_get(tc.linear_names, bi);
+                let st = hashmap_get(tc.linear_vars, name_str);
+                let mut mode: i64 = 1;
+                if tc.linear_modes != (0 as *mut HashMap) {
+                    mode = hashmap_get(tc.linear_modes, name_str);
+                }
+                if st == 1 && mode == 1 {
+                    report_err("Linear Resource Violation: resource dropped without being consumed (potential resource leak)", 1, 1);
+                    tc.pos = tc.pos + 1;
+                }
+                bi = bi + 1;
+            }
+            tc.linear_names.len = pre_l_len;
         }
         return true;
     }
@@ -1136,8 +1363,10 @@ pub fn tc_function(tc: &mut TypeChecker, fn_defs: &HashMap, ext_defs: &HashMap, 
     let mut vars = hashmap_new_in(tc.arena, 64);
     let mut linear_vars = hashmap_new_in(tc.arena, 32);
     let mut linear_names: Vec<String> = vec_new_in(tc.arena);
+    let mut linear_modes = hashmap_new_in(tc.arena, 32);
     tc.linear_vars = &mut linear_vars as *mut HashMap;
     tc.linear_names = &mut linear_names as *mut Vec<String>;
+    tc.linear_modes = &mut linear_modes as *mut HashMap;
 
     let params_len = f.params.len;
     let mut i: i64 = 0;
@@ -1150,8 +1379,10 @@ pub fn tc_function(tc: &mut TypeChecker, fn_defs: &HashMap, ext_defs: &HashMap, 
         let p_ty = tc_resolve_type(tc, types, struct_defs, ty_sym);
         hashmap_insert(&mut vars, s, p_ty as i64);
         if p_ty != (0 as *mut TcType) && p_ty.kind == ty_struct() && tc_is_linear_struct(tc, struct_defs, p_ty.sym) {
+            let mode = tc_struct_linearity(tc, struct_defs, p_ty.sym);
             hashmap_insert(&mut linear_vars, s, 1);
             vec_push(&mut linear_names, s);
+            hashmap_insert(&mut linear_modes, s, mode);
         }
         i = i + 1;
     }
@@ -1172,12 +1403,22 @@ pub fn tc_function(tc: &mut TypeChecker, fn_defs: &HashMap, ext_defs: &HashMap, 
         let name_str = vec_get(&linear_names, li);
         let st = hashmap_get(&linear_vars, name_str);
         if st == 1 {
-            report_err("Linear Resource Violation: resource dropped without being consumed (potential resource leak)", 1, 1);
-            tc.pos = tc.pos + 1;
-            hashmap_insert(&mut linear_vars, name_str, 3);
+            let mode = hashmap_get(&linear_modes, name_str);
+            if mode == 1 {
+                report_err("Linear Resource Violation: resource dropped without being consumed (potential resource leak)", 1, 1);
+                tc.pos = tc.pos + 1;
+                hashmap_insert(&mut linear_vars, name_str, 3);
+            } else if mode == 2 {
+                // Affine resource auto-drop at scope exit
+                hashmap_insert(&mut linear_vars, name_str, 2);
+            }
         }
         li = li + 1;
     }
+
+    tc.linear_vars = 0 as *mut HashMap;
+    tc.linear_names = 0 as *mut Vec<String>;
+    tc.linear_modes = 0 as *mut HashMap;
 
     true
 }

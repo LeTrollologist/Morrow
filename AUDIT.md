@@ -245,5 +245,5 @@ Because `target/` is gitignored, a fresh clone on a machine without `clang` or `
 * [x] **Non-Linear Arithmetic Interval Solver:** 4-point mixed-sign extremal interval multiplication, quotient interval arithmetic with zero-divisor check, and modulo intervals with `%` operator.
 * [x] **Path-Sensitive Interval Narrowing:** Conditional narrowing on comparison expressions within then-branches, restoring original bounds on branch exit.
 * [x] **SMT-LIB2 Solver Bridge (`compiler/smt.tg`):** Emits standard QF_NIA/QF_LIA queries with bound constraints and zero-divisor assertions for automated theorem provers.
-* [x] **Affine & Linear Resource Invariants:** `linear struct` compile-time exactly-once consumption tracking, leak detection on return/exit, transfer of ownership across calls, rejection of use-after-consume, and zero-cost runtime intrinsics `consume` / `drop`.
-* [x] **Automated Verification:** 13 native test suites passing 100% with exact bitwise fixed-point 3-stage bootstrap parity.
+* [x] **Affine & Linear Resource Invariants (Phase 10.2):** `linear struct` (exactly-once consumption), `affine struct` (at-most-once consumption with auto-drop at scope exit), branch convergence analysis (`if/else`), loop invariant protection, local resource scope isolation, rejection of use-after-consume, and zero-cost runtime intrinsics `consume` / `drop`.
+* [x] **Automated Verification:** 13 native test suites passing 100% with exact bitwise fixed-point 3-stage bootstrap parity (`7297BED153ACBF31E09F7C0D0B4A2AF30B9405FDAE69B0206C1E2DB2668D71FC`).

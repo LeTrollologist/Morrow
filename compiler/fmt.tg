@@ -332,6 +332,8 @@ pub fn fmt_fn(buf: &mut StringBuffer, f: *mut AstFn, interner: &Interner, arena:
 pub fn fmt_struct(buf: &mut StringBuffer, s: *mut AstStruct, interner: &Interner) {
     if s.is_linear == 1 {
         fmt_append_str(buf, "linear ");
+    } else if s.is_linear == 2 {
+        fmt_append_str(buf, "affine ");
     }
     fmt_append_str(buf, "struct ");
     let sname = interner_lookup(interner, s.name_sym);

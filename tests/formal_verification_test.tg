@@ -145,6 +145,61 @@ fn test_linear_resource_lifecycle() -> i64 {
     0
 }
 
+fn test_linear_branch_convergence(cond: bool) -> i64 {
+    let s = open_socket(200);
+    if cond {
+        close_socket(s);
+    } else {
+        close_socket(s);
+    }
+    0
+}
+
+fn test_linear_local_in_branch(cond: bool) -> i64 {
+    if cond {
+        let s = open_socket(301);
+        close_socket(s);
+    } else {
+        let s2 = open_socket(302);
+        close_socket(s2);
+    }
+    0
+}
+
+fn test_loop_resource_invariant() -> i64 {
+    let s = open_socket(505);
+    let mut i: i64 = 0;
+    while i < 5 {
+        i = i + 1;
+    }
+    close_socket(s);
+    0
+}
+
+affine struct FileHandle {
+    fd: i64,
+    path_id: i64,
+}
+
+fn close_file(f: FileHandle) -> i64 {
+    let fd = f.fd;
+    consume(f);
+    return fd;
+}
+
+fn test_affine_auto_drop() -> i64 {
+    let f = FileHandle { fd: 42, path_id: 1 };
+    // f is not explicitly consumed; affine semantics auto-drops safely at function exit
+    0
+}
+
+fn test_affine_explicit_consume() -> i64 {
+    let f = FileHandle { fd: 99, path_id: 2 };
+    let fd = close_file(f);
+    assert_true(fd == 99, "Affine explicit consume fd mismatch");
+    0
+}
+
 // -----------------------------------------------------------------------------
 // Test 6: SMT-LIB2 Query Generator Bridge
 // -----------------------------------------------------------------------------
@@ -192,6 +247,23 @@ fn main() -> i64 {
 
         let r6 = test_linear_resource_lifecycle();
         unsafe { puts("  test linear resource lifecycle ... ok" as *const u8); }
+
+        let r6b = test_linear_branch_convergence(true);
+        let r6c = test_linear_branch_convergence(false);
+        unsafe { puts("  test linear branch convergence ... ok" as *const u8); }
+
+        let r6d = test_linear_local_in_branch(true);
+        let r6e = test_linear_local_in_branch(false);
+        unsafe { puts("  test linear local branch isolation ... ok" as *const u8); }
+
+        let r6f = test_loop_resource_invariant();
+        unsafe { puts("  test loop linear invariant protection ... ok" as *const u8); }
+
+        let r6g = test_affine_auto_drop();
+        unsafe { puts("  test affine resource auto-drop ... ok" as *const u8); }
+
+        let r6h = test_affine_explicit_consume();
+        unsafe { puts("  test affine resource explicit consume ... ok" as *const u8); }
 
         let r7 = test_smt_query_generator(r);
         unsafe { puts("  test SMT-LIB2 query generator bridge ... ok" as *const u8); }
