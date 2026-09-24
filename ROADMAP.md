@@ -349,9 +349,16 @@
    - Replaced legacy Rust 1.80 `Dockerfile` with modern multi-stage pure Tungsten containerization using `debian:bookworm-slim` and `bin/tgc_linux`.
    - 3-stage self-hosting bootstrap fixed-point parity verified: `SHA256(stage2.ll) == SHA256(stage3.ll) == 5E4A5D7B0092E5C79D4C6CAC14FCFF090DC5B00C751F29A5DC2680D143102DDC`.
    - 100% pass rate across all 13 native test suites (`tgc.exe test`).
-3. **AArch64 & macOS Targets (Phase 11.3)**:
-   - ARM64 ELF and Mach-O binary emission via LLVM backend and LLD linker.
-   - Apple Silicon / ARM64 POSIX socket and syscall shims in `std/fs` and `std/net`.
+3. **Linux AArch64 Target (`aarch64-unknown-linux-gnu`) (Phase 11.3)** ✅:
+   - Added AArch64 Linux ELF data layout (`e-m:e-p270:32:32-p271:32:32-p272:64:64-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128-Fn32`) and target triple recognition in `compiler/codegen.tg`.
+   - Implemented AAPCS64-compliant inline assembly for delimited continuations:
+     - `tungsten_setjmp`: preserves callee-saved registers (`x19–x28`, `x29` fp, `x30` lr, `sp`, and FP registers `d8–d15`) in `[64 x i64]` continuation frame.
+     - `tungsten_longjmp`: restores registers, stack pointer, and link register, ensuring non-zero return value and branching directly to `x30`.
+   - Toolchain pipeline in `compiler/forge.tg`: invokes Clang with `--target=aarch64-unknown-linux-gnu -o <exe> <ll> -lc -lpthread -lm -ldl`, automatically falling back to relocatable ELF64 AArch64 object generation (`-c`) when host sysroot linking is unavailable.
+   - Verified cross-compilation of general programs and algebraic effect test suites to `file format elf64-littleaarch64` / `architecture: aarch64`.
+   - (Note: macOS/Darwin scope explicitly removed due to proprietary SDK prerequisites).
+   - 3-stage self-hosting bootstrap fixed-point parity verified: `SHA256(stage2.ll) == SHA256(stage3.ll) == 7A82AE573BC4AA243AE9B5A13A8EE3BFCBA36AA0C36505A9F5F36D5D5761F1C3`.
+   - 100% pass rate across all 13 native test suites (`tgc.exe test`).
 4. **WebAssembly Target (`wasm32-unknown-unknown`) (Phase 11.4)**:
    - Direct compilation to Wasm bytecode.
    - Algebraic effect mapping to JavaScript host promises and browser Web APIs without runtime shims.

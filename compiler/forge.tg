@@ -861,8 +861,17 @@ pub fn compile_file_target(src_path: String, out_ll_path: String, out_exe_path: 
                 } else {
                     forge_print("TGC: Invoking clang...");
                     let is_linux = is_linux_target(target_triple);
+                    let is_arm64 = is_aarch64_target(target_triple);
                     let mut cmd_args = string_buffer_new_in(comp_reg);
-                    if is_linux {
+                    if is_arm64 {
+                        let opt_prefix = "--target=aarch64-unknown-linux-gnu -o ";
+                        let opt_suffix = " -lc -lpthread -lm -ldl";
+                        string_buffer_push_str(&mut cmd_args, opt_prefix as *const u8, unsafe { strlen(opt_prefix as *const u8) } as i64);
+                        string_buffer_push_str(&mut cmd_args, out_exe_path as *const u8, unsafe { strlen(out_exe_path as *const u8) } as i64);
+                        string_buffer_push_byte(&mut cmd_args, 32 as u8);
+                        string_buffer_push_str(&mut cmd_args, out_ll_path as *const u8, unsafe { strlen(out_ll_path as *const u8) } as i64);
+                        string_buffer_push_str(&mut cmd_args, opt_suffix as *const u8, unsafe { strlen(opt_suffix as *const u8) } as i64);
+                    } else if is_linux {
                         let opt_prefix = "--target=x86_64-unknown-linux-gnu -o ";
                         let opt_suffix = " -lc -lpthread -lm -ldl";
                         string_buffer_push_str(&mut cmd_args, opt_prefix as *const u8, unsafe { strlen(opt_prefix as *const u8) } as i64);
@@ -887,8 +896,13 @@ pub fn compile_file_target(src_path: String, out_ll_path: String, out_exe_path: 
                         // If cross-compilation linking fails on host due to absent Linux sysroot,
                         // compile to relocatable ELF object file (-c)
                         let mut c_args = string_buffer_new_in(comp_reg);
-                        let c_prefix = "--target=x86_64-unknown-linux-gnu -c -o ";
-                        string_buffer_push_str(&mut c_args, c_prefix as *const u8, unsafe { strlen(c_prefix as *const u8) } as i64);
+                        if is_arm64 {
+                            let c_prefix = "--target=aarch64-unknown-linux-gnu -c -o ";
+                            string_buffer_push_str(&mut c_args, c_prefix as *const u8, unsafe { strlen(c_prefix as *const u8) } as i64);
+                        } else {
+                            let c_prefix = "--target=x86_64-unknown-linux-gnu -c -o ";
+                            string_buffer_push_str(&mut c_args, c_prefix as *const u8, unsafe { strlen(c_prefix as *const u8) } as i64);
+                        }
                         string_buffer_push_str(&mut c_args, out_exe_path as *const u8, unsafe { strlen(out_exe_path as *const u8) } as i64);
                         string_buffer_push_byte(&mut c_args, 32 as u8);
                         string_buffer_push_str(&mut c_args, out_ll_path as *const u8, unsafe { strlen(out_ll_path as *const u8) } as i64);

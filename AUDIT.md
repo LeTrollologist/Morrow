@@ -260,4 +260,12 @@ Because `target/` is gitignored, a fresh clone on a machine without `clang` or `
   - Modernized `Dockerfile` to multi-stage pure self-hosted Tungsten build on `debian:bookworm-slim` with zero legacy Rust/Cargo dependencies.
   - 3-stage bootstrap fixed-point parity verified: `SHA256(stage2.ll) == SHA256(stage3.ll) == 5E4A5D7B0092E5C79D4C6CAC14FCFF090DC5B00C751F29A5DC2680D143102DDC`.
   - 100% pass rate across all 13 native test suites (`tgc.exe test`).
+* [x] **Linux AArch64 Target Support (Phase 11.3):**
+  - Added AArch64 Linux ELF data layout (`e-m:e-p270:32:32-p271:32:32-p272:64:64-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128-Fn32`) and target triple `aarch64-unknown-linux-gnu` in `compiler/codegen.tg`.
+  - Implemented AAPCS64 inline assembly for delimited continuations: `tungsten_setjmp` and `tungsten_longjmp` saving/restoring callee-saved registers (`x19–x28`, `x29`, `x30`, `sp`, `d8–d15`) with non-zero return value semantics and direct branch to `x30`.
+  - Configured Clang invocation with `--target=aarch64-unknown-linux-gnu` and automatic fallback to relocatable ELF64 AArch64 object generation (`-c`) in `compiler/forge.tg`.
+  - Verified cross-compilation of general programs and algebraic effect handlers to native 64-bit ARM ELF objects (`architecture: aarch64`, `file format elf64-littleaarch64`).
+  - Removed macOS/Darwin from project scope to eliminate dependencies on proprietary Apple SDKs/headers.
+  - 3-stage bootstrap fixed-point parity verified: `SHA256(stage2.ll) == SHA256(stage3.ll) == 7A82AE573BC4AA243AE9B5A13A8EE3BFCBA36AA0C36505A9F5F36D5D5761F1C3`.
+  - 100% pass rate across all 13 native test suites (`tgc.exe test`).
 
