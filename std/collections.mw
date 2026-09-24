@@ -2,9 +2,9 @@
 // Generic data structures for region and heap memory
 
 extern "C" {
-    fn tungsten_alloc(size: usize, align: usize) -> *mut u8;
-    fn tungsten_region_alloc(arena: *mut u8, size: usize, align: usize) -> *mut u8;
-    fn tungsten_region_grow(arena: *mut u8, ptr: *mut u8, old_sz: usize, new_sz: usize, align: usize) -> *mut u8;
+    fn morrow_alloc(size: usize, align: usize) -> *mut u8;
+    fn morrow_region_alloc(arena: *mut u8, size: usize, align: usize) -> *mut u8;
+    fn morrow_region_grow(arena: *mut u8, ptr: *mut u8, old_sz: usize, new_sz: usize, align: usize) -> *mut u8;
     fn free(ptr: *mut u8);
     fn strcmp(s1: *const u8, s2: *const u8) -> i32;
     fn strlen(s: *const u8) -> usize;
@@ -28,7 +28,7 @@ fn vec_new<T>() -> Vec<T> {
     let initial_cap: i64 = 8;
     let null_arena: *mut u8 = 0 as *mut u8;
     let raw_buf = unsafe {
-        tungsten_alloc(initial_cap * 8, 8)
+        morrow_alloc(initial_cap * 8, 8)
     };
     Vec {
         data: raw_buf as *mut T,
@@ -45,7 +45,7 @@ fn vec_with_capacity<T>(initial_cap: i64) -> Vec<T> {
     }
     let null_arena: *mut u8 = 0 as *mut u8;
     let raw_buf = unsafe {
-        tungsten_alloc(cap * 8, 8)
+        morrow_alloc(cap * 8, 8)
     };
     Vec {
         data: raw_buf as *mut T,
@@ -58,7 +58,7 @@ fn vec_with_capacity<T>(initial_cap: i64) -> Vec<T> {
 fn vec_new_in<T>(arena: *mut u8) -> Vec<T> {
     let initial_cap: i64 = 8;
     let raw_buf = unsafe {
-        tungsten_region_alloc(arena, initial_cap * 8, 8)
+        morrow_region_alloc(arena, initial_cap * 8, 8)
     };
     Vec {
         data: raw_buf as *mut T,
@@ -74,7 +74,7 @@ fn vec_with_capacity_in<T>(arena: *mut u8, initial_cap: i64) -> Vec<T> {
         cap = 4;
     }
     let raw_buf = unsafe {
-        tungsten_region_alloc(arena, cap * 8, 8)
+        morrow_region_alloc(arena, cap * 8, 8)
     };
     Vec {
         data: raw_buf as *mut T,
@@ -103,7 +103,7 @@ fn vec_push<T>(v: &mut Vec<T>, item: T) {
         let new_sz = new_cap * 8;
         let old_buf = v.data as *mut u8;
         let new_buf = unsafe {
-            tungsten_region_grow(v.arena, old_buf, old_sz, new_sz, 8)
+            morrow_region_grow(v.arena, old_buf, old_sz, new_sz, 8)
         };
         v.data = new_buf as *mut T;
         v.cap = new_cap;
@@ -160,7 +160,7 @@ fn string_buffer_new() -> StringBuffer {
     let initial_cap: i64 = 16;
     let null_arena: *mut u8 = 0 as *mut u8;
     let raw_buf = unsafe {
-        tungsten_alloc(initial_cap, 8)
+        morrow_alloc(initial_cap, 8)
     };
     StringBuffer {
         buf: raw_buf,
@@ -173,7 +173,7 @@ fn string_buffer_new() -> StringBuffer {
 fn string_buffer_new_in(arena: *mut u8) -> StringBuffer {
     let initial_cap: i64 = 16;
     let raw_buf = unsafe {
-        tungsten_region_alloc(arena, initial_cap, 8)
+        morrow_region_alloc(arena, initial_cap, 8)
     };
     StringBuffer {
         buf: raw_buf,
@@ -205,7 +205,7 @@ fn string_buffer_push_byte(s: &mut StringBuffer, byte: u8) {
         let new_cap = s.cap * 2;
         let new_sz = new_cap;
         let new_buf = unsafe {
-            tungsten_region_grow(s.arena, s.buf, old_sz, new_sz, 8)
+            morrow_region_grow(s.arena, s.buf, old_sz, new_sz, 8)
         };
         s.buf = new_buf;
         s.cap = new_cap;
@@ -348,14 +348,14 @@ pub fn hash_str(s: String) -> i64 {
 pub fn hashmap_new() -> HashMap {
     let initial_cap: i64 = 16;
     let bytes = (initial_cap * 8) as usize;
-    let keys_ptr = unsafe { tungsten_alloc(bytes, 8) as *mut String };
-    let vals_ptr = unsafe { tungsten_alloc(bytes, 8) as *mut i64 };
-    let hashes_ptr = unsafe { tungsten_alloc(bytes, 8) as *mut i64 };
-    let psls_raw = unsafe { tungsten_alloc(bytes, 8) };
+    let keys_ptr = unsafe { morrow_alloc(bytes, 8) as *mut String };
+    let vals_ptr = unsafe { morrow_alloc(bytes, 8) as *mut i64 };
+    let hashes_ptr = unsafe { morrow_alloc(bytes, 8) as *mut i64 };
+    let psls_raw = unsafe { morrow_alloc(bytes, 8) };
     unsafe { memset(psls_raw, 0, bytes); }
     let psls_ptr = psls_raw as *mut i64;
 
-    let occ_raw = unsafe { tungsten_alloc(bytes, 8) };
+    let occ_raw = unsafe { morrow_alloc(bytes, 8) };
     unsafe { memset(occ_raw, 0, bytes); }
     let occ_ptr = occ_raw as *mut i64;
 
@@ -375,15 +375,15 @@ pub fn hashmap_new() -> HashMap {
 pub fn hashmap_new_in(arena: *mut u8) -> HashMap {
     let initial_cap: i64 = 256;
     let bytes = (initial_cap * 8) as usize;
-    let keys_ptr = unsafe { tungsten_region_alloc(arena, bytes, 8) as *mut String };
-    let vals_ptr = unsafe { tungsten_region_alloc(arena, bytes, 8) as *mut i64 };
-    let hashes_ptr = unsafe { tungsten_region_alloc(arena, bytes, 8) as *mut i64 };
+    let keys_ptr = unsafe { morrow_region_alloc(arena, bytes, 8) as *mut String };
+    let vals_ptr = unsafe { morrow_region_alloc(arena, bytes, 8) as *mut i64 };
+    let hashes_ptr = unsafe { morrow_region_alloc(arena, bytes, 8) as *mut i64 };
 
-    let psls_raw = unsafe { tungsten_region_alloc(arena, bytes, 8) };
+    let psls_raw = unsafe { morrow_region_alloc(arena, bytes, 8) };
     unsafe { memset(psls_raw, 0, bytes); }
     let psls_ptr = psls_raw as *mut i64;
 
-    let occ_raw = unsafe { tungsten_region_alloc(arena, bytes, 8) };
+    let occ_raw = unsafe { morrow_region_alloc(arena, bytes, 8) };
     unsafe { memset(occ_raw, 0, bytes); }
     let occ_ptr = occ_raw as *mut i64;
 
@@ -622,23 +622,23 @@ pub fn hashmap_grow(map: &mut HashMap) {
     let mut occ_raw: *mut u8 = 0 as *mut u8;
 
     if map.arena == null_arena {
-        new_keys = unsafe { tungsten_alloc(bytes, 8) as *mut String };
-        new_vals = unsafe { tungsten_alloc(bytes, 8) as *mut i64 };
-        new_hashes = unsafe { tungsten_alloc(bytes, 8) as *mut i64 };
-        psls_raw = unsafe { tungsten_alloc(bytes, 8) };
+        new_keys = unsafe { morrow_alloc(bytes, 8) as *mut String };
+        new_vals = unsafe { morrow_alloc(bytes, 8) as *mut i64 };
+        new_hashes = unsafe { morrow_alloc(bytes, 8) as *mut i64 };
+        psls_raw = unsafe { morrow_alloc(bytes, 8) };
         unsafe { memset(psls_raw, 0, bytes); }
         new_psls = psls_raw as *mut i64;
-        occ_raw = unsafe { tungsten_alloc(bytes, 8) };
+        occ_raw = unsafe { morrow_alloc(bytes, 8) };
         unsafe { memset(occ_raw, 0, bytes); }
         new_occ = occ_raw as *mut i64;
     } else {
-        new_keys = unsafe { tungsten_region_alloc(map.arena, bytes, 8) as *mut String };
-        new_vals = unsafe { tungsten_region_alloc(map.arena, bytes, 8) as *mut i64 };
-        new_hashes = unsafe { tungsten_region_alloc(map.arena, bytes, 8) as *mut i64 };
-        psls_raw = unsafe { tungsten_region_alloc(map.arena, bytes, 8) };
+        new_keys = unsafe { morrow_region_alloc(map.arena, bytes, 8) as *mut String };
+        new_vals = unsafe { morrow_region_alloc(map.arena, bytes, 8) as *mut i64 };
+        new_hashes = unsafe { morrow_region_alloc(map.arena, bytes, 8) as *mut i64 };
+        psls_raw = unsafe { morrow_region_alloc(map.arena, bytes, 8) };
         unsafe { memset(psls_raw, 0, bytes); }
         new_psls = psls_raw as *mut i64;
-        occ_raw = unsafe { tungsten_region_alloc(map.arena, bytes, 8) };
+        occ_raw = unsafe { morrow_region_alloc(map.arena, bytes, 8) };
         unsafe { memset(occ_raw, 0, bytes); }
         new_occ = occ_raw as *mut i64;
     }

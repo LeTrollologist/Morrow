@@ -59,9 +59,35 @@ pub fn resolve_import_path(imp: String, arena: *mut u8) -> String yields [FS] {
     if fs_exists(norm) {
         return norm;
     }
+    // Check fallback extension (.mw <-> .tg)
+    let p_norm = norm as *const u8;
+    let nlen = unsafe { strlen(p_norm) } as i64;
+    if nlen >= 3 {
+        let is_mw = unsafe { p_norm[nlen - 3] == 46 && p_norm[nlen - 2] == 109 && p_norm[nlen - 1] == 119 }; // .mw
+        let is_tg = unsafe { p_norm[nlen - 3] == 46 && p_norm[nlen - 2] == 116 && p_norm[nlen - 1] == 103 }; // .tg
+        if is_mw {
+            let mut alt_buf = string_buffer_new_in(arena);
+            string_buffer_push_str(&mut alt_buf, p_norm, nlen - 3);
+            string_buffer_push_str(&mut alt_buf, ".tg" as *const u8, 3);
+            string_buffer_push_byte(&mut alt_buf, 0 as u8);
+            let alt = string_as_ptr(&alt_buf) as String;
+            if fs_exists(alt) {
+                return alt;
+            }
+        } else if is_tg {
+            let mut alt_buf = string_buffer_new_in(arena);
+            string_buffer_push_str(&mut alt_buf, p_norm, nlen - 3);
+            string_buffer_push_str(&mut alt_buf, ".mw" as *const u8, 3);
+            string_buffer_push_byte(&mut alt_buf, 0 as u8);
+            let alt = string_as_ptr(&alt_buf) as String;
+            if fs_exists(alt) {
+                return alt;
+            }
+        }
+    }
     let mut sbuf = string_buffer_new_in(arena);
     string_buffer_push_str(&mut sbuf, "src/" as *const u8, 4);
-    string_buffer_push_str(&mut sbuf, norm as *const u8, unsafe { strlen(norm as *const u8) } as i64);
+    string_buffer_push_str(&mut sbuf, norm as *const u8, nlen);
     string_buffer_push_byte(&mut sbuf, 0 as u8);
     let src_candidate = string_as_ptr(&sbuf) as String;
     if fs_exists(src_candidate) {
@@ -88,7 +114,9 @@ fn load_module_recursive(path: String, loaded_paths: &mut Vec<String>, prog: *mu
 
     // 3. Skip compiler intrinsics
     let p_norm = norm_path as *const u8;
-    if unsafe { strcmp(p_norm, "std/fs.tg" as *const u8) == 0 ||
+    if unsafe { strcmp(p_norm, "std/fs.mw" as *const u8) == 0 ||
+                strcmp(p_norm, "std/process.mw" as *const u8) == 0 ||
+                strcmp(p_norm, "std/fs.tg" as *const u8) == 0 ||
                 strcmp(p_norm, "std/process.tg" as *const u8) == 0 } {
         return;
     }
@@ -919,7 +947,7 @@ pub fn compile_file_target(src_path: String, out_ll_path: String, out_exe_path: 
                         let c_str = string_as_ptr(&c_args) as String;
                         let c_status = process_exec("clang", c_str);
                         if c_status == 0 {
-                            forge_print("TGC: Note: Emitted relocatable Linux ELF object (sysroot linking unavailable on host)");
+                            forge_print("MWC: Note: Emitted relocatable Linux ELF object (sysroot linking unavailable on host)");
                             status = 0;
                         }
                     }
@@ -935,17 +963,17 @@ pub fn compile_file_target(src_path: String, out_ll_path: String, out_exe_path: 
 }
 
 pub fn forge_usage() {
-    forge_print("forge - Tungsten Genesis Unified Developer CLI");
+    forge_print("forge - Morrow Unified Developer CLI");
     forge_print("Usage: forge <command> [options]");
     forge_print("");
     forge_print("Commands:");
-    forge_print("  check <file.tg>            Typecheck and verify refinement intervals without code generation");
-    forge_print("  build <file.tg> [-o <out>] [--target <triple>] Full compilation with TIR optimization and Clang linking");
-    forge_print("  run <file.tg>              Compile and execute the program immediately");
-    forge_print("  test                       Run all native Tungsten test suites in tests/");
-    forge_print("  fmt [--check] <file.tg>    Format Tungsten source code to canonical style");
-    forge_print("  lsp                        Start Tungsten Language Server Protocol stdio daemon");
-    forge_print("  new <project_name>         Scaffold a new Tungsten project with Forge.toml");
+    forge_print("  check <file.mw>            Typecheck and verify refinement intervals without code generation");
+    forge_print("  build <file.mw> [-o <out>] [--target <triple>] Full compilation with TIR optimization and Clang linking");
+    forge_print("  run <file.mw>              Compile and execute the program immediately");
+    forge_print("  test                       Run all native Morrow test suites in tests/");
+    forge_print("  fmt [--check] <file.mw>    Format Morrow source code to canonical style");
+    forge_print("  lsp                        Start Morrow Language Server Protocol stdio daemon");
+    forge_print("  new <project_name>         Scaffold a new Morrow project with Forge.toml");
     forge_print("  add <name> [--path <p>] [--version <v>] [--force] Add a dependency to Forge.toml and resolve");
     forge_print("  resolve                    Resolve dependencies in Forge.toml and write Forge.lock");
     forge_print("  clean                      Clean compilation artifacts in target/");
@@ -974,8 +1002,8 @@ pub fn forge_run_check(path: String, arena: *mut u8) -> i64 yields [FS, Diagnost
 
 pub fn forge_run_build(args: &Vec<String>, arena: *mut u8) -> i64 yields [FS, Process, Diagnostics, IO] {
     if args.len < 3 {
-        forge_print("Error: 'forge build' requires a target .tg file");
-        forge_print("Usage: forge build <file.tg> [-o <out>] [--target <triple>]");
+        forge_print("Error: 'forge build' requires a target .mw file");
+        forge_print("Usage: forge build <file.mw> [-o <out>] [--target <triple>]");
         return 1;
     }
 
@@ -1038,29 +1066,35 @@ pub fn forge_run_test(arena: *mut u8) -> i64 yields [FS, Process, Diagnostics, I
         CreateDirectoryA("target" as *const u8, 0 as *const u8);
         CreateDirectoryA("target/tests" as *const u8, 0 as *const u8);
     }
-    forge_print("running tungsten native test suites...");
+    forge_print("running morrow native test suites...");
     let mut test_suites: Vec<String> = vec_new_in(arena);
-    vec_push(&mut test_suites, "tests/typeck_refinements.tg");
-    vec_push(&mut test_suites, "tests/tir_optimizer.tg");
-    vec_push(&mut test_suites, "tests/formatter_tests.tg");
-    vec_push(&mut test_suites, "tests/package_tests.tg");
-    vec_push(&mut test_suites, "tests/package_negative_test.tg");
-    vec_push(&mut test_suites, "tests/bootstrap_tests.tg");
-    vec_push(&mut test_suites, "tests/error_handling_tests.tg");
-    vec_push(&mut test_suites, "tests/win32_gdi_callback_test.tg");
-    vec_push(&mut test_suites, "tests/struct_field_layout_test.tg");
-    vec_push(&mut test_suites, "tests/refinement_test.tg");
-    vec_push(&mut test_suites, "tests/region_escape_test.tg");
-    vec_push(&mut test_suites, "tests/generics_test.tg");
-    vec_push(&mut test_suites, "tests/effects_test.tg");
-    vec_push(&mut test_suites, "tests/formal_verification_test.tg");
+    vec_push(&mut test_suites, "tests/typeck_refinements.mw");
+    vec_push(&mut test_suites, "tests/tir_optimizer.mw");
+    vec_push(&mut test_suites, "tests/formatter_tests.mw");
+    vec_push(&mut test_suites, "tests/package_tests.mw");
+    vec_push(&mut test_suites, "tests/package_negative_test.mw");
+    vec_push(&mut test_suites, "tests/bootstrap_tests.mw");
+    vec_push(&mut test_suites, "tests/error_handling_tests.mw");
+    vec_push(&mut test_suites, "tests/win32_gdi_callback_test.mw");
+    vec_push(&mut test_suites, "tests/struct_field_layout_test.mw");
+    vec_push(&mut test_suites, "tests/refinement_test.mw");
+    vec_push(&mut test_suites, "tests/region_escape_test.mw");
+    vec_push(&mut test_suites, "tests/generics_test.mw");
+    vec_push(&mut test_suites, "tests/effects_test.mw");
+    vec_push(&mut test_suites, "tests/formal_verification_test.mw");
 
     let mut passed: i64 = 0;
     let mut failed: i64 = 0;
 
     let mut i: i64 = 0;
     while i < test_suites.len {
-        let t_path = vec_get(&test_suites, i);
+        let mut t_path = vec_get(&test_suites, i);
+        if !fs_exists(t_path) {
+            let alt_path = resolve_import_path(t_path, arena);
+            if fs_exists(alt_path) {
+                t_path = alt_path;
+            }
+        }
         let mut out_exe_buf = string_buffer_new_in(arena);
         fmt_append_str(&mut out_exe_buf, ".\\target\\tests\\test_");
         fmt_append_i64(&mut out_exe_buf, i);
@@ -1111,8 +1145,8 @@ pub fn forge_run_test(arena: *mut u8) -> i64 yields [FS, Process, Diagnostics, I
 
 pub fn forge_run_fmt(args: &Vec<String>, arena: *mut u8) -> i64 yields [FS, Diagnostics, IO] {
     if args.len < 3 {
-        forge_print("Error: 'forge fmt' requires a path to a .tg file");
-        forge_print("Usage: forge fmt [--check] <file.tg>");
+        forge_print("Error: 'forge fmt' requires a path to a .mw file");
+        forge_print("Usage: forge fmt [--check] <file.mw>");
         return 1;
     }
 
@@ -1375,7 +1409,7 @@ pub fn forge_main(args: Vec<String>, arena: *mut u8) -> i64 yields [FS, Process,
 
     if unsafe { strcmp(p_cmd, "check" as *const u8) == 0 } {
         if args.len < 3 {
-            forge_print("Error: 'forge check' requires a target .tg file");
+            forge_print("Error: 'forge check' requires a target .mw file");
             return 1;
         }
         let file = vec_get(&args, 2);
@@ -1388,7 +1422,7 @@ pub fn forge_main(args: Vec<String>, arena: *mut u8) -> i64 yields [FS, Process,
 
     if unsafe { strcmp(p_cmd, "run" as *const u8) == 0 } {
         if args.len < 3 {
-            forge_print("Error: 'forge run' requires a target .tg file");
+            forge_print("Error: 'forge run' requires a target .mw file");
             return 1;
         }
         let file = vec_get(&args, 2);
@@ -1423,7 +1457,7 @@ pub fn forge_main(args: Vec<String>, arena: *mut u8) -> i64 yields [FS, Process,
     }
 
     if unsafe { strcmp(p_cmd, "version" as *const u8) == 0 || strcmp(p_cmd, "--version" as *const u8) == 0 || strcmp(p_cmd, "-V" as *const u8) == 0 } {
-        forge_print("forge 0.2.0 (pure tungsten genesis 2026)");
+        forge_print("forge 0.2.0 (morrow standalone 2026)");
         return 0;
     }
 

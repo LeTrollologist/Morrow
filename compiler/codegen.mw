@@ -795,7 +795,7 @@ pub fn emit_expr(cg: &mut Codegen, expr_ptr: *mut AstExpr) -> i64 {
         }
         emit_str(cg, "    %t");
         emit_i64(cg, struct_reg);
-        emit_str(cg, " = call ptr @tungsten_alloc(i64 ");
+        emit_str(cg, " = call ptr @morrow_alloc(i64 ");
         emit_i64(cg, alloc_bytes);
         emit_str(cg, ", i64 8)\n");
 
@@ -838,7 +838,7 @@ pub fn emit_expr(cg: &mut Codegen, expr_ptr: *mut AstExpr) -> i64 {
                 let first_arg = vec_get(&expr_ptr.args, 0);
                 arg_reg = emit_expr(cg, first_arg);
             }
-            emit_str(cg, "    call void @tungsten_println_i64(i64 %t");
+            emit_str(cg, "    call void @morrow_println_i64(i64 %t");
             emit_i64(cg, arg_reg);
             emit_str(cg, ")\n");
             return 0;
@@ -985,7 +985,7 @@ pub fn emit_expr(cg: &mut Codegen, expr_ptr: *mut AstExpr) -> i64 {
             emit_str(cg, "    %t");
             emit_i64(cg, ptr_res);
             if is_linux || is_wasm {
-                emit_str(cg, " = call ptr @tungsten_get_cmd_line()\n");
+                emit_str(cg, " = call ptr @morrow_get_cmd_line()\n");
             } else {
                 emit_str(cg, " = call ptr @GetCommandLineA()\n");
             }
@@ -1010,7 +1010,7 @@ pub fn emit_expr(cg: &mut Codegen, expr_ptr: *mut AstExpr) -> i64 {
             let r = alloc_reg(cg);
             emit_str(cg, "    %t");
             emit_i64(cg, r);
-            emit_str(cg, " = call i64 @tungsten_create_dir(ptr %t");
+            emit_str(cg, " = call i64 @morrow_create_dir(ptr %t");
             emit_i64(cg, p_reg);
             emit_str(cg, ")\n");
             return r;
@@ -1024,13 +1024,14 @@ pub fn emit_expr(cg: &mut Codegen, expr_ptr: *mut AstExpr) -> i64 {
             emit_i64(cg, vec_get(&arg_regs, 0));
             emit_str(cg, " to i32\n");
 
-            emit_str(cg, "    call void @tungsten_sleep_ms(i32 %t");
+            emit_str(cg, "    call void @morrow_sleep_ms(i32 %t");
             emit_i64(cg, ms_reg);
             emit_str(cg, ")\n");
             return 0;
         }
 
-        if unsafe { strcmp(fn_name as *const u8, "tungsten_region_alloc" as *const u8) == 0 } {
+        if unsafe { strcmp(fn_name as *const u8, "tungsten_region_alloc" as *const u8) == 0 ||
+                    strcmp(fn_name as *const u8, "morrow_region_alloc" as *const u8) == 0 } {
             let a_reg = alloc_reg(cg);
             emit_str(cg, "    %t");
             emit_i64(cg, a_reg);
@@ -1041,7 +1042,7 @@ pub fn emit_expr(cg: &mut Codegen, expr_ptr: *mut AstExpr) -> i64 {
             let res_ptr = alloc_reg(cg);
             emit_str(cg, "    %t");
             emit_i64(cg, res_ptr);
-            emit_str(cg, " = call ptr @tungsten_region_alloc(ptr %t");
+            emit_str(cg, " = call ptr @morrow_region_alloc(ptr %t");
             emit_i64(cg, a_reg);
             emit_str(cg, ", i64 %t");
             emit_i64(cg, vec_get(&arg_regs, 1));
@@ -1058,7 +1059,8 @@ pub fn emit_expr(cg: &mut Codegen, expr_ptr: *mut AstExpr) -> i64 {
             return r;
         }
 
-        if unsafe { strcmp(fn_name as *const u8, "tungsten_region_grow" as *const u8) == 0 } {
+        if unsafe { strcmp(fn_name as *const u8, "tungsten_region_grow" as *const u8) == 0 ||
+                    strcmp(fn_name as *const u8, "morrow_region_grow" as *const u8) == 0 } {
             let a_reg = alloc_reg(cg);
             emit_str(cg, "    %t");
             emit_i64(cg, a_reg);
@@ -1076,7 +1078,7 @@ pub fn emit_expr(cg: &mut Codegen, expr_ptr: *mut AstExpr) -> i64 {
             let res_ptr = alloc_reg(cg);
             emit_str(cg, "    %t");
             emit_i64(cg, res_ptr);
-            emit_str(cg, " = call ptr @tungsten_region_grow(ptr %t");
+            emit_str(cg, " = call ptr @morrow_region_grow(ptr %t");
             emit_i64(cg, a_reg);
             emit_str(cg, ", ptr %t");
             emit_i64(cg, p_reg);
@@ -1097,11 +1099,12 @@ pub fn emit_expr(cg: &mut Codegen, expr_ptr: *mut AstExpr) -> i64 {
             return r;
         }
 
-        if unsafe { strcmp(fn_name as *const u8, "tungsten_alloc" as *const u8) == 0 } {
+        if unsafe { strcmp(fn_name as *const u8, "tungsten_alloc" as *const u8) == 0 ||
+                    strcmp(fn_name as *const u8, "morrow_alloc" as *const u8) == 0 } {
             let res_ptr = alloc_reg(cg);
             emit_str(cg, "    %t");
             emit_i64(cg, res_ptr);
-            emit_str(cg, " = call ptr @tungsten_alloc(i64 %t");
+            emit_str(cg, " = call ptr @morrow_alloc(i64 %t");
             emit_i64(cg, vec_get(&arg_regs, 0));
             emit_str(cg, ", i64 %t");
             emit_i64(cg, vec_get(&arg_regs, 1));
@@ -1134,7 +1137,7 @@ pub fn emit_expr(cg: &mut Codegen, expr_ptr: *mut AstExpr) -> i64 {
             let res_ptr = alloc_reg(cg);
             emit_str(cg, "    %t");
             emit_i64(cg, res_ptr);
-            emit_str(cg, " = call ptr @tungsten_fs_read_file_in(ptr %t");
+            emit_str(cg, " = call ptr @morrow_fs_read_file_in(ptr %t");
             emit_i64(cg, p_reg);
             emit_str(cg, ", ptr %t");
             emit_i64(cg, a_reg);
@@ -1167,7 +1170,7 @@ pub fn emit_expr(cg: &mut Codegen, expr_ptr: *mut AstExpr) -> i64 {
             let b_reg = alloc_reg(cg);
             emit_str(cg, "    %t");
             emit_i64(cg, b_reg);
-            emit_str(cg, " = call i1 @tungsten_fs_write_file(ptr %t");
+            emit_str(cg, " = call i1 @morrow_fs_write_file(ptr %t");
             emit_i64(cg, p_reg);
             emit_str(cg, ", ptr %t");
             emit_i64(cg, c_reg);
@@ -1193,7 +1196,7 @@ pub fn emit_expr(cg: &mut Codegen, expr_ptr: *mut AstExpr) -> i64 {
             let b_reg = alloc_reg(cg);
             emit_str(cg, "    %t");
             emit_i64(cg, b_reg);
-            emit_str(cg, " = call i1 @tungsten_fs_file_exists(ptr %t");
+            emit_str(cg, " = call i1 @morrow_fs_file_exists(ptr %t");
             emit_i64(cg, p_reg);
             emit_str(cg, ")\n");
 
@@ -1224,7 +1227,7 @@ pub fn emit_expr(cg: &mut Codegen, expr_ptr: *mut AstExpr) -> i64 {
             let r = alloc_reg(cg);
             emit_str(cg, "    %t");
             emit_i64(cg, r);
-            emit_str(cg, " = call i64 @tungsten_process_exec(ptr %t");
+            emit_str(cg, " = call i64 @morrow_process_exec(ptr %t");
             emit_i64(cg, p_reg);
             emit_str(cg, ", ptr %t");
             emit_i64(cg, a_reg);
@@ -1243,7 +1246,7 @@ pub fn emit_expr(cg: &mut Codegen, expr_ptr: *mut AstExpr) -> i64 {
             let b_reg = alloc_reg(cg);
             emit_str(cg, "    %t");
             emit_i64(cg, b_reg);
-            emit_str(cg, " = call i1 @tungsten_report_error(ptr %t");
+            emit_str(cg, " = call i1 @morrow_report_error(ptr %t");
             emit_i64(cg, m_reg);
             emit_str(cg, ", i64 %t");
             emit_i64(cg, vec_get(&arg_regs, 1));
@@ -1475,7 +1478,7 @@ pub fn emit_stmt(cg: &mut Codegen, stmt_ptr: *mut AstStmt, is_main: bool, is_tai
             let reg_res = alloc_reg(cg);
             emit_str(cg, "    %t");
             emit_i64(cg, reg_res);
-            emit_str(cg, " = call ptr @tungsten_region_enter()\n");
+            emit_str(cg, " = call ptr @morrow_region_enter()\n");
 
             let arena_i64 = alloc_reg(cg);
             emit_str(cg, "    %t");
@@ -1510,7 +1513,7 @@ pub fn emit_stmt(cg: &mut Codegen, stmt_ptr: *mut AstStmt, is_main: bool, is_tai
                     emit_i64(cg, loaded_arena);
                     emit_str(cg, " to ptr\n");
 
-                    emit_str(cg, "    call void @tungsten_region_exit(ptr %t");
+                    emit_str(cg, "    call void @morrow_region_exit(ptr %t");
                     emit_i64(cg, arena_p);
                     emit_str(cg, ")\n");
 
@@ -1552,7 +1555,7 @@ pub fn emit_stmt(cg: &mut Codegen, stmt_ptr: *mut AstStmt, is_main: bool, is_tai
                 emit_i64(cg, loaded_arena);
                 emit_str(cg, " to ptr\n");
 
-                emit_str(cg, "    call void @tungsten_region_exit(ptr %t");
+                emit_str(cg, "    call void @morrow_region_exit(ptr %t");
                 emit_i64(cg, arena_p);
                 emit_str(cg, ")\n");
             }
@@ -2297,7 +2300,7 @@ fn emit_tir_inst(cg: &mut Codegen, inst: *mut TirInst) {
         }
         emit_str(cg, "    %t");
         emit_i64(cg, struct_reg);
-        emit_str(cg, " = call ptr @tungsten_alloc(i64 ");
+        emit_str(cg, " = call ptr @morrow_alloc(i64 ");
         emit_i64(cg, alloc_bytes);
         emit_str(cg, ", i64 8)\n");
 
@@ -2330,11 +2333,12 @@ fn emit_tir_inst(cg: &mut Codegen, inst: *mut TirInst) {
 
     if kind == tir_inst_call() {
         let pstr = inst.str_val as *const u8;
-        if unsafe { strcmp(pstr, "tungsten_region_enter" as *const u8) == 0 } {
+        if unsafe { strcmp(pstr, "tungsten_region_enter" as *const u8) == 0 ||
+                    strcmp(pstr, "morrow_region_enter" as *const u8) == 0 } {
             let reg_res = alloc_reg(cg);
             emit_str(cg, "    %t");
             emit_i64(cg, reg_res);
-            emit_str(cg, " = call ptr @tungsten_region_enter()\n");
+            emit_str(cg, " = call ptr @morrow_region_enter()\n");
 
             let arena_i64 = alloc_reg(cg);
             emit_str(cg, "    %t");
@@ -2350,7 +2354,8 @@ fn emit_tir_inst(cg: &mut Codegen, inst: *mut TirInst) {
             emit_str(cg, "\n");
             return;
         }
-        if unsafe { strcmp(pstr, "tungsten_region_leave" as *const u8) == 0 } {
+        if unsafe { strcmp(pstr, "tungsten_region_leave" as *const u8) == 0 ||
+                    strcmp(pstr, "morrow_region_leave" as *const u8) == 0 } {
             let loaded_arena = emit_tir_op(cg, vec_get(&inst.args, 0));
             let arena_p = alloc_reg(cg);
             emit_str(cg, "    %t");
@@ -2359,7 +2364,7 @@ fn emit_tir_inst(cg: &mut Codegen, inst: *mut TirInst) {
             emit_i64(cg, loaded_arena);
             emit_str(cg, " to ptr\n");
 
-            emit_str(cg, "    call void @tungsten_region_exit(ptr %t");
+            emit_str(cg, "    call void @morrow_region_exit(ptr %t");
             emit_i64(cg, arena_p);
             emit_str(cg, ")\n");
             return;
@@ -2374,7 +2379,7 @@ fn emit_tir_inst(cg: &mut Codegen, inst: *mut TirInst) {
                 let first_arg = vec_get(&inst.args, 0);
                 arg_reg = emit_tir_op(cg, first_arg);
             }
-            emit_str(cg, "    call void @tungsten_println_i64(i64 %t");
+            emit_str(cg, "    call void @morrow_println_i64(i64 %t");
             emit_i64(cg, arg_reg);
             emit_str(cg, ")\n");
             if inst.sym != 0 {
@@ -2539,7 +2544,7 @@ fn emit_tir_inst(cg: &mut Codegen, inst: *mut TirInst) {
             emit_str(cg, "    %t");
             emit_i64(cg, ptr_res);
             if is_linux || is_wasm {
-                emit_str(cg, " = call ptr @tungsten_get_cmd_line()\n");
+                emit_str(cg, " = call ptr @morrow_get_cmd_line()\n");
             } else {
                 emit_str(cg, " = call ptr @GetCommandLineA()\n");
             }
@@ -2560,9 +2565,10 @@ fn emit_tir_inst(cg: &mut Codegen, inst: *mut TirInst) {
             emit_i64(cg, vec_get(&arg_regs, 0));
             emit_str(cg, " to ptr\n");
 
+            let r = alloc_reg(cg);
             emit_str(cg, "    %t");
-            emit_i64(cg, dest_reg);
-            emit_str(cg, " = call i64 @tungsten_create_dir(ptr %t");
+            emit_i64(cg, r);
+            emit_str(cg, " = call i64 @morrow_create_dir(ptr %t");
             emit_i64(cg, p_reg);
             emit_str(cg, ")\n");
             return;
@@ -2576,7 +2582,7 @@ fn emit_tir_inst(cg: &mut Codegen, inst: *mut TirInst) {
             emit_i64(cg, vec_get(&arg_regs, 0));
             emit_str(cg, " to i32\n");
 
-            emit_str(cg, "    call void @tungsten_sleep_ms(i32 %t");
+            emit_str(cg, "    call void @morrow_sleep_ms(i32 %t");
             emit_i64(cg, ms_reg);
             emit_str(cg, ")\n");
             if inst.sym != 0 {
@@ -2587,7 +2593,8 @@ fn emit_tir_inst(cg: &mut Codegen, inst: *mut TirInst) {
             return;
         }
 
-        if unsafe { strcmp(fn_name as *const u8, "tungsten_region_alloc" as *const u8) == 0 } {
+        if unsafe { strcmp(fn_name as *const u8, "tungsten_region_alloc" as *const u8) == 0 ||
+                    strcmp(fn_name as *const u8, "morrow_region_alloc" as *const u8) == 0 } {
             let a_reg = alloc_reg(cg);
             emit_str(cg, "    %t");
             emit_i64(cg, a_reg);
@@ -2598,7 +2605,7 @@ fn emit_tir_inst(cg: &mut Codegen, inst: *mut TirInst) {
             let res_ptr = alloc_reg(cg);
             emit_str(cg, "    %t");
             emit_i64(cg, res_ptr);
-            emit_str(cg, " = call ptr @tungsten_region_alloc(ptr %t");
+            emit_str(cg, " = call ptr @morrow_region_alloc(ptr %t");
             emit_i64(cg, a_reg);
             emit_str(cg, ", i64 %t");
             emit_i64(cg, vec_get(&arg_regs, 1));
@@ -2614,7 +2621,8 @@ fn emit_tir_inst(cg: &mut Codegen, inst: *mut TirInst) {
             return;
         }
 
-        if unsafe { strcmp(fn_name as *const u8, "tungsten_region_grow" as *const u8) == 0 } {
+        if unsafe { strcmp(fn_name as *const u8, "tungsten_region_grow" as *const u8) == 0 ||
+                    strcmp(fn_name as *const u8, "morrow_region_grow" as *const u8) == 0 } {
             let a_reg = alloc_reg(cg);
             emit_str(cg, "    %t");
             emit_i64(cg, a_reg);
@@ -2632,7 +2640,7 @@ fn emit_tir_inst(cg: &mut Codegen, inst: *mut TirInst) {
             let res_ptr = alloc_reg(cg);
             emit_str(cg, "    %t");
             emit_i64(cg, res_ptr);
-            emit_str(cg, " = call ptr @tungsten_region_grow(ptr %t");
+            emit_str(cg, " = call ptr @morrow_region_grow(ptr %t");
             emit_i64(cg, a_reg);
             emit_str(cg, ", ptr %t");
             emit_i64(cg, p_reg);
@@ -2652,11 +2660,12 @@ fn emit_tir_inst(cg: &mut Codegen, inst: *mut TirInst) {
             return;
         }
 
-        if unsafe { strcmp(fn_name as *const u8, "tungsten_alloc" as *const u8) == 0 } {
+        if unsafe { strcmp(fn_name as *const u8, "tungsten_alloc" as *const u8) == 0 ||
+                    strcmp(fn_name as *const u8, "morrow_alloc" as *const u8) == 0 } {
             let res_ptr = alloc_reg(cg);
             emit_str(cg, "    %t");
             emit_i64(cg, res_ptr);
-            emit_str(cg, " = call ptr @tungsten_alloc(i64 %t");
+            emit_str(cg, " = call ptr @morrow_alloc(i64 %t");
             emit_i64(cg, vec_get(&arg_regs, 0));
             emit_str(cg, ", i64 %t");
             emit_i64(cg, vec_get(&arg_regs, 1));
@@ -2688,7 +2697,7 @@ fn emit_tir_inst(cg: &mut Codegen, inst: *mut TirInst) {
             let res_ptr = alloc_reg(cg);
             emit_str(cg, "    %t");
             emit_i64(cg, res_ptr);
-            emit_str(cg, " = call ptr @tungsten_fs_read_file_in(ptr %t");
+            emit_str(cg, " = call ptr @morrow_fs_read_file_in(ptr %t");
             emit_i64(cg, p_reg);
             emit_str(cg, ", ptr %t");
             emit_i64(cg, a_reg);
@@ -2720,7 +2729,7 @@ fn emit_tir_inst(cg: &mut Codegen, inst: *mut TirInst) {
             let b_reg = alloc_reg(cg);
             emit_str(cg, "    %t");
             emit_i64(cg, b_reg);
-            emit_str(cg, " = call i1 @tungsten_fs_write_file(ptr %t");
+            emit_str(cg, " = call i1 @morrow_fs_write_file(ptr %t");
             emit_i64(cg, p_reg);
             emit_str(cg, ", ptr %t");
             emit_i64(cg, c_reg);
@@ -2745,7 +2754,7 @@ fn emit_tir_inst(cg: &mut Codegen, inst: *mut TirInst) {
             let b_reg = alloc_reg(cg);
             emit_str(cg, "    %t");
             emit_i64(cg, b_reg);
-            emit_str(cg, " = call i1 @tungsten_fs_file_exists(ptr %t");
+            emit_str(cg, " = call i1 @morrow_fs_file_exists(ptr %t");
             emit_i64(cg, p_reg);
             emit_str(cg, ")\n");
 
@@ -2772,13 +2781,20 @@ fn emit_tir_inst(cg: &mut Codegen, inst: *mut TirInst) {
             emit_i64(cg, vec_get(&arg_regs, 1));
             emit_str(cg, " to ptr\n");
 
+            let r = alloc_reg(cg);
             emit_str(cg, "    %t");
-            emit_i64(cg, dest_reg);
-            emit_str(cg, " = call i64 @tungsten_process_exec(ptr %t");
+            emit_i64(cg, r);
+            emit_str(cg, " = call i64 @morrow_process_exec(ptr %t");
             emit_i64(cg, p_reg);
             emit_str(cg, ", ptr %t");
             emit_i64(cg, a_reg);
             emit_str(cg, ")\n");
+
+            emit_str(cg, "    %t");
+            emit_i64(cg, dest_reg);
+            emit_str(cg, " = add i64 0, %t");
+            emit_i64(cg, r);
+            emit_str(cg, "\n");
             return;
         }
 
@@ -2793,7 +2809,7 @@ fn emit_tir_inst(cg: &mut Codegen, inst: *mut TirInst) {
             let b_reg = alloc_reg(cg);
             emit_str(cg, "    %t");
             emit_i64(cg, b_reg);
-            emit_str(cg, " = call i1 @tungsten_report_error(ptr %t");
+            emit_str(cg, " = call i1 @morrow_report_error(ptr %t");
             emit_i64(cg, m_reg);
             emit_str(cg, ", i64 %t");
             emit_i64(cg, vec_get(&arg_regs, 1));
@@ -2844,7 +2860,7 @@ fn emit_tir_inst(cg: &mut Codegen, inst: *mut TirInst) {
         let res_reg = alloc_reg(cg);
         emit_str(cg, "    %t");
         emit_i64(cg, res_reg);
-        emit_str(cg, " = call i64 @tungsten_continuation_resume(ptr %t");
+        emit_str(cg, " = call i64 @morrow_continuation_resume(ptr %t");
         emit_i64(cg, k_ptr);
         emit_str(cg, ", i64 %t");
         emit_i64(cg, val_reg);
@@ -2866,13 +2882,13 @@ fn emit_tir_inst(cg: &mut Codegen, inst: *mut TirInst) {
 
         emit_str(cg, "    %hframe_");
         emit_i64(cg, h_id);
-        emit_str(cg, " = alloca %TungstenHandlerFrame, align 16\n");
+        emit_str(cg, " = alloca %MorrowHandlerFrame, align 16\n");
 
         emit_str(cg, "    %hres_");
         emit_i64(cg, h_id);
         emit_str(cg, " = alloca i64\n");
 
-        emit_str(cg, "    call void @tungsten_effect_push_frame(ptr %hframe_");
+        emit_str(cg, "    call void @morrow_effect_push_frame(ptr %hframe_");
         emit_i64(cg, h_id);
         emit_str(cg, ", i64 ");
         emit_i64(cg, eff_sym);
@@ -2890,7 +2906,7 @@ fn emit_tir_inst(cg: &mut Codegen, inst: *mut TirInst) {
         let sj_res = alloc_reg(cg);
         emit_str(cg, "    %t");
         emit_i64(cg, sj_res);
-        emit_str(cg, " = call i32 @tungsten_setjmp(ptr %t");
+        emit_str(cg, " = call i32 @morrow_setjmp(ptr %t");
         emit_i64(cg, ab_buf);
         emit_str(cg, ")\n");
 
@@ -2912,7 +2928,7 @@ fn emit_tir_inst(cg: &mut Codegen, inst: *mut TirInst) {
         emit_str(cg, "habort_");
         emit_i64(cg, h_id);
         emit_str(cg, ":\n");
-        emit_str(cg, "    call void @tungsten_effect_pop_frame()\n");
+        emit_str(cg, "    call void @morrow_effect_pop_frame()\n");
 
         let ab_val_p = alloc_reg(cg);
         emit_str(cg, "    %t");
@@ -2947,7 +2963,7 @@ fn emit_tir_inst(cg: &mut Codegen, inst: *mut TirInst) {
     if kind == tir_inst_handler_pop() {
         let h_id = inst.op;
 
-        emit_str(cg, "    call void @tungsten_effect_pop_frame()\n");
+        emit_str(cg, "    call void @morrow_effect_pop_frame()\n");
 
         if inst.left != (0 as *mut TirOperand) {
             let b_reg = emit_tir_op(cg, inst.left);
@@ -3003,12 +3019,12 @@ fn emit_tir_inst(cg: &mut Codegen, inst: *mut TirInst) {
         let cont_ptr = alloc_reg(cg);
         emit_str(cg, "    %t");
         emit_i64(cg, cont_ptr);
-        emit_str(cg, " = alloca %TungstenContinuation, align 16\n");
+        emit_str(cg, " = alloca %MorrowContinuation, align 16\n");
 
         let frame_ptr = alloc_reg(cg);
         emit_str(cg, "    %t");
         emit_i64(cg, frame_ptr);
-        emit_str(cg, " = call ptr @tungsten_effect_find_handler(i64 ");
+        emit_str(cg, " = call ptr @morrow_effect_find_handler(i64 ");
         emit_i64(cg, eff_sym);
         emit_str(cg, ")\n");
 
@@ -3038,7 +3054,7 @@ fn emit_tir_inst(cg: &mut Codegen, inst: *mut TirInst) {
         let sj_res = alloc_reg(cg);
         emit_str(cg, "    %t");
         emit_i64(cg, sj_res);
-        emit_str(cg, " = call i32 @tungsten_setjmp(ptr %t");
+        emit_str(cg, " = call i32 @morrow_setjmp(ptr %t");
         emit_i64(cg, jbuf_ptr);
         emit_str(cg, ")\n");
 
@@ -3161,7 +3177,7 @@ fn emit_tir_inst(cg: &mut Codegen, inst: *mut TirInst) {
         emit_str(cg, " = getelementptr inbounds i8, ptr %t");
         emit_i64(cg, frame_ptr);
         emit_str(cg, ", i64 24\n");
-        emit_str(cg, "    call void @tungsten_longjmp(ptr %t");
+        emit_str(cg, "    call void @morrow_longjmp(ptr %t");
         emit_i64(cg, ab_buf_gep);
         emit_str(cg, ", i32 1)\n");
         emit_str(cg, "    unreachable\n");
@@ -3308,7 +3324,8 @@ pub fn emit_tir_function(cg: &mut Codegen, tir_f: *mut TirFunction) {
                 }
             } else if inst.kind == tir_inst_call() {
                 let pstr = inst.str_val as *const u8;
-                if unsafe { strcmp(pstr, "tungsten_region_enter" as *const u8) == 0 } {
+                if unsafe { strcmp(pstr, "tungsten_region_enter" as *const u8) == 0 ||
+                            strcmp(pstr, "morrow_region_enter" as *const u8) == 0 } {
                     let mut already = false;
                     let mut vi: i64 = 0;
                     while vi < cg.allocated_vars.len {
@@ -3415,8 +3432,8 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
     let is_linux = is_linux_target(target_triple);
     let is_arm64 = is_aarch64_target(target_triple);
     let is_wasm = is_wasm_target(target_triple);
-    emit_str(&mut cg, "; ModuleID = 'tungsten_bootstrap'\n");
-    emit_str(&mut cg, "source_filename = \"tungsten_bootstrap.tg\"\n");
+    emit_str(&mut cg, "; ModuleID = 'morrow_bootstrap'\n");
+    emit_str(&mut cg, "source_filename = \"morrow_bootstrap.mw\"\n");
     if is_wasm {
         emit_str(&mut cg, "target datalayout = \"e-m:e-p:32:32-p10:8:8-p20:8:8-i64:64-i128:128-n32:64-S128-ni:1:10:20\"\n");
         emit_str(&mut cg, "target triple = \"wasm32-unknown-unknown\"\n\n");
@@ -3431,17 +3448,26 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
         emit_str(&mut cg, "target triple = \"x86_64-pc-windows-gnu\"\n\n");
     }
 
+    emit_str(&mut cg, "%MorrowHandlerFrame = type { ptr, i64, ptr, [64 x i64], i64 }\n");
     emit_str(&mut cg, "%TungstenHandlerFrame = type { ptr, i64, ptr, [64 x i64], i64 }\n");
+    emit_str(&mut cg, "%MorrowContinuation = type { ptr, [64 x i64], i64, i64 }\n");
     emit_str(&mut cg, "%TungstenContinuation = type { ptr, [64 x i64], i64, i64 }\n");
+    emit_str(&mut cg, "@morrow_top_handler_frame = internal global ptr null\n");
     emit_str(&mut cg, "@tungsten_top_handler_frame = internal global ptr null\n\n");
 
     if is_wasm {
+        emit_str(&mut cg, "define i32 @morrow_setjmp(ptr %env) {\n");
+        emit_str(&mut cg, "    ret i32 0\n}\n\n");
         emit_str(&mut cg, "define i32 @tungsten_setjmp(ptr %env) {\n");
         emit_str(&mut cg, "    ret i32 0\n}\n\n");
+        emit_str(&mut cg, "define void @morrow_longjmp(ptr %env, i32 %val) {\n");
+        emit_str(&mut cg, "    ret void\n}\n\n");
         emit_str(&mut cg, "define void @tungsten_longjmp(ptr %env, i32 %val) {\n");
         emit_str(&mut cg, "    ret void\n}\n\n");
     } else if is_arm64 {
+        emit_str(&mut cg, "module asm \".globl morrow_setjmp\"\n");
         emit_str(&mut cg, "module asm \".globl tungsten_setjmp\"\n");
+        emit_str(&mut cg, "module asm \"morrow_setjmp:\"\n");
         emit_str(&mut cg, "module asm \"tungsten_setjmp:\"\n");
         emit_str(&mut cg, "module asm \"    mov x2, sp\"\n");
         emit_str(&mut cg, "module asm \"    stp x30, x2, [x0, #0]\"\n");
@@ -3458,7 +3484,9 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
         emit_str(&mut cg, "module asm \"    mov x0, #0\"\n");
         emit_str(&mut cg, "module asm \"    ret\"\n\n");
 
+        emit_str(&mut cg, "module asm \".globl morrow_longjmp\"\n");
         emit_str(&mut cg, "module asm \".globl tungsten_longjmp\"\n");
+        emit_str(&mut cg, "module asm \"morrow_longjmp:\"\n");
         emit_str(&mut cg, "module asm \"tungsten_longjmp:\"\n");
         emit_str(&mut cg, "module asm \"    cmp w1, #0\"\n");
         emit_str(&mut cg, "module asm \"    cinc w2, w1, eq\"\n");
@@ -3478,7 +3506,9 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
         emit_str(&mut cg, "module asm \"    ret\"\n\n");
     } else {
         if is_linux {
+            emit_str(&mut cg, "module asm \".globl morrow_setjmp\"\n");
             emit_str(&mut cg, "module asm \".globl tungsten_setjmp\"\n");
+            emit_str(&mut cg, "module asm \"morrow_setjmp:\"\n");
             emit_str(&mut cg, "module asm \"tungsten_setjmp:\"\n");
             emit_str(&mut cg, "module asm \"    movq (%rsp), %rax\"\n");
             emit_str(&mut cg, "module asm \"    movq %rax, 0(%rdi)\"\n");
@@ -3492,7 +3522,9 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
             emit_str(&mut cg, "module asm \"    xorl %eax, %eax\"\n");
             emit_str(&mut cg, "module asm \"    retq\"\n\n");
 
+            emit_str(&mut cg, "module asm \".globl morrow_longjmp\"\n");
             emit_str(&mut cg, "module asm \".globl tungsten_longjmp\"\n");
+            emit_str(&mut cg, "module asm \"morrow_longjmp:\"\n");
             emit_str(&mut cg, "module asm \"tungsten_longjmp:\"\n");
             emit_str(&mut cg, "module asm \"    movl %esi, %eax\"\n");
             emit_str(&mut cg, "module asm \"    testl %eax, %eax\"\n");
@@ -3510,7 +3542,9 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
             emit_str(&mut cg, "module asm \"    movq %rdx, (%rsp)\"\n");
             emit_str(&mut cg, "module asm \"    retq\"\n\n");
         } else {
+            emit_str(&mut cg, "module asm \".globl morrow_setjmp\"\n");
             emit_str(&mut cg, "module asm \".globl tungsten_setjmp\"\n");
+            emit_str(&mut cg, "module asm \"morrow_setjmp:\"\n");
             emit_str(&mut cg, "module asm \"tungsten_setjmp:\"\n");
             emit_str(&mut cg, "module asm \"    movq (%rsp), %rax\"\n");
             emit_str(&mut cg, "module asm \"    movq %rax, 0(%rcx)\"\n");
@@ -3536,7 +3570,9 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
             emit_str(&mut cg, "module asm \"    xorl %eax, %eax\"\n");
             emit_str(&mut cg, "module asm \"    retq\"\n\n");
 
+            emit_str(&mut cg, "module asm \".globl morrow_longjmp\"\n");
             emit_str(&mut cg, "module asm \".globl tungsten_longjmp\"\n");
+            emit_str(&mut cg, "module asm \"morrow_longjmp:\"\n");
             emit_str(&mut cg, "module asm \"tungsten_longjmp:\"\n");
             emit_str(&mut cg, "module asm \"    movl %edx, %eax\"\n");
             emit_str(&mut cg, "module asm \"    testl %eax, %eax\"\n");
@@ -3583,6 +3619,8 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
     emit_str(&mut cg, "declare i64 @fwrite(ptr, i64, i64, ptr)\n");
     emit_str(&mut cg, "declare i32 @fseek(ptr, i64, i32)\n");
     if !is_wasm {
+        emit_str(&mut cg, "declare i32 @morrow_setjmp(ptr)\n");
+        emit_str(&mut cg, "declare void @morrow_longjmp(ptr, i32)\n");
         emit_str(&mut cg, "declare i32 @tungsten_setjmp(ptr)\n");
         emit_str(&mut cg, "declare void @tungsten_longjmp(ptr, i32)\n");
     }
@@ -3611,6 +3649,11 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
         let l = unsafe { strlen(pef) } as i64;
         if l >= 9 {
             if unsafe { strncmp(pef, "tungsten_" as *const u8, 9) == 0 } {
+                is_builtin = true;
+            }
+        }
+        if l >= 7 {
+            if unsafe { strncmp(pef, "morrow_" as *const u8, 7) == 0 } {
                 is_builtin = true;
             }
         }
@@ -3679,6 +3722,7 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
     if is_linux {
         emit_str(&mut cg, "@str_proc_cmdline = internal constant [19 x i8] c\"/proc/self/cmdline\\00\"\n");
     }
+    emit_str(&mut cg, "@morrow_diag_errors = internal global i64 0\n");
     emit_str(&mut cg, "@tungsten_diag_errors = internal global i64 0\n\n");
 
 
@@ -3697,39 +3741,41 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
     }
     emit_str(&mut cg, "\n");
 
-    // Runtime Implementation
-    emit_str(&mut cg, "define void @tungsten_println_i64(i64 %n) {\n");
+    // Runtime Implementation - Morrow Canonical
+    emit_str(&mut cg, "define void @morrow_println_i64(i64 %n) {\n");
     emit_str(&mut cg, "    call i32 (ptr, ...) @printf(ptr @fmt_int, i64 %n)\n");
     emit_str(&mut cg, "    call i32 @fflush(ptr null)\n");
     emit_str(&mut cg, "    ret void\n}\n\n");
 
-    emit_str(&mut cg, "define i64 @tungsten_diag_reset() {\n");
+    emit_str(&mut cg, "define i64 @morrow_diag_reset() {\n");
+    emit_str(&mut cg, "    store i64 0, ptr @morrow_diag_errors\n");
     emit_str(&mut cg, "    store i64 0, ptr @tungsten_diag_errors\n");
     emit_str(&mut cg, "    ret i64 0\n}\n\n");
 
-    emit_str(&mut cg, "define i64 @tungsten_diag_inc_error() {\n");
-    emit_str(&mut cg, "    %cur = load i64, ptr @tungsten_diag_errors\n");
+    emit_str(&mut cg, "define i64 @morrow_diag_inc_error() {\n");
+    emit_str(&mut cg, "    %cur = load i64, ptr @morrow_diag_errors\n");
     emit_str(&mut cg, "    %inc = add i64 %cur, 1\n");
+    emit_str(&mut cg, "    store i64 %inc, ptr @morrow_diag_errors\n");
     emit_str(&mut cg, "    store i64 %inc, ptr @tungsten_diag_errors\n");
     emit_str(&mut cg, "    ret i64 %inc\n}\n\n");
 
-    emit_str(&mut cg, "define i64 @tungsten_diag_get_errors() {\n");
-    emit_str(&mut cg, "    %cur = load i64, ptr @tungsten_diag_errors\n");
+    emit_str(&mut cg, "define i64 @morrow_diag_get_errors() {\n");
+    emit_str(&mut cg, "    %cur = load i64, ptr @morrow_diag_errors\n");
     emit_str(&mut cg, "    ret i64 %cur\n}\n\n");
 
-    emit_str(&mut cg, "define i1 @tungsten_report_error(ptr %msg, i64 %line, i64 %col) {\n");
-    emit_str(&mut cg, "    call i64 @tungsten_diag_inc_error()\n");
+    emit_str(&mut cg, "define i1 @morrow_report_error(ptr %msg, i64 %line, i64 %col) {\n");
+    emit_str(&mut cg, "    call i64 @morrow_diag_inc_error()\n");
     emit_str(&mut cg, "    call i32 @puts(ptr %msg)\n");
     emit_str(&mut cg, "    call i32 @fflush(ptr null)\n");
     emit_str(&mut cg, "    ret i1 true\n}\n\n");
 
-    emit_str(&mut cg, "define ptr @tungsten_alloc(i64 %size, i64 %align) {\n");
+    emit_str(&mut cg, "define ptr @morrow_alloc(i64 %size, i64 %align) {\n");
     emit_str(&mut cg, "    %is_zero = icmp eq i64 %size, 0\n");
     emit_str(&mut cg, "    %alloc_sz = select i1 %is_zero, i64 8, i64 %size\n");
     emit_str(&mut cg, "    %p = call ptr @malloc(i64 %alloc_sz)\n");
     emit_str(&mut cg, "    ret ptr %p\n}\n\n");
 
-    emit_str(&mut cg, "define ptr @tungsten_region_enter() {\n");
+    emit_str(&mut cg, "define ptr @morrow_region_enter() {\n");
     emit_str(&mut cg, "    %arena = call ptr @malloc(i64 32)\n");
     emit_str(&mut cg, "    %init_cap = add i64 16777216, 0\n");
     emit_str(&mut cg, "    %chunk_total = add i64 %init_cap, 16\n");
@@ -3745,12 +3791,12 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
     emit_str(&mut cg, "    store ptr %chunk, ptr %chunk_list_ptr\n");
     emit_str(&mut cg, "    ret ptr %arena\n}\n\n");
 
-    emit_str(&mut cg, "define ptr @tungsten_region_alloc(ptr %arena, i64 %size, i64 %align) {\n");
+    emit_str(&mut cg, "define ptr @morrow_region_alloc(ptr %arena, i64 %size, i64 %align) {\n");
     emit_str(&mut cg, "entry:\n");
     emit_str(&mut cg, "    %is_null = icmp eq ptr %arena, null\n");
     emit_str(&mut cg, "    br i1 %is_null, label %null_arena, label %check_alloc\n");
     emit_str(&mut cg, "null_arena:\n");
-    emit_str(&mut cg, "    %hp = call ptr @tungsten_alloc(i64 %size, i64 %align)\n");
+    emit_str(&mut cg, "    %hp = call ptr @morrow_alloc(i64 %size, i64 %align)\n");
     emit_str(&mut cg, "    ret ptr %hp\n");
     emit_str(&mut cg, "check_alloc:\n");
     emit_str(&mut cg, "    %align_cmp = icmp slt i64 %align, 8\n");
@@ -3788,7 +3834,7 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
     emit_str(&mut cg, "    store i64 %chunk_cap, ptr %cap_ptr\n");
     emit_str(&mut cg, "    ret ptr %fresh_buf\n}\n\n");
 
-    emit_str(&mut cg, "define ptr @tungsten_region_grow(ptr %arena, ptr %ptr, i64 %old_sz, i64 %new_sz, i64 %align) {\n");
+    emit_str(&mut cg, "define ptr @morrow_region_grow(ptr %arena, ptr %ptr, i64 %old_sz, i64 %new_sz, i64 %align) {\n");
     emit_str(&mut cg, "entry:\n");
     emit_str(&mut cg, "    %is_null = icmp eq ptr %arena, null\n");
     emit_str(&mut cg, "    br i1 %is_null, label %heap_realloc, label %check_in_place\n");
@@ -3822,7 +3868,7 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
     emit_str(&mut cg, "    store i64 %new_off, ptr %off_ptr\n");
     emit_str(&mut cg, "    ret ptr %ptr\n");
     emit_str(&mut cg, "fallback_alloc:\n");
-    emit_str(&mut cg, "    %new_buf = call ptr @tungsten_region_alloc(ptr %arena, i64 %new_sz, i64 %align)\n");
+    emit_str(&mut cg, "    %new_buf = call ptr @morrow_region_alloc(ptr %arena, i64 %new_sz, i64 %align)\n");
     emit_str(&mut cg, "    %not_null = icmp ne ptr %ptr, null\n");
     emit_str(&mut cg, "    br i1 %not_null, label %do_copy, label %done_grow\n");
     emit_str(&mut cg, "do_copy:\n");
@@ -3834,7 +3880,7 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
     emit_str(&mut cg, "done_grow:\n");
     emit_str(&mut cg, "    ret ptr %new_buf\n}\n\n");
 
-    emit_str(&mut cg, "define void @tungsten_region_exit(ptr %arena) {\n");
+    emit_str(&mut cg, "define void @morrow_region_exit(ptr %arena) {\n");
     emit_str(&mut cg, "entry:\n");
     emit_str(&mut cg, "    %is_null = icmp eq ptr %arena, null\n");
     emit_str(&mut cg, "    br i1 %is_null, label %done, label %init_free\n");
@@ -3856,7 +3902,7 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
     emit_str(&mut cg, "done:\n");
     emit_str(&mut cg, "    ret void\n}\n\n");
 
-    emit_str(&mut cg, "define ptr @tungsten_fs_read_file_in(ptr %path, ptr %arena) {\n");
+    emit_str(&mut cg, "define ptr @morrow_fs_read_file_in(ptr %path, ptr %arena) {\n");
     emit_str(&mut cg, "    %fp = call ptr @fopen(ptr %path, ptr @str_mode_rb)\n");
     emit_str(&mut cg, "    %is_null = icmp eq ptr %fp, null\n");
     emit_str(&mut cg, "    br i1 %is_null, label %ret_empty, label %read_content\n");
@@ -3873,7 +3919,7 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
     emit_str(&mut cg, "    %h_buf = call ptr @malloc(i64 %buf_sz)\n");
     emit_str(&mut cg, "    br label %do_read\n");
     emit_str(&mut cg, "alloc_arena:\n");
-    emit_str(&mut cg, "    %a_buf = call ptr @tungsten_region_alloc(ptr %arena, i64 %buf_sz, i64 8)\n");
+    emit_str(&mut cg, "    %a_buf = call ptr @morrow_region_alloc(ptr %arena, i64 %buf_sz, i64 8)\n");
     emit_str(&mut cg, "    br label %do_read\n");
     emit_str(&mut cg, "do_read:\n");
     emit_str(&mut cg, "    %buf = phi ptr [ %h_buf, %alloc_heap ], [ %a_buf, %alloc_arena ]\n");
@@ -3883,7 +3929,7 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
     emit_str(&mut cg, "    store i8 0, ptr %term\n");
     emit_str(&mut cg, "    ret ptr %buf\n}\n\n");
 
-    emit_str(&mut cg, "define i1 @tungsten_fs_write_file(ptr %path, ptr %content) {\n");
+    emit_str(&mut cg, "define i1 @morrow_fs_write_file(ptr %path, ptr %content) {\n");
     emit_str(&mut cg, "    %fp = call ptr @fopen(ptr %path, ptr @str_mode_wb)\n");
     emit_str(&mut cg, "    %is_null = icmp eq ptr %fp, null\n");
     emit_str(&mut cg, "    br i1 %is_null, label %fail, label %write_bytes\n");
@@ -3895,7 +3941,7 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
     emit_str(&mut cg, "fail:\n");
     emit_str(&mut cg, "    ret i1 false\n}\n\n");
 
-    emit_str(&mut cg, "define i1 @tungsten_fs_file_exists(ptr %path) {\n");
+    emit_str(&mut cg, "define i1 @morrow_fs_file_exists(ptr %path) {\n");
     emit_str(&mut cg, "    %fp = call ptr @fopen(ptr %path, ptr @str_mode_rb)\n");
     emit_str(&mut cg, "    %is_null = icmp eq ptr %fp, null\n");
     emit_str(&mut cg, "    br i1 %is_null, label %not_exists, label %exists\n");
@@ -3905,7 +3951,7 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
     emit_str(&mut cg, "not_exists:\n");
     emit_str(&mut cg, "    ret i1 false\n}\n\n");
 
-    emit_str(&mut cg, "define i64 @tungsten_process_exec(ptr %cmd, ptr %args) {\n");
+    emit_str(&mut cg, "define i64 @morrow_process_exec(ptr %cmd, ptr %args) {\n");
     emit_str(&mut cg, "    %is_args_null = icmp eq ptr %args, null\n");
     emit_str(&mut cg, "    br i1 %is_args_null, label %run_simple, label %check_args_empty\n");
     emit_str(&mut cg, "check_args_empty:\n");
@@ -3933,8 +3979,8 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
     emit_str(&mut cg, "    %res_simple_i64 = sext i32 %res_code_simple to i64\n");
     emit_str(&mut cg, "    ret i64 %res_simple_i64\n}\n\n");
 
-    // OS Platform Abstraction Helpers
-    emit_str(&mut cg, "define i32 @tungsten_create_dir(ptr %path) {\n");
+    // OS Platform Abstraction Helpers - Morrow Canonical
+    emit_str(&mut cg, "define i32 @morrow_create_dir(ptr %path) {\n");
     if is_wasm {
         emit_str(&mut cg, "    ret i32 0\n}\n\n");
     } else if is_linux {
@@ -3945,7 +3991,7 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
         emit_str(&mut cg, "    ret i32 %res\n}\n\n");
     }
 
-    emit_str(&mut cg, "define void @tungsten_sleep_ms(i32 %ms) {\n");
+    emit_str(&mut cg, "define void @morrow_sleep_ms(i32 %ms) {\n");
     if is_wasm {
         emit_str(&mut cg, "    ret void\n}\n\n");
     } else if is_linux {
@@ -3957,7 +4003,7 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
         emit_str(&mut cg, "    ret void\n}\n\n");
     }
 
-    emit_str(&mut cg, "define ptr @tungsten_get_cmd_line() {\n");
+    emit_str(&mut cg, "define ptr @morrow_get_cmd_line() {\n");
     if is_wasm {
         emit_str(&mut cg, "    ret ptr @str_empty\n}\n\n");
     } else if is_linux {
@@ -3999,27 +4045,27 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
         emit_str(&mut cg, "    ret ptr %cmd\n}\n\n");
     }
 
-    // Algebraic Effect Runtime Helpers
-    emit_str(&mut cg, "define void @tungsten_effect_push_frame(ptr %frame, i64 %effect_sym, ptr %dispatch_fn) {\nentry:\n");
-    emit_str(&mut cg, "    %prev = load ptr, ptr @tungsten_top_handler_frame\n");
+    // Algebraic Effect Runtime Helpers - Morrow Canonical
+    emit_str(&mut cg, "define void @morrow_effect_push_frame(ptr %frame, i64 %effect_sym, ptr %dispatch_fn) {\nentry:\n");
+    emit_str(&mut cg, "    %prev = load ptr, ptr @morrow_top_handler_frame\n");
     emit_str(&mut cg, "    store ptr %prev, ptr %frame\n");
     emit_str(&mut cg, "    %gep_eff = getelementptr inbounds i8, ptr %frame, i64 8\n");
     emit_str(&mut cg, "    store i64 %effect_sym, ptr %gep_eff\n");
     emit_str(&mut cg, "    %gep_disp = getelementptr inbounds i8, ptr %frame, i64 16\n");
     emit_str(&mut cg, "    store ptr %dispatch_fn, ptr %gep_disp\n");
-    emit_str(&mut cg, "    store ptr %frame, ptr @tungsten_top_handler_frame\n");
+    emit_str(&mut cg, "    store ptr %frame, ptr @morrow_top_handler_frame\n");
     emit_str(&mut cg, "    ret void\n}\n\n");
 
-    emit_str(&mut cg, "define void @tungsten_effect_pop_frame() {\nentry:\n");
-    emit_str(&mut cg, "    %top = load ptr, ptr @tungsten_top_handler_frame\n");
+    emit_str(&mut cg, "define void @morrow_effect_pop_frame() {\nentry:\n");
+    emit_str(&mut cg, "    %top = load ptr, ptr @morrow_top_handler_frame\n");
     emit_str(&mut cg, "    %is_null = icmp eq ptr %top, null\n");
     emit_str(&mut cg, "    br i1 %is_null, label %done, label %pop\npop:\n");
     emit_str(&mut cg, "    %prev = load ptr, ptr %top\n");
-    emit_str(&mut cg, "    store ptr %prev, ptr @tungsten_top_handler_frame\n");
+    emit_str(&mut cg, "    store ptr %prev, ptr @morrow_top_handler_frame\n");
     emit_str(&mut cg, "    br label %done\ndone:\n    ret void\n}\n\n");
 
-    emit_str(&mut cg, "define ptr @tungsten_effect_find_handler(i64 %effect_sym) {\nentry:\n");
-    emit_str(&mut cg, "    %cur = load ptr, ptr @tungsten_top_handler_frame\n");
+    emit_str(&mut cg, "define ptr @morrow_effect_find_handler(i64 %effect_sym) {\nentry:\n");
+    emit_str(&mut cg, "    %cur = load ptr, ptr @morrow_top_handler_frame\n");
     emit_str(&mut cg, "    br label %loop\nloop:\n");
     emit_str(&mut cg, "    %p = phi ptr [ %cur, %entry ], [ %next, %check_next ]\n");
     emit_str(&mut cg, "    %is_null = icmp eq ptr %p, null\n");
@@ -4031,14 +4077,99 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
     emit_str(&mut cg, "    %next = load ptr, ptr %p\n");
     emit_str(&mut cg, "    br label %loop\nfound:\n    ret ptr %p\nnot_found:\n    ret ptr null\n}\n\n");
 
-    emit_str(&mut cg, "define i64 @tungsten_continuation_resume(ptr %cont, i64 %val) {\nentry:\n");
+    emit_str(&mut cg, "define i64 @morrow_continuation_resume(ptr %cont, i64 %val) {\nentry:\n");
     emit_str(&mut cg, "    %gep_resumed = getelementptr inbounds i8, ptr %cont, i64 528\n");
     emit_str(&mut cg, "    store i64 1, ptr %gep_resumed\n");
     emit_str(&mut cg, "    %gep_rval = getelementptr inbounds i8, ptr %cont, i64 520\n");
     emit_str(&mut cg, "    store i64 %val, ptr %gep_rval\n");
     emit_str(&mut cg, "    %gep_jbuf = getelementptr inbounds i8, ptr %cont, i64 8\n");
-    emit_str(&mut cg, "    call void @tungsten_longjmp(ptr %gep_jbuf, i32 1)\n");
+    emit_str(&mut cg, "    call void @morrow_longjmp(ptr %gep_jbuf, i32 1)\n");
     emit_str(&mut cg, "    ret i64 0\n}\n\n");
+
+    // Dual-Symbol Forwarding Aliases for Tungsten Compatibility Bridge
+    emit_str(&mut cg, "define void @tungsten_println_i64(i64 %n) {\n");
+    emit_str(&mut cg, "    call void @morrow_println_i64(i64 %n)\n");
+    emit_str(&mut cg, "    ret void\n}\n\n");
+
+    emit_str(&mut cg, "define i64 @tungsten_diag_reset() {\n");
+    emit_str(&mut cg, "    %r = call i64 @morrow_diag_reset()\n");
+    emit_str(&mut cg, "    ret i64 %r\n}\n\n");
+
+    emit_str(&mut cg, "define i64 @tungsten_diag_inc_error() {\n");
+    emit_str(&mut cg, "    %r = call i64 @morrow_diag_inc_error()\n");
+    emit_str(&mut cg, "    ret i64 %r\n}\n\n");
+
+    emit_str(&mut cg, "define i64 @tungsten_diag_get_errors() {\n");
+    emit_str(&mut cg, "    %r = call i64 @morrow_diag_get_errors()\n");
+    emit_str(&mut cg, "    ret i64 %r\n}\n\n");
+
+    emit_str(&mut cg, "define i1 @tungsten_report_error(ptr %msg, i64 %line, i64 %col) {\n");
+    emit_str(&mut cg, "    %r = call i1 @morrow_report_error(ptr %msg, i64 %line, i64 %col)\n");
+    emit_str(&mut cg, "    ret i1 %r\n}\n\n");
+
+    emit_str(&mut cg, "define ptr @tungsten_alloc(i64 %size, i64 %align) {\n");
+    emit_str(&mut cg, "    %r = call ptr @morrow_alloc(i64 %size, i64 %align)\n");
+    emit_str(&mut cg, "    ret ptr %r\n}\n\n");
+
+    emit_str(&mut cg, "define ptr @tungsten_region_enter() {\n");
+    emit_str(&mut cg, "    %r = call ptr @morrow_region_enter()\n");
+    emit_str(&mut cg, "    ret ptr %r\n}\n\n");
+
+    emit_str(&mut cg, "define ptr @tungsten_region_alloc(ptr %arena, i64 %size, i64 %align) {\n");
+    emit_str(&mut cg, "    %r = call ptr @morrow_region_alloc(ptr %arena, i64 %size, i64 %align)\n");
+    emit_str(&mut cg, "    ret ptr %r\n}\n\n");
+
+    emit_str(&mut cg, "define ptr @tungsten_region_grow(ptr %arena, ptr %ptr, i64 %old_sz, i64 %new_sz, i64 %align) {\n");
+    emit_str(&mut cg, "    %r = call ptr @morrow_region_grow(ptr %arena, ptr %ptr, i64 %old_sz, i64 %new_sz, i64 %align)\n");
+    emit_str(&mut cg, "    ret ptr %r\n}\n\n");
+
+    emit_str(&mut cg, "define void @tungsten_region_exit(ptr %arena) {\n");
+    emit_str(&mut cg, "    call void @morrow_region_exit(ptr %arena)\n");
+    emit_str(&mut cg, "    ret void\n}\n\n");
+
+    emit_str(&mut cg, "define ptr @tungsten_fs_read_file_in(ptr %path, ptr %arena) {\n");
+    emit_str(&mut cg, "    %r = call ptr @morrow_fs_read_file_in(ptr %path, ptr %arena)\n");
+    emit_str(&mut cg, "    ret ptr %r\n}\n\n");
+
+    emit_str(&mut cg, "define i1 @tungsten_fs_write_file(ptr %path, ptr %content) {\n");
+    emit_str(&mut cg, "    %r = call i1 @morrow_fs_write_file(ptr %path, ptr %content)\n");
+    emit_str(&mut cg, "    ret i1 %r\n}\n\n");
+
+    emit_str(&mut cg, "define i1 @tungsten_fs_file_exists(ptr %path) {\n");
+    emit_str(&mut cg, "    %r = call i1 @morrow_fs_file_exists(ptr %path)\n");
+    emit_str(&mut cg, "    ret i1 %r\n}\n\n");
+
+    emit_str(&mut cg, "define i64 @tungsten_process_exec(ptr %cmd, ptr %args) {\n");
+    emit_str(&mut cg, "    %r = call i64 @morrow_process_exec(ptr %cmd, ptr %args)\n");
+    emit_str(&mut cg, "    ret i64 %r\n}\n\n");
+
+    emit_str(&mut cg, "define i32 @tungsten_create_dir(ptr %path) {\n");
+    emit_str(&mut cg, "    %r = call i32 @morrow_create_dir(ptr %path)\n");
+    emit_str(&mut cg, "    ret i32 %r\n}\n\n");
+
+    emit_str(&mut cg, "define void @tungsten_sleep_ms(i32 %ms) {\n");
+    emit_str(&mut cg, "    call void @morrow_sleep_ms(i32 %ms)\n");
+    emit_str(&mut cg, "    ret void\n}\n\n");
+
+    emit_str(&mut cg, "define ptr @tungsten_get_cmd_line() {\n");
+    emit_str(&mut cg, "    %r = call ptr @morrow_get_cmd_line()\n");
+    emit_str(&mut cg, "    ret ptr %r\n}\n\n");
+
+    emit_str(&mut cg, "define void @tungsten_effect_push_frame(ptr %frame, i64 %effect_sym, ptr %dispatch_fn) {\n");
+    emit_str(&mut cg, "    call void @morrow_effect_push_frame(ptr %frame, i64 %effect_sym, ptr %dispatch_fn)\n");
+    emit_str(&mut cg, "    ret void\n}\n\n");
+
+    emit_str(&mut cg, "define void @tungsten_effect_pop_frame() {\n");
+    emit_str(&mut cg, "    call void @morrow_effect_pop_frame()\n");
+    emit_str(&mut cg, "    ret void\n}\n\n");
+
+    emit_str(&mut cg, "define ptr @tungsten_effect_find_handler(i64 %effect_sym) {\n");
+    emit_str(&mut cg, "    %r = call ptr @morrow_effect_find_handler(i64 %effect_sym)\n");
+    emit_str(&mut cg, "    ret ptr %r\n}\n\n");
+
+    emit_str(&mut cg, "define i64 @tungsten_continuation_resume(ptr %cont, i64 %val) {\n");
+    emit_str(&mut cg, "    %r = call i64 @morrow_continuation_resume(ptr %cont, i64 %val)\n");
+    emit_str(&mut cg, "    ret i64 %r\n}\n\n");
 
     // Handler dispatch functions
     let mut hi: i64 = 0;

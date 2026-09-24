@@ -1,10 +1,10 @@
-# Tungsten
+# Morrow
 
-> **Tungsten** is a modern systems-level programming language designed to provide fearless concurrency, zero-cost abstractions, and mathematical memory safety without garbage collection, borrow-checker lifetimes, or async function coloring.
+> **Morrow** is a modern systems-level programming language designed to provide fearless concurrency, zero-cost abstractions, and mathematical memory safety without garbage collection, borrow-checker lifetimes, or async function coloring.
 
-NOTE: Tungsten is not a production level programming language at the current moment and should not be considered stable. Processes, features, and much more will be changed regularly.
+NOTE: Morrow is not a production level programming language at the current moment and should not be considered stable. Processes, features, and much more will be changed regularly.
 [![Release](https://img.shields.io/badge/Release-v2.0.0-blue.svg)](https://github.com/LeTrollologist/Tungsten/releases)
-[![Pure Tungsten](https://img.shields.io/badge/Language-Pure%20Tungsten-blue.svg)](compiler/)
+[![Pure Morrow](https://img.shields.io/badge/Language-Pure%20Morrow-blue.svg)](compiler/)
 [![Self-Hosting](https://img.shields.io/badge/Self--Hosting-100%25%20Genesis-brightgreen.svg)](bin/)
 [![Convergence](https://img.shields.io/badge/Fixed--Point%20Convergence-Bitwise%20Identical-success.svg)](ROADMAP.md)
 [![License](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
@@ -35,14 +35,14 @@ For the architecture audit and remediation matrix, see [AUDIT.md](AUDIT.md).
 6. **Deterministic Package Management & Lockfile (`Forge.lock`)**  
    Pure local SemVer resolution (`^`, `*`), 3-state DAG cycle detection, alphabetical lockfile determinism, graph closure verification, and transactional dependency mutation via `forge add` and `forge resolve`.
 
-7. **100% Pure Self-Hosting Genesis (Independent of Rust & Cargo)**  
-   The entire compiler frontend, typechecker, TIR intermediate representation, middle-end optimizer, LLVM code generator, formatter, LSP server, and Forge CLI are written in **pure Tungsten** (`compiler/*.tg`). Standalone binaries (`bin/tgc.exe`, `bin/forge.exe`) provide instant compilation with zero external toolchain dependencies.
+7. **100% Pure Standalone Self-Hosting Genesis (Independent of Rust, Cargo, & Seed Compilers)**  
+   The entire compiler frontend, typechecker, TIR intermediate representation, middle-end optimizer, LLVM code generator, formatter, LSP server, and Forge CLI are written in **pure Morrow** (`compiler/*.mw`). Standalone binaries (`bin/mwc.exe`, `bin/forge.exe`) provide instant compilation with zero external toolchain dependencies.
 
 ---
 
 ## Modern Syntax Showcase
 
-```tungsten
+```morrow
 import std.net;
 import std.collections;
 
@@ -95,59 +95,59 @@ fn main() -> i64 {
 ## Workspace Architecture
 
 ```
-Tungsten/
+Morrow/
 ├── bin/                   # Standalone Production Binaries (Pure Self-Hosted Seed)
-│   ├── tgc.exe            # Pure Tungsten Native Compiler
-│   └── forge.exe          # Pure Tungsten Toolchain & Package Manager
-├── compiler/              # Self-Hosting Compiler Subsystems (100% Pure Tungsten)
-│   ├── ast.tg             # AST node data structures and token definitions
-│   ├── lexer.tg           # High-speed keyword and symbol tokenizer
-│   ├── parser.tg          # Recursive-descent parser with precedence climbing
-│   ├── typeck.tg          # Bidirectional typechecker & refinement constraint solver
-│   ├── tir.tg             # Basic-Block SSA Typed Intermediate Representation
-│   ├── opt.tg             # Constant folding, DCE, and bounds elimination passes
-│   ├── smt.tg             # SMT-LIB2 solver bridge (QF_NIA / QF_LIA query generator)
-│   ├── codegen.tg         # Multi-target LLVM IR emitter, runtime thunks, and ABI bridge
-│   ├── fmt.tg             # Canonical, idempotent pretty-printer
-│   ├── package.tg         # Forge.toml manifest parser, SemVer, and Forge.lock solver
-│   ├── json.tg            # Pure Tungsten JSON serializer and deserializer
-│   ├── lsp.tg             # Language Server Protocol stdio RPC engine
-│   ├── forge.tg           # Unified CLI toolchain implementation
-│   ├── diagnostics.tg     # Algebraic effect diagnostic error reporter
-│   ├── interner.tg        # Region-backed Robin Hood symbol interner
-│   └── main.tg            # Compiler driver entry point
-├── std/                   # Tungsten Standard Library (Pure Tungsten)
-│   ├── collections.tg     # Cache-conscious Robin Hood HashMap, Vec, StringBuffer
-│   ├── test.tg            # Native testing framework (assert, assert_eq, assert_str_eq)
-│   ├── fs.tg              # Scoped region filesystem operations
-│   ├── process.tg         # Subprocess spawning and execution
-│   ├── refinements.tg     # Standard mathematical interval refinements
-│   ├── io.tg              # Buffered console I/O
-│   ├── net.tg             # TCP socket networking
-│   ├── http.tg            # Zero-copy HTTP/1.1 engine
-│   ├── sqlite.tg          # Parameterized, SQL-injection-immune database driver
-│   └── sync.tg            # Channels and message passing
-├── tests/                 # Pure Tungsten Test Suites (14 Native Suites)
-│   ├── typeck_refinements.tg # Type checking and interval bounds verification
-│   ├── tir_optimizer.tg   # SSA constant folding and optimization passes
-│   ├── formatter_tests.tg # Pretty-printer output and idempotency check
-│   ├── package_tests.tg   # SemVer, caret constraints, and Forge.lock generation
-│   ├── package_negative_test.tg # Cycle detection, conflict rejection, and closure invariants
-│   ├── bootstrap_tests.tg # Recursion, arithmetic, and control flow sanity
-│   ├── error_handling_tests.tg # Algebraic effect diagnostic reporting
-│   ├── win32_gdi_callback_test.tg # Native Win32 C-ABI FFI and callbacks
-│   ├── struct_field_layout_test.tg # Dynamic struct field offsets and indexing
-│   ├── refinement_test.tg # User-defined refinement syntax and interval solver
-│   ├── region_escape_test.tg # Compile-time lexical region escape analysis
-│   ├── generics_test.tg   # Parametric generics and monomorphization
-│   ├── effects_test.tg    # Delimited continuations, resumption, and abortive unwinding
-│   └── formal_verification_test.tg # Non-linear SMT intervals, affine & linear resources
+│   ├── mwc.exe            # Pure Morrow Native Compiler
+│   └── forge.exe          # Pure Morrow Toolchain & Package Manager
+├── compiler/              # Self-Hosting Compiler Subsystems (100% Pure Morrow)
+│   ├── ast.mw             # AST node data structures and token definitions
+│   ├── lexer.mw           # High-speed keyword and symbol tokenizer
+│   ├── parser.mw          # Recursive-descent parser with precedence climbing
+│   ├── typeck.mw          # Bidirectional typechecker & refinement constraint solver
+│   ├── tir.mw             # Basic-Block SSA Typed Intermediate Representation
+│   ├── opt.mw             # Constant folding, DCE, and bounds elimination passes
+│   ├── smt.mw             # SMT-LIB2 solver bridge (QF_NIA / QF_LIA query generator)
+│   ├── codegen.mw         # Multi-target LLVM IR emitter, runtime thunks, and ABI bridge
+│   ├── fmt.mw             # Canonical, idempotent pretty-printer
+│   ├── package.mw         # Forge.toml manifest parser, SemVer, and Forge.lock solver
+│   ├── json.mw            # Pure Morrow JSON serializer and deserializer
+│   ├── lsp.mw             # Language Server Protocol stdio RPC engine
+│   ├── forge.mw           # Unified CLI toolchain implementation
+│   ├── diagnostics.mw     # Algebraic effect diagnostic error reporter
+│   ├── interner.mw        # Region-backed Robin Hood symbol interner
+│   └── main.mw            # Compiler driver entry point
+├── std/                   # Morrow Standard Library (Pure Morrow)
+│   ├── collections.mw     # Cache-conscious Robin Hood HashMap, Vec, StringBuffer
+│   ├── test.mw            # Native testing framework (assert, assert_eq, assert_str_eq)
+│   ├── fs.mw              # Scoped region filesystem operations
+│   ├── process.mw         # Subprocess spawning and execution
+│   ├── refinements.mw     # Standard mathematical interval refinements
+│   ├── io.mw              # Buffered console I/O
+│   ├── net.mw             # TCP socket networking
+│   ├── http.mw            # Zero-copy HTTP/1.1 engine
+│   ├── sqlite.mw          # Parameterized, SQL-injection-immune database driver
+│   └── sync.mw            # Channels and message passing
+├── tests/                 # Pure Morrow Test Suites (14 Native Suites)
+│   ├── typeck_refinements.mw # Type checking and interval bounds verification
+│   ├── tir_optimizer.mw   # SSA constant folding and optimization passes
+│   ├── formatter_tests.mw # Pretty-printer output and idempotency check
+│   ├── package_tests.mw   # SemVer, caret constraints, and Forge.lock generation
+│   ├── package_negative_test.mw # Cycle detection, conflict rejection, and closure invariants
+│   ├── bootstrap_tests.mw # Recursion, arithmetic, and control flow sanity
+│   ├── error_handling_tests.mw # Algebraic effect diagnostic reporting
+│   ├── win32_gdi_callback_test.mw # Native Win32 C-ABI FFI and callbacks
+│   ├── struct_field_layout_test.mw # Dynamic struct field offsets and indexing
+│   ├── refinement_test.mw # User-defined refinement syntax and interval solver
+│   ├── region_escape_test.mw # Compile-time lexical region escape analysis
+│   ├── generics_test.mw   # Parametric generics and monomorphization
+│   ├── effects_test.mw    # Delimited continuations, resumption, and abortive unwinding
+│   └── formal_verification_test.mw # Non-linear SMT intervals, affine & linear resources
 ├── examples/              # Flagship Examples & Production Microservices
-│   ├── bootstrap_sample.tg# Minimal bootstrap program
-│   ├── wasm_sample.tg     # WebAssembly computation demo
-│   ├── web_service_v2.tg  # Fortress v2 Async IOCP Web Server (C100K engine)
-│   ├── web_service.tg     # Fortress v1 REST API with SQLite & Region Sandboxing
-│   └── player.tg          # Game demo with effects, refinements, and regions
+│   ├── bootstrap_sample.mw# Minimal bootstrap program
+│   ├── wasm_sample.mw     # WebAssembly computation demo
+│   ├── web_service_v2.mw  # Fortress v2 Async IOCP Web Server (C100K engine)
+│   ├── web_service.mw     # Fortress v1 REST API with SQLite & Region Sandboxing
+│   └── player.mw          # Game demo with effects, refinements, and regions
 ├── docs/
 │   └── SYNTAX.md          # Comprehensive Language & Syntax Specification
 └── archive/               # Historical Stage-0 Artifacts
@@ -158,15 +158,15 @@ Tungsten/
 
 ## Developer Experience & Tooling
 
-All developer workflows are executed natively through [`bin/forge.exe`](bin/forge.exe) and [`bin/tgc.exe`](bin/tgc.exe) without any Cargo or Rust dependency.
+All developer workflows are executed natively through [`bin/forge.exe`](bin/forge.exe) and [`bin/mwc.exe`](bin/mwc.exe) without any Cargo or Rust dependency.
 
 ### 1. Run Native Test Suites (`forge test`)
-Run all 14 pure Tungsten test suites compiled and executed on the fly:
+Run all 14 pure Morrow test suites compiled and executed on the fly:
 ```powershell
 .\bin\forge.exe test
 ```
 ```
-running tungsten native test suites...
+running morrow native test suites...
 === Running Typecheck & Refinement Test Suite === ... ok
 === Running TIR & Optimizer Test Suite === ... ok
 === Running Formatter Test Suite === ... ok
@@ -184,26 +184,26 @@ running tungsten native test suites...
 test result: ok. all test suites passed!
 ```
 
-### 2. Compile a Program (`forge build` or `tgc`)
+### 2. Compile a Program (`forge build` or `mwc`)
 ```powershell
 # Compile natively for host (Windows x86_64)
-.\bin\forge.exe build examples\bootstrap_sample.tg -o target\app.exe
+.\bin\forge.exe build examples\bootstrap_sample.mw -o target\app.exe
 
 # Or compile directly with the self-hosted compiler
-.\bin\tgc.exe examples\bootstrap_sample.tg -o target\app.exe
+.\bin\mwc.exe examples\bootstrap_sample.mw -o target\app.exe
 ```
 
 ### 3. Universal Cross-Compilation (`--target`)
 Compile from Windows to Linux ELF, 64-bit ARM, or WebAssembly:
 ```powershell
 # Linux x86_64 ELF
-.\bin\tgc.exe examples\bootstrap_sample.tg --target x86_64-unknown-linux-gnu -o target\app_linux
+.\bin\mwc.exe examples\bootstrap_sample.mw --target x86_64-unknown-linux-gnu -o target\app_linux
 
 # Linux AArch64 (64-bit ARM)
-.\bin\tgc.exe examples\bootstrap_sample.tg --target aarch64-unknown-linux-gnu -o target\app_arm64.o
+.\bin\mwc.exe examples\bootstrap_sample.mw --target aarch64-unknown-linux-gnu -o target\app_arm64.o
 
 # WebAssembly (runnable via Node.js or browser)
-.\bin\tgc.exe examples\wasm_sample.tg --target wasm32-unknown-unknown -o target\app.wasm
+.\bin\mwc.exe examples\wasm_sample.mw --target wasm32-unknown-unknown -o target\app.wasm
 ```
 
 ### 4. Package Management & Deterministic Locking (`forge add`, `forge resolve`)
@@ -221,23 +221,23 @@ Compile from Windows to Linux ELF, 64-bit ARM, or WebAssembly:
 ### 5. Rapid Type & Refinement Check (`forge check`)
 Perform instantaneous lexical, syntactical, refinement interval, and region escape checking without code generation:
 ```powershell
-.\bin\forge.exe check examples\player.tg
+.\bin\forge.exe check examples\player.mw
 ```
 
 ### 6. Canonical Code Formatting (`forge fmt`)
 ```powershell
 # Format code in place
-.\bin\forge.exe fmt examples\bootstrap_sample.tg
+.\bin\forge.exe fmt examples\bootstrap_sample.mw
 
 # Validate formatting in CI
-.\bin\forge.exe fmt --check examples\bootstrap_sample.tg
+.\bin\forge.exe fmt --check examples\bootstrap_sample.mw
 ```
 
 ### 7. Self-Compiling the Compiler (Fixed-Point Bootstrap Loop)
-Recompile the entire Tungsten compiler using its own binary:
+Recompile the entire Morrow compiler using its own binary:
 ```powershell
-.\bin\tgc.exe compiler\main.tg -o target\stage1.exe
-.\target\stage1.exe compiler\main.tg -o target\stage2.exe
-.\target\stage2.exe compiler\main.tg -o target\stage3.exe
+.\bin\mwc.exe compiler\main.mw -o target\stage1.exe
+.\target\stage1.exe compiler\main.mw -o target\stage2.exe
+.\target\stage2.exe compiler\main.mw -o target\stage3.exe
 ```
 This produces bitwise identical LLVM IR (`SHA256(stage2.exe.ll) == SHA256(stage3.exe.ll)`), proving mathematical compiler stability.

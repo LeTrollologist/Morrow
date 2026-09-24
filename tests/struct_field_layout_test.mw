@@ -2,7 +2,7 @@
 import std.test;
 
 extern "C" {
-    fn tungsten_alloc(size: i64, align: i64) -> *mut u8;
+    fn morrow_alloc(size: i64, align: i64) -> *mut u8;
 }
 
 struct Account {
@@ -60,7 +60,7 @@ fn test_multi_struct_independence() {
 
 fn test_type_directed_array_indexing() {
     var my_numbers = unsafe {
-        tungsten_alloc(32, 8) as *mut i64
+        morrow_alloc(32, 8) as *mut i64
     };
 
     my_numbers[0] = 111;

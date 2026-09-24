@@ -4,7 +4,7 @@
 import std::collections;
 
 extern "C" {
-    fn tungsten_alloc(size: i64, align: i64) -> *mut u8;
+    fn morrow_alloc(size: i64, align: i64) -> *mut u8;
 }
 
 effect Channel {
@@ -19,7 +19,7 @@ effect Async {
 
 pub fn channel_new() -> i64 {
     let v = vec_new::<i64>();
-    let p = unsafe { tungsten_alloc(32, 8) as *mut Vec<i64> };
+    let p = unsafe { morrow_alloc(32, 8) as *mut Vec<i64> };
     p.data = v.data;
     p.len = 0;
     p.cap = v.cap;

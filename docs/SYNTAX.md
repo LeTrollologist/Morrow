@@ -1,6 +1,6 @@
-# Tungsten Language & Syntax Specification (v2.0)
+# Morrow Language & Syntax Specification (v2.0)
 
-> **Tungsten** is a modern systems-level programming language designed to provide fearless concurrency and zero-cost abstractions, replacing explicit lifetime annotations with **Region-Based Memory Management**, eliminating the async/await function coloring divide through **Algebraic Effects**, eliminating resource leaks through **Linear & Affine Types**, and eliminating runtime out-of-bounds panics through **Compile-Time Refinement Types**.
+> **Morrow** is a modern systems-level programming language designed to provide fearless concurrency and zero-cost abstractions, replacing explicit lifetime annotations with **Region-Based Memory Management**, eliminating the async/await function coloring divide through **Algebraic Effects**, eliminating resource leaks through **Linear & Affine Types**, and eliminating runtime out-of-bounds panics through **Compile-Time Refinement Types**.
 
 ---
 
@@ -25,7 +25,7 @@
 ## 1. Lexical Grammar
 
 ### Comments
-```tungsten
+```morrow
 // Single-line comment to end of line
 
 /* Multi-line
@@ -34,7 +34,7 @@
 
 ### Identifiers
 Identifiers must start with an ASCII letter or underscore, followed by any alphanumeric character or underscore:
-```tungsten
+```morrow
 var count = 0;
 let user_id = 42;
 let _scratch = "temp";
@@ -60,7 +60,7 @@ null      as
 
 ## 2. Type System & Refinements
 
-Tungsten is statically typed with bidirectional type inference and a compile-time arithmetic interval solver.
+Morrow is statically typed with bidirectional type inference and a compile-time arithmetic interval solver.
 
 ### Primitive Types
 | Type | Width | Description |
@@ -75,7 +75,7 @@ Tungsten is statically typed with bidirectional type inference and a compile-tim
 ### Refinement Types
 Refinement types decorate primitive integers with mathematically verified invariant intervals `[min..max]`. The compiler mathematically proves bounds at compile time, eliminating runtime bounds checks in generated machine code:
 
-```tungsten
+```morrow
 // Range interval refinements:
 type Percentage = u8[0..100];
 type Port = u16[1..65535];
@@ -88,7 +88,7 @@ var bad_port: Port = 70000 as Port;  // Compile-time error: 70000 outside [1..65
 
 #### Relational Refinements
 Refinement intervals can reference other variables in scope to enforce relational contracts:
-```tungsten
+```morrow
 // Enforces that 'end' must be greater than or equal to 'start'
 fn subslice_len(start: usize, end: usize(>= start)): usize {
     end - start // Guaranteed non-negative, zero bounds check emitted
@@ -96,8 +96,8 @@ fn subslice_len(start: usize, end: usize(>= start)): usize {
 ```
 
 #### Non-Linear Arithmetic & Provable Zero-Divisor Safety
-Tungsten's interval solver evaluates mixed-sign 4-point extremal multiplication and provable non-zero divisor safety:
-```tungsten
+Morrow's interval solver evaluates mixed-sign 4-point extremal multiplication and provable non-zero divisor safety:
+```morrow
 type Divisor = i64[1..100]; // Strictly positive, does not span 0
 fn safe_divide(x: i64, d: Divisor): i64 {
     x / d // Guaranteed non-zero divisor, division-by-zero panic statically impossible
@@ -107,7 +107,7 @@ If a divisor interval spans zero (e.g. `[-5..5]`), the compiler statically rejec
 
 #### Path-Sensitive Interval Narrowing
 Conditional expressions narrow variable interval bounds within conditional branches and restore original bounds upon exit:
-```tungsten
+```morrow
 fn process_score(score: i64) {
     if score >= 0 && score <= 100 {
         // Here, 'score' is automatically narrowed to refinement interval [0..100]
@@ -117,7 +117,7 @@ fn process_score(score: i64) {
 ```
 
 ### References and Pointers
-```tungsten
+```morrow
 &T          // Immutable borrowed reference
 &mut T      // Mutable borrowed reference
 *mut T      // Raw mutable pointer (C-compatible FFI)
@@ -126,7 +126,7 @@ fn process_score(score: i64) {
 
 ### Parametric Generics with Call-Site Monomorphization
 
-Tungsten implements parametric generics via ahead-of-time call-site monomorphization rather than runtime polymorphism or type erasure. Generic templates for structs and functions are instantiated into concrete specializations prior to typechecking and code generation.
+Morrow implements parametric generics via ahead-of-time call-site monomorphization rather than runtime polymorphism or type erasure. Generic templates for structs and functions are instantiated into concrete specializations prior to typechecking and code generation.
 
 Conceptual lowering pipeline:
 
@@ -145,7 +145,7 @@ LLVM
 
 Generic call arguments and struct instantiations require explicit turbofish syntax (`::<Type>`):
 
-```tungsten
+```morrow
 struct Pair<T> {
     first: T,
     second: T,
@@ -164,12 +164,12 @@ fn identity<T>(item: T): T {
 
 ## 3. Linear & Affine Resource Types
 
-Tungsten provides compile-time ownership semantics for OS handles, hardware peripherals, and critical system resources through **linear** and **affine** structs.
+Morrow provides compile-time ownership semantics for OS handles, hardware peripherals, and critical system resources through **linear** and **affine** structs.
 
 ### Linear Structs (`linear struct`) — Exactly-Once Consumption
 A linear struct represents a resource that must be consumed **exactly once**. If a linear resource is dropped or falls out of scope unconsumed, the compiler raises a compile-time leak error:
 
-```tungsten
+```morrow
 linear struct FileHandle {
     fd: i64,
 }
@@ -185,7 +185,7 @@ fn leak_violation(f: FileHandle) {
 
 #### Branch Convergence
 Linear resources must reach identical consumption states across all conditional control-flow branches:
-```tungsten
+```morrow
 fn branch_check(cond: bool, f: FileHandle) {
     if cond {
         close_file(f);
@@ -198,7 +198,7 @@ fn branch_check(cond: bool, f: FileHandle) {
 ### Affine Structs (`affine struct`) — At-Most-Once Consumption
 An affine struct represents a resource that can be consumed **at most once**. If unconsumed, it safely auto-drops at scope exit without error:
 
-```tungsten
+```morrow
 affine struct TempBuffer {
     ptr: *mut u8,
 }
@@ -219,10 +219,10 @@ fn use_temp(b: TempBuffer, early_exit: bool) {
 
 ## 4. Memory Model: Scoped Regions
 
-Tungsten replaces explicit lifetime annotations with **Lexical Memory Regions**.
+Morrow replaces explicit lifetime annotations with **Lexical Memory Regions**.
 
 ### The `region` Expression
-```tungsten
+```morrow
 region r {
     var buf = string_buffer_new_in(r);
     string_buffer_push_str(buf, "Allocated in bump arena 'r'");
@@ -235,7 +235,7 @@ Standard library collections support dual allocation strategies:
 1. System Heap: `vec_new()`, `hashmap_new(cap)`, `string_buffer_new()`.
 2. Scoped Region: `vec_new_in(r)`, `hashmap_new_in(r, cap)`, `string_buffer_new_in(r)`.
 
-```tungsten
+```morrow
 region r {
     // 10,000 table rows allocated inside region 'r'
     var users = sqlite_query_in(db, "SELECT id, name FROM users", r);
@@ -244,8 +244,8 @@ region r {
 ```
 
 ### Linear Escape Analysis
-Tungsten's compiler enforces strict lexical safety. References to data within a region cannot outlive that region:
-```tungsten
+Morrow's compiler enforces strict lexical safety. References to data within a region cannot outlive that region:
+```morrow
 fn illegal_escape(): &String {
     region r {
         var s = string_new_in(r, "hello");
@@ -258,10 +258,10 @@ fn illegal_escape(): &String {
 
 ## 5. Colorless Algebraic Effects
 
-Tungsten eliminates the `async`/`await` and `Result`/`Option` function coloring divide by using **Delimited Algebraic Effects**.
+Morrow eliminates the `async`/`await` and `Result`/`Option` function coloring divide by using **Delimited Algebraic Effects**.
 
 ### Effect Declarations
-```tungsten
+```morrow
 effect Database {
     fn query(sql: String) -> String;
     fn execute(sql: String) -> i64;
@@ -274,7 +274,7 @@ effect Logger {
 
 ### Effect Capability Annotations (`yields [...]`) & Operations (`perform`)
 Functions declare which effects they may yield during execution, and invoke operations via `perform`:
-```tungsten
+```morrow
 fn find_user(id: i64) -> String yields [Database, Logger] {
     perform Logger.log("Searching database...\0");
     perform Database.query("SELECT name FROM users WHERE id = 1\0")
@@ -283,7 +283,7 @@ fn find_user(id: i64) -> String yields [Database, Logger] {
 
 ### Delimited Effect Handlers
 Callers handle effects explicitly using `handle { ... } with Effect { fn op(k, ...) { ... } }`, choosing between real production drivers, in-memory mocks, or async runtimes:
-```tungsten
+```morrow
 fn main() -> i64 {
     let name = handle {
         handle {
@@ -310,11 +310,11 @@ fn main() -> i64 {
 
 ## 6. Structured Concurrency & Nurseries
 
-Tungsten provides native structured concurrency through **Nurseries** and **Fibers**, multiplexed over an M:N worker task pool driven by kernel-level completion ports (Win32 IOCP).
+Morrow provides native structured concurrency through **Nurseries** and **Fibers**, multiplexed over an M:N worker task pool driven by kernel-level completion ports (Win32 IOCP).
 
 ### The `nursery` Scope
 A nursery defines a deterministic lexical lifecycle for concurrent tasks. When execution exits the nursery block, it waits for all spawned fibers to complete before continuing:
-```tungsten
+```morrow
 fn task_worker(task_id: i64, dummy: i64) yields [IO] {
     println("Executing fiber task #{}", task_id);
 }
@@ -331,7 +331,7 @@ fn main() yields [Async, IO] {
 ```
 
 ### Channels & Message Passing
-```tungsten
+```morrow
 var ch = channel_open(10); // Bounded channel with capacity 10
 
 channel_send_msg(ch, 42);
@@ -343,7 +343,7 @@ var val = channel_recv_msg(ch); // val == 42
 ## 7. Declarations & Items
 
 ### Functions
-```tungsten
+```morrow
 fn add(a: i64, b: i64): i64 {
     a + b
 }
@@ -356,7 +356,7 @@ fn procedure(flag: bool): void {
 ```
 
 ### Structs
-```tungsten
+```morrow
 struct User {
     id: i64,
     name: String,
@@ -366,7 +366,7 @@ struct User {
 // Instantiation:
 var u = User {
     id: 1,
-    name: "Tungsten Admin",
+    name: "Morrow Admin",
     is_admin: true,
 };
 
@@ -375,7 +375,7 @@ var uid = u.id;
 ```
 
 ### Enums & Pattern Matching
-```tungsten
+```morrow
 enum HttpResponse {
     Ok(String),
     BadRequest(String),
@@ -392,14 +392,14 @@ fn render(resp: HttpResponse): void {
 ```
 
 ### Type Aliases
-```tungsten
+```morrow
 type UserId = i64;
 type Port = u16[1..65535];
 type StringList = Vec;
 ```
 
 ### Imports
-```tungsten
+```morrow
 import std.net;
 import std.http;
 import std.sqlite;
@@ -413,7 +413,7 @@ import std.process;
 ## 8. Statements & Control Flow
 
 ### Variables & Mutability
-```tungsten
+```morrow
 let immutable_x = 10;
 // immutable_x = 20; // Compile-time error
 
@@ -422,7 +422,7 @@ counter = counter + 1; // OK
 ```
 
 ### Conditional Branches (`if / else`)
-```tungsten
+```morrow
 if x > 100 {
     println("Large");
 } else if x > 50 {
@@ -433,7 +433,7 @@ if x > 100 {
 ```
 
 ### Loops
-```tungsten
+```morrow
 // While loop:
 var i = 0;
 while i < 10 {
@@ -450,10 +450,10 @@ while true {
 
 ## 9. Foreign Function Interface (FFI) & Unsafe
 
-Tungsten seamlessly binds to native C libraries without runtime wrappers using `extern "C"`.
+Morrow seamlessly binds to native C libraries without runtime wrappers using `extern "C"`.
 
 ### C-ABI Declarations
-```tungsten
+```morrow
 extern "C" {
     fn malloc(size: i64): *mut u8;
     fn free(ptr: *mut u8): void;
@@ -464,7 +464,7 @@ extern "C" {
 
 ### Unsafe Blocks
 Operations involving raw pointer dereferencing or C-ABI function calls require an `unsafe` block:
-```tungsten
+```morrow
 unsafe {
     var ptr = malloc(64);
     // Perform low-level C memory operations
@@ -476,7 +476,7 @@ unsafe {
 
 ## 10. Package Management & Locking
 
-Tungsten's package system manages modular project manifests and guarantees deterministic dependency resolution.
+Morrow's package system manages modular project manifests and guarantees deterministic dependency resolution.
 
 ### Package Manifest (`Forge.toml`)
 Every package defines a root `Forge.toml`:
@@ -492,7 +492,7 @@ net_utils = { path = "../net_utils", version = "0.4.*" }
 ```
 
 ### Semantic Versioning Rules (SemVer Subset)
-Tungsten supports standard numeric `X.Y.Z` SemVer constraints:
+Morrow supports standard numeric `X.Y.Z` SemVer constraints:
 - Exact: `=1.2.3` or `1.2.3`
 - Caret compatibility:
   - `^1.2.3` $\implies [1.2.3, 2.0.0)$
@@ -538,7 +538,7 @@ The self-hosted compiler supports native code generation and cross-compilation a
 | `wasm32-unknown-unknown` | WebAssembly `.wasm` | Self-contained 32-bit WASM IR, Node.js & browser host interoperability |
 
 ```powershell
-tgc file.tg --target wasm32-unknown-unknown -o file.wasm
+mwc file.mw --target wasm32-unknown-unknown -o file.wasm
 ```
 
 ---
@@ -581,7 +581,7 @@ tgc file.tg --target wasm32-unknown-unknown -o file.wasm
 ### Pattern A: Fortress v2 High-Concurrency HTTP Server
 Combines structured concurrency nurseries, fixed M:N worker task pools, Win32 IOCP, and scoped request memory regions:
 
-```tungsten
+```morrow
 import std.net;
 import std.http;
 import std.collections;
@@ -628,7 +628,7 @@ fn main() yields [Net, IO, Async] {
 ```
 
 ### Pattern B: SQL-Injection-Proof Region Query Pipeline
-```tungsten
+```morrow
 import std.sqlite;
 import std.collections;
 

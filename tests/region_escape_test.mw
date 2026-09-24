@@ -7,7 +7,7 @@ import std::collections;
 
 extern "C" {
     fn puts(s: *const u8) -> i32;
-    fn tungsten_region_alloc(arena: *mut u8, size: i64, align: i64) -> *mut u8;
+    fn morrow_region_alloc(arena: *mut u8, size: i64, align: i64) -> *mut u8;
 }
 
 // -----------------------------------------------------------------------
@@ -17,7 +17,7 @@ extern "C" {
 fn test_region_safe_use(): i64 {
     let result: i64 = 0;
     region r {
-        let ptr = tungsten_region_alloc(r, 8, 8) as *mut i64;
+        let ptr = morrow_region_alloc(r, 8, 8) as *mut i64;
         // Use result inside region ? scalar assignment, allowed
         result = 42;
     }

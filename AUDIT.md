@@ -1,31 +1,32 @@
-# Tungsten Genesis (v1.3) Compiler Audit & Architectural Review
+# Morrow (formerly Tungsten Genesis v1.3) Compiler Audit & Architectural Review
 
 **Date:** September 2026  
-**Scope:** `compiler/*.tg`, `std/*.tg`, `tests/*.tg`, `examples/*.tg`, `bin/`  
-**Status:** **CLOSED & FULLY REMEDIATED (v2.0)** — All 10 architectural findings successfully resolved and verified. Self-hosting compiler verified with bitwise fixed-point bootstrap parity across Windows (`x86_64-pc-windows-gnu`), Linux (`x86_64-unknown-linux-gnu`), Linux AArch64 (`aarch64-unknown-linux-gnu`), and WebAssembly (`wasm32-unknown-unknown`), with 100% pass rate across all 14 native test suites.
+**Scope:** `compiler/*.mw`, `std/*.mw`, `tests/*.mw`, `examples/*.mw`, `bin/`  
+**Status:** **CLOSED & FULLY REMEDIATED (v2.0 Standalone Morrow)** — All 10 architectural findings successfully resolved and verified. Rebranded to Morrow (`.mw`, `mwc.exe`, `forge.exe`) with bitwise fixed-point bootstrap parity across Windows (`x86_64-pc-windows-gnu`), Linux (`x86_64-unknown-linux-gnu`), Linux AArch64 (`aarch64-unknown-linux-gnu`), and WebAssembly (`wasm32-unknown-unknown`), with 100% pass rate across all 14 native test suites. Standalone seed compiler `bin/mwc.exe` operates with zero dependency on the legacy `tgc.exe`.
 
 ---
 
 ## 1. Executive Summary
 
-Tungsten achieved a notable milestone with Milestone v1.3 ("Genesis"): writing a self-compiling compiler in its own language (`compiler/*.tg`) and retiring the legacy Rust bootstrap compiler (`archive/stage0-rust/`) to produce bitwise fixed-point LLVM IR across bootstrap stages.
+Tungsten achieved a notable milestone with Milestone v1.3 ("Genesis"): writing a self-compiling compiler in its own language and retiring the legacy Rust bootstrap compiler (`archive/stage0-rust/`) to produce bitwise fixed-point LLVM IR across bootstrap stages. In Milestone v2.0, the language was fully rebranded to **Morrow** (`.mw`, `mwc.exe`, `forge.exe`) and completed a 3-stage self-hosting fixed-point re-bootstrap loop to achieve complete standalone independence.
 
-However, an initial audit of the compiler codebase revealed that the transition from the Stage-0 Rust prototype to the self-hosted Tungsten compiler left behind major gaps and introduced brittle shortcuts:
+However, an initial audit of the compiler codebase revealed that the transition from the Stage-0 Rust prototype to the self-hosted compiler left behind major gaps and introduced brittle shortcuts:
 
-1. **The Headline Features Were Not Implemented:** Algebraic effects, user-defined refinement types, region escape analysis, and fiber-based structured concurrency were initially either discarded by the parser or entirely absent from `compiler/*.tg`.
+1. **The Headline Features Were Not Implemented:** Algebraic effects, user-defined refinement types, region escape analysis, and fiber-based structured concurrency were initially either discarded by the parser or entirely absent from `compiler/`.
 2. **Critical Codegen Shortcuts Caused Silent Data Corruption:** Struct field offsets were resolved through a hardcoded global string table of compiler AST field names. Any user struct with custom field names mapped every field to offset 0, overwriting memory. Array element stride (1 byte vs. 8 bytes) was decided by checking the string name of the variable.
-3. **The Optimizer Pipeline Was Dead Code:** `forge.tg` lowered the AST to TIR and ran constant folding and DCE, but then passed the raw, unoptimized AST into `emit_llvm_ir()`.
-4. **No Real Module System Existed:** Imports were discarded by the parser. Multi-file compilation was handled by a hardcoded file concatenator in `forge.tg` that only knew how to bundle the compiler itself and test files.
+3. **The Optimizer Pipeline Was Dead Code:** `forge.mw` lowered the AST to TIR and ran constant folding and DCE, but then passed the raw, unoptimized AST into `emit_llvm_ir()`.
+4. **No Real Module System Existed:** Imports were discarded by the parser. Multi-file compilation was handled by a hardcoded file concatenator in `forge.mw` that only knew how to bundle the compiler itself and test files.
 5. **Tooling Masked Failures:** `forge check` suppressed parser errors and printed zero errors with an exit code of 0 even when parsing failed on syntax errors.
 
 ### Audit Resolution Summary (v1.4 – v2.0)
 
-Through five comprehensive remediation phases (Phases A through E), every architectural defect and shortcut identified in this audit has been resolved:
+Through six comprehensive remediation phases (Phases A through F), every architectural defect and shortcut identified in this audit has been resolved:
 - **Phase A (v1.4):** Implemented dynamic struct layouts, type-directed array indexing strides, direct TIR-to-LLVM code emission with active SSA constant folding and DCE, AST-level recursive module imports, strict error propagation, and vendored MinGW CRT startup files in tracked `lib/crt/`.
-- **Phase B (v1.6):** Implemented user-defined refinement syntax (`type Name = Primitive[min..max];`), compile-time region escape analysis, parametric generics with turbofish syntax and call-site monomorphization, and full algebraic effects with delimited continuations via native x86_64 assembly routines (`tungsten_setjmp`/`tungsten_longjmp`).
-- **Phase C (v1.7):** Added non-linear interval arithmetic (4-point extremal multiplication, non-zero divisor safety, modulo `%`), path-sensitive interval narrowing, SMT-LIB2 solver bridge (`compiler/smt.tg`), and linear/affine resource types (`linear struct`, `affine struct`, `consume`, `drop`, branch convergence).
+- **Phase B (v1.6):** Implemented user-defined refinement syntax (`type Name = Primitive[min..max];`), compile-time region escape analysis, parametric generics with turbofish syntax and call-site monomorphization, and full algebraic effects with delimited continuations via native x86_64 assembly routines (`morrow_setjmp`/`morrow_longjmp`).
+- **Phase C (v1.7):** Added non-linear interval arithmetic (4-point extremal multiplication, non-zero divisor safety, modulo `%`), path-sensitive interval narrowing, SMT-LIB2 solver bridge (`compiler/smt.mw`), and linear/affine resource types (`linear struct`, `affine struct`, `consume`, `drop`, branch convergence).
 - **Phase D (v1.8):** Added multi-target cross-compilation for Linux ELF (`x86_64-unknown-linux-gnu`), Linux AArch64 (`aarch64-unknown-linux-gnu`), and WebAssembly (`wasm32-unknown-unknown`), along with native Linux ELF compiler (`bin/tgc_linux`) and multi-stage containerization.
 - **Phase E (v2.0 - Phase 12.1):** Implemented SemVer engine (`X.Y.Z`, caret `^`, wildcards `*`), 3-state dependency graph resolver with cycle detection and diamond DAG support, deterministic lockfile generator (`Forge.lock`), graph closure invariant verification, and transactional CLI (`forge add`, `forge resolve`).
+- **Phase F (v2.0 - Standalone Morrow Rebrand):** Rebranded language to Morrow (`.mw`, `mwc.exe`, `forge.exe`), transitioned runtime C-ABI to `@morrow_*`, eliminated legacy `tgc.exe`, achieved 3-stage fixed-point bitwise parity (`SHA256(stage2.ll) == SHA256(stage3.ll)`), and achieved 100% pass rate across all 14 test suites.
 
 ---
 
@@ -299,9 +300,25 @@ Because `target/` is gitignored, a fresh clone on a machine without `clang` or `
   - Added `forge resolve`, `forge lock`, and `forge add [--path <p>] [--version <v>] [--force]`.
   - Transactional staging: writes `.Forge.toml.tmp`, resolves and verifies graph closure before committing, rolling back automatically on failure.
 * [x] **Automated Verification:**
-  - 34 positive tests in `tests/package_tests.tg` and 12 negative tests in `tests/package_negative_test.tg`.
-  - 100% pass rate across all 14 native test suites (`tgc.exe test`).
+  - 34 positive tests in `tests/package_tests.mw` and 12 negative tests in `tests/package_negative_test.mw`.
+  - 100% pass rate across all 14 native test suites (`mwc.exe test`).
   - Gate B 3-stage bootstrap fixed-point parity verified: `SHA256(stage2.ll) == SHA256(stage3.ll) == 580CFB295F89E50639D2A952B7DD1565C577F836D9E4894A54FBB8E4B83510E7`.
+
+### Phase F: Morrow Language Rebrand & Standalone Self-Hosting Fixed-Point Parity (Milestone v2.0)
+* [x] **Full Language Rebranding:**
+  - Rebranded the language from Tungsten (`.tg`, `tgc.exe`) to **Morrow** (`.mw`, `mwc.exe`, `forge.exe`).
+  - Migrated entire source tree: `compiler/*.mw`, `std/*.mw`, `tests/*.mw`, and `examples/*.mw`.
+  - Transitioned runtime C-ABI symbols from `@tungsten_*` to `@morrow_*` with dual-symbol forwarding shims for seamless migration.
+* [x] **3-Stage Re-Bootstrap Loop & Parity Verification:**
+  - Stage 1: Built `target/mwc_stage1.exe` from `compiler/main.mw` via bridge compiler.
+  - Stage 2: `mwc_stage1.exe` built `target/mwc_stage2.exe`.
+  - Stage 3: `mwc_stage2.exe` built `target/mwc_stage3.exe`.
+  - Exact bitwise LLVM IR fixed-point convergence confirmed:
+    `SHA256(mwc_stage2.exe.ll) == SHA256(mwc_stage3.exe.ll) == 8E73F92E5CD038B6B8EF757F4081116258A0BDD6B61655E706957B85B18DABF5`.
+* [x] **Standalone Toolchain Promotion & Legacy Retirement:**
+  - Promoted stage 3 binary to `bin/mwc.exe` and `bin/forge.exe`.
+  - Permanently removed legacy `bin/tgc.exe` and intermediate bridge binaries.
+  - Verified 100% pass rate across all 14 native test suites with `bin/mwc.exe test`.
 
 ---
 
@@ -309,15 +326,15 @@ Because `target/` is gitignored, a fresh clone on a machine without `clang` or `
 
 | Finding | Description | Severity | Remediation Phase | Implementation Mechanism | Verifying Test Suite | Status |
 | :---: | :--- | :---: | :---: | :--- | :--- | :---: |
-| **1** | Hardcoded Struct Field Offsets | Critical | Phase A (v1.4) | `typeck.tg` computes 1-based dynamic offsets in `expr.op`; `codegen.tg` respects `expr.op` | `tests/dynamic_struct_test.tg` | **Closed** |
-| **2** | Variable-Name Array Stride | Critical | Phase A (v1.4) | `typeck.tg` tags indexing stride (`expr.op = 1` or `8`) based on element type | `tests/dynamic_struct_test.tg` | **Closed** |
-| **3** | Dead-Code TIR & Optimizer | High | Phase A / 9 (v1.5) | Connected `lower_ast_program_to_tir` directly to `emit_llvm_ir` from `TirModule` | `tests/tir_optimizer.tg` | **Closed** |
-| **4** | Algebraic Effects Unimplemented | Critical | Phase B (v1.6) | `compiler/typeck.tg`, `codegen.tg` x86_64 assembly continuations, `resume`/`handle` | `tests/effects_test.tg` | **Closed** |
-| **5** | Refinement Types Discarded | High | Phase B (v1.6) | `type Name = Prim[min..max];` parser rules, interval arithmetic solver | `tests/refinement_test.tg` | **Closed** |
-| **6** | Region Escape Analysis Absent | Critical | Phase B (v1.6) | Region-scoped pointer tagging and lexical scope escape detection in `typeck.tg` | `tests/region_escape_test.tg` | **Closed** |
-| **7** | Monolithic File Bundler | High | Phase A (v1.4) | AST-level recursive module dependency loader traversing `import <path>;` | `compiler/forge.tg` | **Closed** |
-| **8** | `forge check` Masks Syntax Errors | Medium | Phase A (v1.4) | Immediate propagation of lexer/parser error count; exits with code 1 | `tests/error_handling_tests.tg` | **Closed** |
-| **9** | Flagship Examples Broken | Medium | Phase B (v1.6) | Rewrote `examples/player.tg`, `web_service_v2.tg`, `std/net.tg` to valid Tungsten | Compiler build & CI execution | **Closed** |
+| **1** | Hardcoded Struct Field Offsets | Critical | Phase A (v1.4) | `typeck.mw` computes 1-based dynamic offsets in `expr.op`; `codegen.mw` respects `expr.op` | `tests/dynamic_struct_test.mw` | **Closed** |
+| **2** | Variable-Name Array Stride | Critical | Phase A (v1.4) | `typeck.mw` tags indexing stride (`expr.op = 1` or `8`) based on element type | `tests/dynamic_struct_test.mw` | **Closed** |
+| **3** | Dead-Code TIR & Optimizer | High | Phase A / 9 (v1.5) | Connected `lower_ast_program_to_tir` directly to `emit_llvm_ir` from `TirModule` | `tests/tir_optimizer.mw` | **Closed** |
+| **4** | Algebraic Effects Unimplemented | Critical | Phase B (v1.6) | `compiler/typeck.mw`, `codegen.mw` x86_64 assembly continuations, `resume`/`handle` | `tests/effects_test.mw` | **Closed** |
+| **5** | Refinement Types Discarded | High | Phase B (v1.6) | `type Name = Prim[min..max];` parser rules, interval arithmetic solver | `tests/refinement_test.mw` | **Closed** |
+| **6** | Region Escape Analysis Absent | Critical | Phase B (v1.6) | Region-scoped pointer tagging and lexical scope escape detection in `typeck.mw` | `tests/region_escape_test.mw` | **Closed** |
+| **7** | Monolithic File Bundler | High | Phase A (v1.4) | AST-level recursive module dependency loader traversing `import <path>;` | `compiler/forge.mw` | **Closed** |
+| **8** | `forge check` Masks Syntax Errors | Medium | Phase A (v1.4) | Immediate propagation of lexer/parser error count; exits with code 1 | `tests/error_handling_tests.mw` | **Closed** |
+| **9** | Flagship Examples Broken | Medium | Phase B (v1.6) | Rewrote `examples/player.mw`, `web_service_v2.mw`, `std/net.mw` to valid Morrow | Compiler build & CI execution | **Closed** |
 | **10** | External Clang / CRT Dependencies | Medium | Phase A (v1.4) | Relocated MinGW CRT objects to committed `lib/crt/`; deterministic linking | Full bootstrap loop | **Closed** |
 
 

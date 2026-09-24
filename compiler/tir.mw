@@ -6,7 +6,7 @@ import compiler::ast;
 import compiler::interner;
 
 extern "C" {
-    fn tungsten_region_alloc(arena: *mut u8, size: usize, align: usize) -> *mut u8;
+    fn morrow_region_alloc(arena: *mut u8, size: usize, align: usize) -> *mut u8;
     fn strcmp(s1: *const u8, s2: *const u8) -> i32;
     fn strlen(s: *const u8) -> usize;
 }
@@ -32,7 +32,7 @@ pub struct TirOperand {
 }
 
 pub fn alloc_tir_op_int(arena: *mut u8, val: i64) -> *mut TirOperand {
-    let p = unsafe { tungsten_region_alloc(arena, 128, 8) as *mut TirOperand };
+    let p = unsafe { morrow_region_alloc(arena, 128, 8) as *mut TirOperand };
     let empty_args: Vec<i64> = vec_new_in(arena);
     unsafe {
         p.kind = tir_op_int();
@@ -48,7 +48,7 @@ pub fn alloc_tir_op_int(arena: *mut u8, val: i64) -> *mut TirOperand {
 }
 
 pub fn alloc_tir_op_str(arena: *mut u8, s: String, sym: i64) -> *mut TirOperand {
-    let p = unsafe { tungsten_region_alloc(arena, 128, 8) as *mut TirOperand };
+    let p = unsafe { morrow_region_alloc(arena, 128, 8) as *mut TirOperand };
     let empty_args: Vec<i64> = vec_new_in(arena);
     unsafe {
         p.kind = tir_op_str();
@@ -64,7 +64,7 @@ pub fn alloc_tir_op_str(arena: *mut u8, s: String, sym: i64) -> *mut TirOperand 
 }
 
 pub fn alloc_tir_op_var(arena: *mut u8, sym: i64) -> *mut TirOperand {
-    let p = unsafe { tungsten_region_alloc(arena, 128, 8) as *mut TirOperand };
+    let p = unsafe { morrow_region_alloc(arena, 128, 8) as *mut TirOperand };
     let empty_args: Vec<i64> = vec_new_in(arena);
     unsafe {
         p.kind = tir_op_var();
@@ -80,7 +80,7 @@ pub fn alloc_tir_op_var(arena: *mut u8, sym: i64) -> *mut TirOperand {
 }
 
 pub fn alloc_tir_op_reg(arena: *mut u8, reg_id: i64) -> *mut TirOperand {
-    let p = unsafe { tungsten_region_alloc(arena, 128, 8) as *mut TirOperand };
+    let p = unsafe { morrow_region_alloc(arena, 128, 8) as *mut TirOperand };
     let empty_args: Vec<i64> = vec_new_in(arena);
     unsafe {
         p.kind = tir_op_reg();
@@ -126,7 +126,7 @@ pub struct TirInst {
 }
 
 pub fn alloc_tir_inst(arena: *mut u8, kind: i64, dest: i64, op: i64, left: *mut TirOperand, right: *mut TirOperand) -> *mut TirInst {
-    let p = unsafe { tungsten_region_alloc(arena, 128, 8) as *mut TirInst };
+    let p = unsafe { morrow_region_alloc(arena, 128, 8) as *mut TirInst };
     let empty_args: Vec<*mut TirOperand> = vec_new_in(arena);
     unsafe {
         p.kind = kind;
@@ -226,7 +226,7 @@ pub struct TirBlock {
 }
 
 pub fn alloc_tir_block(arena: *mut u8, id: i64) -> *mut TirBlock {
-    let p = unsafe { tungsten_region_alloc(arena, 128, 8) as *mut TirBlock };
+    let p = unsafe { morrow_region_alloc(arena, 128, 8) as *mut TirBlock };
     let empty_insts: Vec<*mut TirInst> = vec_new_in(arena);
     unsafe {
         p.kind = id;
@@ -291,7 +291,7 @@ pub struct TirFunction {
 }
 
 pub fn alloc_tir_function(arena: *mut u8, name_sym: i64, ret_ty_sym: i64, origin_fn: *mut AstFn, interner: &Interner) -> *mut TirFunction {
-    let p = unsafe { tungsten_region_alloc(arena, 144, 8) as *mut TirFunction };
+    let p = unsafe { morrow_region_alloc(arena, 144, 8) as *mut TirFunction };
     let empty_blocks: Vec<*mut TirBlock> = vec_new_in(arena);
     unsafe {
         p.kind = 0;
@@ -362,13 +362,13 @@ pub struct TirModule {
 }
 
 pub fn alloc_tir_module(arena: *mut u8, prog: *mut AstProgram) -> *mut TirModule {
-    let p = unsafe { tungsten_region_alloc(arena, 128, 8) as *mut TirModule };
+    let p = unsafe { morrow_region_alloc(arena, 128, 8) as *mut TirModule };
     let empty_fns: Vec<*mut TirFunction> = vec_new_in(arena);
     unsafe {
         p.kind = 0;
         p.sym = 0;
         p.int_val = 0;
-        p.str_val = "tungsten_tir_module";
+        p.str_val = "morrow_tir_module";
         p.op = 0;
         p.left = prog;
         p.right = arena;
@@ -596,7 +596,7 @@ pub fn lower_ast_stmt_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, stmt
         if stmt.sym != 0 {
             let empty_args: Vec<*mut TirOperand> = vec_new_in(arena);
             let reg_call = alloc_tir_inst_call(arena, stmt.sym, 0, empty_args);
-            reg_call.str_val = "tungsten_region_enter";
+            reg_call.str_val = "morrow_region_enter";
             tir_block_push_inst(cur_block, reg_call);
         }
         let mut cur = cur_block;
@@ -612,7 +612,7 @@ pub fn lower_ast_stmt_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, stmt
                         let mut leave_args: Vec<*mut TirOperand> = vec_new_in(arena);
                         vec_push(&mut leave_args, alloc_tir_op_var(arena, stmt.sym));
                         let reg_leave = alloc_tir_inst_call(arena, 0, 0, leave_args);
-                        reg_leave.str_val = "tungsten_region_leave";
+                        reg_leave.str_val = "morrow_region_leave";
                         tir_block_push_inst(cur, reg_leave);
                     }
                     tir_block_set_return(cur, ret_val);
@@ -627,7 +627,7 @@ pub fn lower_ast_stmt_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, stmt
             let mut leave_args: Vec<*mut TirOperand> = vec_new_in(arena);
             vec_push(&mut leave_args, alloc_tir_op_var(arena, stmt.sym));
             let reg_leave = alloc_tir_inst_call(arena, 0, 0, leave_args);
-            reg_leave.str_val = "tungsten_region_leave";
+            reg_leave.str_val = "morrow_region_leave";
             tir_block_push_inst(cur, reg_leave);
         }
         return cur;

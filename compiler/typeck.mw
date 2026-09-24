@@ -9,7 +9,7 @@ import compiler::ast;
 extern "C" {
     fn strcmp(s1: *const u8, s2: *const u8) -> i32;
     fn strlen(s: *const u8) -> usize;
-    fn tungsten_alloc(size: i64, align: i64) -> *mut u8;
+    fn morrow_alloc(size: i64, align: i64) -> *mut u8;
 }
 
 // -----------------------------------------------------------------------------
@@ -39,7 +39,7 @@ pub struct TcType {
 }
 
 pub fn alloc_tc_type(arena: *mut u8, kind: i64, sym: i64) -> *mut TcType {
-    let t = unsafe { tungsten_alloc(64, 8) as *mut TcType };
+    let t = unsafe { morrow_alloc(64, 8) as *mut TcType };
     t.kind = kind;
     t.sym = sym;
     t.int_val = 0;

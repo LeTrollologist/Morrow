@@ -790,7 +790,7 @@ fn parse_import(p: &mut Parser) -> String yields [Diagnostics] {
         }
     }
     expect(p, tok_semicolon(), "Expected ';' after import");
-    string_buffer_push_str(&mut path_buf, ".tg" as *const u8, 3);
+    string_buffer_push_str(&mut path_buf, ".mw" as *const u8, 3);
     string_buffer_push_byte(&mut path_buf, 0 as u8);
     string_as_ptr(&path_buf) as String
 }

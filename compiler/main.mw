@@ -104,7 +104,7 @@ fn main() -> i64 yields [FS, Process, Diagnostics, IO] {
             }
         }
 
-        let mut src_path = "examples/bootstrap_sample.tg";
+        let mut src_path = "examples/bootstrap_sample.mw";
         let mut out_ll_path = "examples/bootstrap_sample.ll";
         let mut out_exe_path = "examples/bootstrap_sample.exe";
         let mut target_triple = "x86_64-pc-windows-gnu";
@@ -138,12 +138,12 @@ fn main() -> i64 yields [FS, Process, Diagnostics, IO] {
             }
         }
 
-        print_msg("TGC: Starting Bootstrap Stage 1 compilation...");
+        print_msg("MWC: Starting compilation...");
         let res = compile_file_target(src_path, out_ll_path, out_exe_path, target_triple);
         if res == 0 {
-            print_msg("TGC: Bootstrap Stage 1 compilation completed successfully!");
+            print_msg("MWC: Compilation completed successfully!");
         } else {
-            print_msg("TGC: Compilation failed.");
+            print_msg("MWC: Compilation failed.");
         }
         res
     }

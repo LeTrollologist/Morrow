@@ -11,7 +11,7 @@ import std::collections;
 extern "C" {
     fn strlen(s: *const u8) -> usize;
     fn strcmp(s1: *const u8, s2: *const u8) -> i32;
-    fn tungsten_region_alloc(arena: *mut u8, size: usize, align: usize) -> *mut u8;
+    fn morrow_region_alloc(arena: *mut u8, size: usize, align: usize) -> *mut u8;
 }
 
 pub struct HttpRequest {
@@ -80,7 +80,7 @@ fn http_slice_to_str_in(src: *const u8, start: i64, end: i64, arena: *mut u8) ->
     }
     let buf_sz = (len + 1) as usize;
     let dst = unsafe {
-        tungsten_region_alloc(arena, buf_sz, 1)
+        morrow_region_alloc(arena, buf_sz, 1)
     };
     let mut i: i64 = 0;
     while i < len {

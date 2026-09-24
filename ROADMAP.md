@@ -1,4 +1,4 @@
-# Tungsten Language Roadmap
+# Morrow Language Roadmap
 
 > **Vision:** A systems-level programming language that provides the fearless concurrency and zero-cost abstractions of Rust, while eliminating explicit lifetime annotations through **Region-Based Memory Management**, eliminating the async/await function coloring divide through **Algebraic Effects**, and eliminating runtime bounds panics through **Refinement Types**.
 
@@ -27,7 +27,7 @@
 | **v1.6** | **Language Feature Realization** | User-Defined Refinement Syntax, Region Escape Analysis, Parametric Generics with Call-Site Monomorphization, Algebraic Effect Lowering | **Completed** |
 | **v1.7** | **Formal Verification & SMT Bridge** | Z3 Solver Bridge for Non-Linear Arithmetic, Automated Induction Proofs, Affine Handle Invariants | **Completed** |
 | **v1.8** | **Multi-Target Codegen & Cross-Compilation** | Linux ELF Target (`x86_64-unknown-linux-gnu`), Linux AArch64 Target, WebAssembly Target (`wasm32-unknown-unknown`) | **Completed** |
-| **v2.0** | **Production Ecosystem & Self-Hosting Standard Library** | Package Registry & Dependency Solver (`Forge.lock`), SemVer Caret & Diamond DAG Resolution, Extended Stdlib | **In Progress** |
+| **v2.0** | **Morrow Language Rebrand & Standalone Self-Hosting Ecosystem** | Morrow Rebrand (`.mw`, `mwc.exe`), Package Registry & Dependency Solver (`Forge.lock`), 3-Stage Fixed-Point Parity | **Completed** |
 
 ---
 
@@ -383,12 +383,23 @@
    - Standardized `Forge.lock` deterministic format: packages and dependency edges sorted alphabetically for byte-identical determinism regardless of `Forge.toml` declaration order.
    - Enforced lockfile graph closure invariant: every dependency edge in a locked package must resolve to a valid top-level `[[package]]` entry with matching version in `Forge.lock`.
    - Transactional mutation for `forge add [--path <p>] [--version <v>] [--force]`: writes to `.Forge.toml.tmp`, resolves dependency graph, verifies lockfile graph closure, and atomically commits changes or rolls back on conflict.
-   - CLI commands added to `forge.tg`: `forge resolve`, `forge lock`, and `forge add`.
+   - CLI commands added to `forge.mw`: `forge resolve`, `forge lock`, and `forge add`.
    - Comprehensive test suites:
-     - `tests/package_tests.tg` (34 positive tests: SemVer parsing, caret boundary enforcement, wildcards, deterministic lockfile formatting, diamond DAG resolution).
-     - `tests/package_negative_test.tg` (12 negative tests: cycle detection, diamond version conflict diagnostics, malformed requirement rejection, lockfile graph closure violation detection).
+     - `tests/package_tests.mw` (34 positive tests: SemVer parsing, caret boundary enforcement, wildcards, deterministic lockfile formatting, diamond DAG resolution).
+     - `tests/package_negative_test.mw` (12 negative tests: cycle detection, diamond version conflict diagnostics, malformed requirement rejection, lockfile graph closure violation detection).
    - Gate B 3-stage self-hosting bootstrap fixed-point parity verified: `SHA256(stage2.ll) == SHA256(stage3.ll) == 580CFB295F89E50639D2A952B7DD1565C577F836D9E4894A54FBB8E4B83510E7`.
-   - 100% pass rate across all 14 native test suites (`tgc.exe test`).
-2. **Standard Library Expansion (Phase 12.2)**:
+   - 100% pass rate across all 14 native test suites (`mwc.exe test`).
+2. **Rebrand to Morrow & Standalone Fixed-Point Bootstrap (Phase 12.2 / v2.0)** ✅:
+   - Full language rebranding from Tungsten (`.tg`, `tgc.exe`) to **Morrow** (`.mw`, `mwc.exe`, `forge.exe`).
+   - Migrated complete source tree across compiler (`compiler/*.mw`), standard library (`std/*.mw`), test suites (`tests/*.mw`), and examples (`examples/*.mw`).
+   - Lowered runtime C-ABI entry points and LLVM module symbols to `@morrow_*` with dual-symbol compatibility shims.
+   - Performed 3-stage self-hosting re-bootstrap loop:
+     - Stage 1: `tgc_bridge.exe build compiler/main.mw -o target/mwc_stage1.exe`
+     - Stage 2: `mwc_stage1.exe build compiler/main.mw -o target/mwc_stage2.exe`
+     - Stage 3: `mwc_stage2.exe build compiler/main.mw -o target/mwc_stage3.exe`
+   - Fixed-point bitwise convergence verified: `SHA256(mwc_stage2.exe.ll) == SHA256(mwc_stage3.exe.ll) == 8E73F92E5CD038B6B8EF757F4081116258A0BDD6B61655E706957B85B18DABF5`.
+   - Promoted binaries to `bin/mwc.exe` and `bin/forge.exe`. Completely eliminated legacy `bin/tgc.exe`. Morrow is 100% standalone and self-hosting.
+   - 100% pass rate across all 14 native test suites (`mwc.exe test`).
+3. **Standard Library Expansion (Phase 12.3)**:
    - Extended standard library modules: `std.io`, `std.crypto`, `std.sql`.
    - Production testing and documentation.
