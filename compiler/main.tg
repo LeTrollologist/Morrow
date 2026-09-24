@@ -18,6 +18,7 @@ import compiler::package;
 import compiler::forge;
 import compiler::json;
 import compiler::lsp;
+import compiler::smt;
 
 extern "C" {
     fn strlen(s: *const u8) -> usize;

@@ -611,6 +611,16 @@ pub fn emit_expr(cg: &mut Codegen, expr_ptr: *mut AstExpr) -> i64 {
             emit_str(cg, "\n");
             return r;
         }
+        if expr_ptr.op == tok_percent() {
+            emit_str(cg, "    %t");
+            emit_i64(cg, r);
+            emit_str(cg, " = srem i64 %t");
+            emit_i64(cg, left_reg);
+            emit_str(cg, ", %t");
+            emit_i64(cg, right_reg);
+            emit_str(cg, "\n");
+            return r;
+        }
 
         if expr_ptr.op == tok_and() {
             let l_cmp = alloc_reg(cg);
@@ -1888,6 +1898,16 @@ fn emit_tir_inst(cg: &mut Codegen, inst: *mut TirInst) {
             emit_str(cg, "\n");
             return;
         }
+        if inst.op == tok_percent() {
+            emit_str(cg, "    %t");
+            emit_i64(cg, inst.sym);
+            emit_str(cg, " = srem i64 %t");
+            emit_i64(cg, left_reg);
+            emit_str(cg, ", %t");
+            emit_i64(cg, right_reg);
+            emit_str(cg, "\n");
+            return;
+        }
         if inst.op == tok_and() {
             let l_cmp = alloc_reg(cg);
             emit_str(cg, "    %t");
@@ -2263,6 +2283,15 @@ fn emit_tir_inst(cg: &mut Codegen, inst: *mut TirInst) {
             emit_str(cg, "    call void @tungsten_println_i64(i64 %t");
             emit_i64(cg, arg_reg);
             emit_str(cg, ")\n");
+            if inst.sym != 0 {
+                emit_str(cg, "    %t");
+                emit_i64(cg, inst.sym);
+                emit_str(cg, " = add i64 0, 0\n");
+            }
+            return;
+        }
+
+        if unsafe { strcmp(fn_name as *const u8, "consume" as *const u8) == 0 || strcmp(fn_name as *const u8, "drop" as *const u8) == 0 } {
             if inst.sym != 0 {
                 emit_str(cg, "    %t");
                 emit_i64(cg, inst.sym);

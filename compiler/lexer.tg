@@ -221,6 +221,9 @@ pub fn tokenize(src: String, interner: &mut Interner, arena: *mut u8) -> Vec<*mu
             } else if c == 47 {
                 // /
                 kind = tok_slash();
+            } else if c == 37 {
+                // %
+                kind = tok_percent();
             } else if c == 46 {
                 // . or .. or ..=
                 if idx + 1 < len && unsafe { ptr[idx + 1] } as i64 == 46 {

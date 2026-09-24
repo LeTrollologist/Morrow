@@ -1,0 +1,91 @@
+// Tungsten SMT-LIB2 Bridge & Formal Verification Generator
+// Produces standard QF_NIA / QF_LIA SMT-LIB2 queries for automated theorem provers
+
+import std::collections;
+import compiler::interner;
+import compiler::ast;
+import compiler::fmt;
+
+extern "C" {
+    fn strlen(s: *const u8) -> usize;
+    fn strcmp(s1: *const u8, s2: *const u8) -> i32;
+}
+
+pub struct SmtQuery {
+    buf: StringBuffer,
+    var_count: i64,
+}
+
+pub fn smt_query_new_in(arena: *mut u8) -> SmtQuery {
+    let mut buf = string_buffer_new_in(arena);
+    fmt_append_str(&mut buf, "; Tungsten Formal Verification SMT-LIB2 Query\n");
+    fmt_append_str(&mut buf, "(set-logic QF_NIA)\n");
+    fmt_append_str(&mut buf, "(set-info :source \"Tungsten Compiler Formal Verification Engine\")\n\n");
+    SmtQuery {
+        buf: buf,
+        var_count: 0,
+    }
+}
+
+pub fn smt_declare_int_var(q: &mut SmtQuery, name: String, min_val: i64, max_val: i64) {
+    fmt_append_str(&mut q.buf, "(declare-const ");
+    fmt_append_str(&mut q.buf, name);
+    fmt_append_str(&mut q.buf, " Int)\n");
+
+    fmt_append_str(&mut q.buf, "(assert (and (>= ");
+    fmt_append_str(&mut q.buf, name);
+    fmt_append_str(&mut q.buf, " ");
+    fmt_append_i64(&mut q.buf, min_val);
+    fmt_append_str(&mut q.buf, ") (<= ");
+    fmt_append_str(&mut q.buf, name);
+    fmt_append_str(&mut q.buf, " ");
+    fmt_append_i64(&mut q.buf, max_val);
+    fmt_append_str(&mut q.buf, ")))\n");
+    q.var_count = q.var_count + 1;
+}
+
+pub fn smt_assert_binop_bounds(q: &mut SmtQuery, var_a: String, op_sym: String, var_b: String, goal_min: i64, goal_max: i64) {
+    fmt_append_str(&mut q.buf, "\n; Goal: prove (");
+    fmt_append_str(&mut q.buf, op_sym);
+    fmt_append_str(&mut q.buf, " ");
+    fmt_append_str(&mut q.buf, var_a);
+    fmt_append_str(&mut q.buf, " ");
+    fmt_append_str(&mut q.buf, var_b);
+    fmt_append_str(&mut q.buf, ") in [");
+    fmt_append_i64(&mut q.buf, goal_min);
+    fmt_append_str(&mut q.buf, "..");
+    fmt_append_i64(&mut q.buf, goal_max);
+    fmt_append_str(&mut q.buf, "]\n");
+
+    fmt_append_str(&mut q.buf, "(assert (not (and (>= (");
+    fmt_append_str(&mut q.buf, op_sym);
+    fmt_append_str(&mut q.buf, " ");
+    fmt_append_str(&mut q.buf, var_a);
+    fmt_append_str(&mut q.buf, " ");
+    fmt_append_str(&mut q.buf, var_b);
+    fmt_append_str(&mut q.buf, ") ");
+    fmt_append_i64(&mut q.buf, goal_min);
+    fmt_append_str(&mut q.buf, ") (<= (");
+    fmt_append_str(&mut q.buf, op_sym);
+    fmt_append_str(&mut q.buf, " ");
+    fmt_append_str(&mut q.buf, var_a);
+    fmt_append_str(&mut q.buf, " ");
+    fmt_append_str(&mut q.buf, var_b);
+    fmt_append_str(&mut q.buf, ") ");
+    fmt_append_i64(&mut q.buf, goal_max);
+    fmt_append_str(&mut q.buf, "))))\n");
+    fmt_append_str(&mut q.buf, "(check-sat)\n");
+}
+
+pub fn smt_assert_zero_divisor_check(q: &mut SmtQuery, divisor_name: String) {
+    fmt_append_str(&mut q.buf, "\n; Goal: check for division by zero\n");
+    fmt_append_str(&mut q.buf, "(assert (= ");
+    fmt_append_str(&mut q.buf, divisor_name);
+    fmt_append_str(&mut q.buf, " 0))\n");
+    fmt_append_str(&mut q.buf, "(check-sat)\n");
+}
+
+pub fn smt_query_to_string(q: &mut SmtQuery) -> String {
+    string_buffer_push_byte(&mut q.buf, 0 as u8);
+    string_as_ptr(&q.buf) as String
+}

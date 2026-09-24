@@ -17,6 +17,10 @@ pub fn tir_fold_binop_int(op: i64, l: i64, r: i64) -> i64 {
         if r != 0 { return l / r; }
         return 0;
     }
+    if op == tok_percent() {
+        if r != 0 { return l - (l / r) * r; }
+        return 0;
+    }
     if op == tok_eqeq() {
         if l == r { return 1; }
         return 0;
@@ -46,7 +50,7 @@ pub fn tir_fold_binop_int(op: i64, l: i64, r: i64) -> i64 {
 
 pub fn tir_is_foldable_op(op: i64) -> bool {
     op == tok_plus() || op == tok_minus() || op == tok_star() ||
-    op == tok_slash() || op == tok_eqeq() || op == tok_neq() ||
+    op == tok_slash() || op == tok_percent() || op == tok_eqeq() || op == tok_neq() ||
     op == tok_lt() || op == tok_lte() || op == tok_gt() || op == tok_gte()
 }
 

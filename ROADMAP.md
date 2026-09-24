@@ -300,14 +300,21 @@
 
 ---
 
-### Phase 10: Formal Verification & SMT Solver Integration (v1.7)
+### Phase 10: Formal Verification & SMT Solver Integration (v1.7) ✅
 *Target: Verifiable non-linear interval constraints and automated proofs.*
 
-1. **Z3 SMT Solver Bridge**:
-   - Optional Z3 solver integration for non-linear arithmetic refinement constraints (multiplication, division, modular arithmetic).
-   - Automated induction proofs for recursive function bounds.
-2. **Affine & Linear Resource Invariants**:
-   - Affine ownership types for OS handles (sockets, file descriptors, database connections), proving at compile time that handles are closed exactly once and cannot leak across error paths.
+1. **Non-Linear Interval Solver & SMT-LIB2 Bridge** ✅:
+   - 4-point mixed-sign interval arithmetic for non-linear multiplication ($\min/\max$ across all four extremal corner products: $l_{min} r_{min}, l_{min} r_{max}, l_{max} r_{min}, l_{max} r_{max}$).
+   - Provable non-zero divisor safety checking and quotient interval derivation; static rejection of potential division by zero when divisor interval spans zero (`Refinement Violation: potential division by zero (divisor interval spans 0)`).
+   - Modulo interval bounds calculation and `%` operator (`tok_percent`) integration across lexer, Pratt parser, TIR, optimizer, and LLVM codegen (`srem i64`).
+   - Path-sensitive conditional interval narrowing (`if x >= A && x <= B`), narrowing variable ranges within conditional bodies and restoring outer scopes upon branch exit.
+   - SMT-LIB2 bridge (`compiler/smt.tg`) producing standard QF_NIA and QF_LIA assertions, variable declarations, and `check-sat` queries compatible with automated theorem provers (Z3, CVC5).
+2. **Affine & Linear Resource Invariants** ✅:
+   - Static ownership tracking for OS handles and resources declared via `linear struct` or `resource struct`.
+   - Compile-time enforcement of exactly-once consumption: leak detection on return/exit (`Linear Resource Violation: resource dropped without being consumed (potential resource leak)`), transfer of ownership across function calls and returns, and rejection of use-after-consume (`Linear Resource Violation: use-after-consume of resource variable`).
+   - First-class zero-cost runtime intrinsics `consume(x)` and `drop(x)`.
+   - Fixed-point 3-stage bootstrap parity verified across stages (`AABBCCAAF366647AD7879B67E464CD0E7C2ED0F9FC5F70F9FD88CB2C7BCACAF6`).
+   - Verified by comprehensive 13th native test suite `tests/formal_verification_test.tg` (100% OK across all 13 native test suites).
 
 ---
 

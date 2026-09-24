@@ -73,7 +73,7 @@ fn get_binop_precedence(kind: i64) -> i64 {
     if kind == tok_plus() || kind == tok_minus() {
         return 4;
     }
-    if kind == tok_star() || kind == tok_slash() {
+    if kind == tok_star() || kind == tok_slash() || kind == tok_percent() {
         return 5;
     }
     return 0;
@@ -591,7 +591,7 @@ pub fn parse_stmt(p: &mut Parser) -> *mut AstStmt yields [Diagnostics] {
     alloc_stmt_expr(p.arena, lhs)
 }
 
-pub fn parse_struct(p: &mut Parser) -> *mut AstStruct yields [Diagnostics] {
+pub fn parse_struct(p: &mut Parser, is_linear: i64) -> *mut AstStruct yields [Diagnostics] {
     expect(p, tok_kw_struct(), "Expected 'struct'");
     let name_tok = expect(p, tok_ident(), "Expected struct name");
     let name_sym = name_tok.sym;
@@ -623,7 +623,7 @@ pub fn parse_struct(p: &mut Parser) -> *mut AstStruct yields [Diagnostics] {
         }
     }
     expect(p, tok_rbrace(), "Expected '}' to close struct body");
-    alloc_struct(p.arena, name_sym, fields, type_param_sym)
+    alloc_struct(p.arena, name_sym, fields, type_param_sym, is_linear)
 }
 
 pub fn parse_extern_fn(p: &mut Parser) -> *mut AstExternFn yields [Diagnostics] {
@@ -752,6 +752,7 @@ fn parse_type_alias(p: &mut Parser) -> *mut AstTypeAlias yields [Diagnostics] {
     let base_tok = expect(p, tok_ident(), "Expected base type identifier");
     let mut min_val: i64 = 0;
     let mut max_val: i64 = 0 - 1;
+    let mut is_refined: i64 = 0;
 
     if check(p, tok_lbracket()) {
         advance(p); // consume '['
@@ -764,10 +765,11 @@ fn parse_type_alias(p: &mut Parser) -> *mut AstTypeAlias yields [Diagnostics] {
         }
         max_val = parse_interval_bound(p);
         expect(p, tok_rbracket(), "Expected ']' after refinement interval");
+        is_refined = 1;
     }
 
     expect(p, tok_semicolon(), "Expected ';' after type alias declaration");
-    alloc_type_alias(p.arena, name_tok.sym, base_tok.sym, min_val, max_val)
+    alloc_type_alias(p.arena, name_tok.sym, base_tok.sym, min_val, max_val, is_refined)
 }
 
 fn parse_import(p: &mut Parser) -> String yields [Diagnostics] {
@@ -852,6 +854,17 @@ pub fn parse_program(tokens: Vec<*mut Token>, interner: &mut Interner, arena: *m
             advance(&mut p); // consume pub
         }
 
+        let mut is_linear: i64 = 0;
+        if check(&p, tok_ident()) {
+            let tok = current_tok(&p);
+            let interner_ref = p.interner as &Interner;
+            let s = interner_lookup(interner_ref, tok.sym);
+            if unsafe { strcmp(s as *const u8, "linear" as *const u8) == 0 || strcmp(s as *const u8, "resource" as *const u8) == 0 } {
+                advance(&mut p);
+                is_linear = 1;
+            }
+        }
+
         if check(&p, tok_kw_import()) {
             advance(&mut p); // consume import
             let imp = parse_import(&mut p);
@@ -872,7 +885,7 @@ pub fn parse_program(tokens: Vec<*mut Token>, interner: &mut Interner, arena: *m
             }
             expect(&mut p, tok_rbrace(), "Expected '}' after extern block");
         } else if check(&p, tok_kw_struct()) {
-            let s = parse_struct(&mut p);
+            let s = parse_struct(&mut p, is_linear);
             vec_push(&mut prog.structs, s);
         } else if check(&p, tok_kw_fn()) {
             let f = parse_fn(&mut p);

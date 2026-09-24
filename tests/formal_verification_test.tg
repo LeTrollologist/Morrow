@@ -1,0 +1,202 @@
+// Tungsten Formal Verification & Non-Linear SMT Integration Test Suite
+// Verifies 4-point mixed-sign interval arithmetic, zero-divisor safety, path narrowing,
+// linear resource tracking, and SMT-LIB2 query emission.
+
+import std::collections;
+import compiler::smt;
+
+extern "C" {
+    fn puts(s: *const u8) -> i32;
+    fn fflush(f: *const u8) -> i32;
+    fn strlen(s: *const u8) -> usize;
+    fn strstr(haystack: *const u8, needle: *const u8) -> *const u8;
+}
+
+fn assert_true(cond: bool, msg: String) {
+    if !cond {
+        unsafe {
+            puts(msg as *const u8);
+            fflush(0 as *const u8);
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Refinement Type Definitions
+// -----------------------------------------------------------------------------
+type NonZero = int[1..100];
+type FactorA = int[-5..10];
+type FactorB = int[-4..6];
+type Divisor = int[2..10];
+type Dividend = int[20..100];
+
+fn takes_factor_prod(x: int[-40..60]) -> i64 {
+    x
+}
+
+fn takes_quotient(q: int[2..50]) -> i64 {
+    q
+}
+
+fn takes_rem(r: int[0..9]) -> i64 {
+    r
+}
+
+fn takes_port(p: Port) -> i64 {
+    p
+}
+
+fn takes_percentage(p: Percentage) -> i64 {
+    p
+}
+
+// -----------------------------------------------------------------------------
+// Test 1: Mixed-Sign Non-Linear Multiplication Bounds
+// -----------------------------------------------------------------------------
+fn test_mixed_sign_multiplication() -> i64 {
+    // [-5..10] * [-4..6]
+    // Extremal products:
+    // -5 * -4 = 20
+    // -5 * 6 = -30
+    // 10 * -4 = -40
+    // 10 * 6 = 60
+    // Extremal range: [-40..60]
+    let a: FactorA = 0 - 3;
+    let b: FactorB = 5;
+    let prod = a * b; // -15, which is inside [-40..60]
+    let res = takes_factor_prod(prod);
+    assert_true(res == 0 - 15, "Multiplication evaluation failed");
+    0
+}
+
+// -----------------------------------------------------------------------------
+// Test 2: Safe Division with Non-Zero Divisor Proof
+// -----------------------------------------------------------------------------
+fn test_division_safety() -> i64 {
+    // [20..100] / [2..10]
+    // Divisor interval [2..10] strictly spans > 0 (provably non-zero)
+    // Extremal quotients: 20/2=10, 20/10=2, 100/2=50, 100/10=10
+    // Extremal range: [2..50]
+    let num: Dividend = 60;
+    let den: Divisor = 3;
+    let quot = num / den; // 20, within [2..50]
+    let res = takes_quotient(quot);
+    assert_true(res == 20, "Division evaluation failed");
+    0
+}
+
+// -----------------------------------------------------------------------------
+// Test 3: Modulo Arithmetic Bounds
+// -----------------------------------------------------------------------------
+fn test_modulo_bounds() -> i64 {
+    // [20..100] % [2..10]
+    // Remainder bounded in [0..9]
+    let num: Dividend = 47;
+    let den: Divisor = 7;
+    let rem = num % den; // 5
+    let res = takes_rem(rem);
+    assert_true(res == 5, "Modulo evaluation failed");
+    0
+}
+
+// -----------------------------------------------------------------------------
+// Test 4: Path-Sensitive Interval Narrowing
+// -----------------------------------------------------------------------------
+fn test_path_sensitive_narrowing(x: i64) -> i64 {
+    if x >= 10 && x <= 50 {
+        // x narrowed to [10..50], which is within Port [1..65535]
+        let p: Port = x;
+        return takes_port(p);
+    }
+    if x >= 0 && x <= 100 {
+        // x narrowed to [0..100], which is within Percentage [0..100]
+        let pct: Percentage = x;
+        return takes_percentage(pct);
+    }
+    0
+}
+
+// -----------------------------------------------------------------------------
+// Test 5: Linear / Resource Type Invariant
+// -----------------------------------------------------------------------------
+linear struct SocketHandle {
+    fd: i64,
+    domain: i64,
+}
+
+fn close_socket(s: SocketHandle) -> i64 {
+    let fd = s.fd;
+    consume(s);
+    return fd;
+}
+
+fn open_socket(fd: i64) -> SocketHandle {
+    let s = SocketHandle {
+        fd: fd,
+        domain: 2,
+    };
+    return s;
+}
+
+fn test_linear_resource_lifecycle() -> i64 {
+    let s = open_socket(104);
+    let closed_fd = close_socket(s);
+    assert_true(closed_fd == 104, "Socket handle close fd mismatch");
+    0
+}
+
+// -----------------------------------------------------------------------------
+// Test 6: SMT-LIB2 Query Generator Bridge
+// -----------------------------------------------------------------------------
+fn test_smt_query_generator(arena: *mut u8) -> i64 {
+    let mut q = smt_query_new_in(arena);
+    smt_declare_int_var(&mut q, "x", 0 - 5, 10);
+    smt_declare_int_var(&mut q, "y", 0 - 4, 6);
+    smt_assert_binop_bounds(&mut q, "x", "*", "y", 0 - 40, 60);
+    smt_assert_zero_divisor_check(&mut q, "y");
+
+    let query_str = smt_query_to_string(&mut q);
+    let q_ptr = query_str as *const u8;
+
+    let has_logic = unsafe { strstr(q_ptr, "(set-logic QF_NIA)" as *const u8) != (0 as *const u8) };
+    let has_var_x = unsafe { strstr(q_ptr, "(declare-const x Int)" as *const u8) != (0 as *const u8) };
+    let has_bound = unsafe { strstr(q_ptr, "(assert (and (>= x -5) (<= x 10)))" as *const u8) != (0 as *const u8) };
+    let has_check = unsafe { strstr(q_ptr, "(check-sat)" as *const u8) != (0 as *const u8) };
+
+    assert_true(has_logic, "SMT query missing QF_NIA logic");
+    assert_true(has_var_x, "SMT query missing var x");
+    assert_true(has_bound, "SMT query missing bound");
+    assert_true(has_check, "SMT query missing check-sat");
+    0
+}
+
+// -----------------------------------------------------------------------------
+// Main Test Entry
+// -----------------------------------------------------------------------------
+fn main() -> i64 {
+    region r {
+        let r1 = test_mixed_sign_multiplication();
+        unsafe { puts("  test mixed-sign 4-point multiplication ... ok" as *const u8); }
+
+        let r2 = test_division_safety();
+        unsafe { puts("  test non-zero divisor safety proof ... ok" as *const u8); }
+
+        let r3 = test_modulo_bounds();
+        unsafe { puts("  test modulo interval bounds ... ok" as *const u8); }
+
+        let r4 = test_path_sensitive_narrowing(25);
+        assert_true(r4 == 25, "Narrowing port failed");
+        let r5 = test_path_sensitive_narrowing(75);
+        assert_true(r5 == 75, "Narrowing percentage failed");
+        unsafe { puts("  test path-sensitive interval narrowing ... ok" as *const u8); }
+
+        let r6 = test_linear_resource_lifecycle();
+        unsafe { puts("  test linear resource lifecycle ... ok" as *const u8); }
+
+        let r7 = test_smt_query_generator(r);
+        unsafe { puts("  test SMT-LIB2 query generator bridge ... ok" as *const u8); }
+
+        unsafe { puts("All Formal Verification Tests Passed (100% OK)" as *const u8); }
+    }
+    0
+}

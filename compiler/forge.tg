@@ -312,7 +312,7 @@ fn clone_struct_concrete(arena: *mut u8, interner: &mut Interner, tmpl: *mut Ast
         i = i + 1;
     }
 
-    alloc_struct(arena, mangled_sym, new_fields, 0)
+    alloc_struct(arena, mangled_sym, new_fields, 0, tmpl.is_linear)
 }
 
 // Walk an expression, expanding any turbofish calls/struct-inits it contains.
@@ -984,6 +984,7 @@ pub fn forge_run_test(arena: *mut u8) -> i64 yields [FS, Process, Diagnostics, I
     vec_push(&mut test_suites, "tests/region_escape_test.tg");
     vec_push(&mut test_suites, "tests/generics_test.tg");
     vec_push(&mut test_suites, "tests/effects_test.tg");
+    vec_push(&mut test_suites, "tests/formal_verification_test.tg");
 
     let mut passed: i64 = 0;
     let mut failed: i64 = 0;

@@ -35,6 +35,7 @@ pub fn tok_dot() -> i64 { 25 }
 pub fn tok_amp() -> i64 { 26 }
 pub fn tok_and() -> i64 { 27 }
 pub fn tok_or() -> i64 { 28 }
+pub fn tok_percent() -> i64 { 29 }
 
 pub fn tok_kw_fn() -> i64 { 30 }
 pub fn tok_kw_let() -> i64 { 31 }
@@ -155,6 +156,7 @@ pub struct AstStruct {
     name_sym: i64,
     fields: Vec<*mut AstField>,
     type_param_sym: i64,
+    is_linear: i64,
 }
 
 pub struct AstParam {
@@ -181,7 +183,7 @@ pub struct AstTypeAlias {
     name_sym: i64,
     ty_sym: i64,
     int_val: i64,
-    str_val: String,
+    is_refined: i64,
     op: i64,
 }
 
@@ -716,14 +718,15 @@ pub fn alloc_field(arena: *mut u8, name_sym: i64, ty_sym: i64) -> *mut AstField 
     p
 }
 
-pub fn alloc_struct(arena: *mut u8, name_sym: i64, fields: Vec<*mut AstField>, type_param_sym: i64) -> *mut AstStruct {
+pub fn alloc_struct(arena: *mut u8, name_sym: i64, fields: Vec<*mut AstField>, type_param_sym: i64, is_linear: i64) -> *mut AstStruct {
     let p = unsafe {
-        tungsten_region_alloc(arena, 48, 8) as *mut AstStruct
+        tungsten_region_alloc(arena, 64, 8) as *mut AstStruct
     };
     unsafe {
         p.name_sym = name_sym;
         p.fields = fields;
         p.type_param_sym = type_param_sym;
+        p.is_linear = is_linear;
     }
     p
 }
@@ -766,7 +769,7 @@ pub fn alloc_fn(arena: *mut u8, name_sym: i64, params: Vec<*mut AstParam>, ret_t
     p
 }
 
-pub fn alloc_type_alias(arena: *mut u8, name_sym: i64, ty_sym: i64, min_val: i64, max_val: i64) -> *mut AstTypeAlias {
+pub fn alloc_type_alias(arena: *mut u8, name_sym: i64, ty_sym: i64, min_val: i64, max_val: i64, is_refined: i64) -> *mut AstTypeAlias {
     let p = unsafe {
         tungsten_region_alloc(arena, 64, 8) as *mut AstTypeAlias
     };
@@ -774,7 +777,7 @@ pub fn alloc_type_alias(arena: *mut u8, name_sym: i64, ty_sym: i64, min_val: i64
         p.name_sym = name_sym;
         p.ty_sym = ty_sym;
         p.int_val = min_val;
-        p.str_val = "";
+        p.is_refined = is_refined;
         p.op = max_val;
     }
     p

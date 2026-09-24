@@ -240,3 +240,10 @@ Because `target/` is gitignored, a fresh clone on a machine without `clang` or `
 * [x] **Algebraic Effects & Delimited Handlers:** Delimited continuations with explicit continuation records, native x86_64 assembly setjmp/longjmp routines, static effect row checking, nearest-match dynamic handler dispatch, single-shot resumption, and abortive unwinding (Phase 9.4).
 * [x] **Concurrency Runtime Reintegration:** `effect Channel` and `effect Async` in `std/sync.tg` with FIFO buffer storage, `std/net.tg` canonical `perform Net.<op>` operations, and native task pipeline execution (Phase 9.5).
 * [x] **Example & Docs Alignment:** Rewrote and verified `examples/player.tg`, `examples/fibers_and_concurrency.tg`, and `examples/web_service_v2.tg` to compile and run with `tgc`. Synchronized `README.md` and `docs/SYNTAX.md` with canonical language grammar.
+
+### Phase C: Formal Verification & SMT Solver Integration (Milestone v1.7)
+* [x] **Non-Linear Arithmetic Interval Solver:** 4-point mixed-sign extremal interval multiplication, quotient interval arithmetic with zero-divisor check, and modulo intervals with `%` operator.
+* [x] **Path-Sensitive Interval Narrowing:** Conditional narrowing on comparison expressions within then-branches, restoring original bounds on branch exit.
+* [x] **SMT-LIB2 Solver Bridge (`compiler/smt.tg`):** Emits standard QF_NIA/QF_LIA queries with bound constraints and zero-divisor assertions for automated theorem provers.
+* [x] **Affine & Linear Resource Invariants:** `linear struct` compile-time exactly-once consumption tracking, leak detection on return/exit, transfer of ownership across calls, rejection of use-after-consume, and zero-cost runtime intrinsics `consume` / `drop`.
+* [x] **Automated Verification:** 13 native test suites passing 100% with exact bitwise fixed-point 3-stage bootstrap parity.

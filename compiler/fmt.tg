@@ -51,6 +51,7 @@ pub fn fmt_binop_symbol(buf: &mut StringBuffer, op: i64) {
     if op == tok_minus() { fmt_append_str(buf, "-"); return; }
     if op == tok_star() { fmt_append_str(buf, "*"); return; }
     if op == tok_slash() { fmt_append_str(buf, "/"); return; }
+    if op == tok_percent() { fmt_append_str(buf, "%"); return; }
     if op == tok_eqeq() { fmt_append_str(buf, "=="); return; }
     if op == tok_neq() { fmt_append_str(buf, "!="); return; }
     if op == tok_lt() { fmt_append_str(buf, "<"); return; }
@@ -329,6 +330,9 @@ pub fn fmt_fn(buf: &mut StringBuffer, f: *mut AstFn, interner: &Interner, arena:
 }
 
 pub fn fmt_struct(buf: &mut StringBuffer, s: *mut AstStruct, interner: &Interner) {
+    if s.is_linear == 1 {
+        fmt_append_str(buf, "linear ");
+    }
     fmt_append_str(buf, "struct ");
     let sname = interner_lookup(interner, s.name_sym);
     fmt_append_str(buf, sname);
@@ -399,7 +403,7 @@ pub fn fmt_program(prog: *mut AstProgram, interner: &Interner, arena: *mut u8) -
         fmt_append_str(&mut buf, " = ");
         let base_str = interner_lookup(interner, ta.ty_sym);
         fmt_append_str(&mut buf, base_str);
-        if ta.op >= 0 {
+        if ta.is_refined == 1 {
             fmt_append_str(&mut buf, "[");
             fmt_append_i64(&mut buf, ta.int_val);
             fmt_append_str(&mut buf, "..");

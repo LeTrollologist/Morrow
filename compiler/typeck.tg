@@ -32,7 +32,7 @@ pub struct TcType {
     kind: i64,          // 0: ty_int(), ty_byte(), etc.
     sym: i64,           // 1: Symbol ID of type name or struct name
     int_val: i64,       // 2: Refinement interval min
-    str_val: String,    // 3: Unused
+    is_refined: i64,    // 3: 1 if interval refined, 0 if unrefined
     op: i64,            // 4: Refinement interval max (-1 if unrefined)
     left: *mut TcType,  // 5: Inner type (for Ref/Ptr/Continuation)
     right: *mut TcType, // 6: Region info
@@ -43,6 +43,7 @@ pub fn alloc_tc_type(arena: *mut u8, kind: i64, sym: i64) -> *mut TcType {
     t.kind = kind;
     t.sym = sym;
     t.int_val = 0;
+    t.is_refined = 0;
     t.op = 0 - 1; // -1 indicates no interval refinement
     t.left = 0 as *mut TcType;
     t.right = 0 as *mut TcType;
@@ -53,7 +54,31 @@ pub fn alloc_tc_refined(arena: *mut u8, kind: i64, min_val: i64, max_val: i64) -
     let t = alloc_tc_type(arena, kind, 0);
     t.int_val = min_val;
     t.op = max_val;
+    t.is_refined = 1;
     t
+}
+
+pub fn tc_is_refined(t: *mut TcType) -> bool {
+    if t == (0 as *mut TcType) {
+        return false;
+    }
+    t.is_refined == 1
+}
+
+pub fn tc_min2(a: i64, b: i64) -> i64 {
+    if a < b { a } else { b }
+}
+
+pub fn tc_max2(a: i64, b: i64) -> i64 {
+    if a > b { a } else { b }
+}
+
+pub fn tc_min4(a: i64, b: i64, c: i64, d: i64) -> i64 {
+    tc_min2(tc_min2(a, b), tc_min2(c, d))
+}
+
+pub fn tc_max4(a: i64, b: i64, c: i64, d: i64) -> i64 {
+    tc_max2(tc_max2(a, b), tc_max2(c, d))
 }
 
 pub fn alloc_tc_ref(arena: *mut u8, inner: *mut TcType) -> *mut TcType {
@@ -79,6 +104,8 @@ pub struct TypeChecker {
     effect_defs: *mut HashMap,      // 4: Map of effect name -> *mut AstEffect
     active_yields: *mut Vec<i64>,   // 5: Current function's declared yields
     handled_effects: *mut Vec<i64>, // 6: Stack of active handled effect symbols
+    linear_vars: *mut HashMap,      // 7: Map of var name -> i64 status (1=active, 2=consumed, 3=leaked/reported)
+    linear_names: *mut Vec<String>, // 8: Vec of active linear resource variable names
 }
 
 pub fn typechecker_new_in(interner: *mut Interner, arena: *mut u8) -> TypeChecker {
@@ -91,7 +118,23 @@ pub fn typechecker_new_in(interner: *mut Interner, arena: *mut u8) -> TypeChecke
         effect_defs: 0 as *mut HashMap,
         active_yields: 0 as *mut Vec<i64>,
         handled_effects: 0 as *mut Vec<i64>,
+        linear_vars: 0 as *mut HashMap,
+        linear_names: 0 as *mut Vec<String>,
     }
+}
+
+pub fn tc_is_linear_struct(tc: &TypeChecker, struct_defs: &HashMap, sym: i64) -> bool {
+    if sym == 0 {
+        return false;
+    }
+    let interner_ref = tc.interner as &Interner;
+    let s = interner_lookup(interner_ref, sym);
+    let st_val = hashmap_get(struct_defs, s);
+    if st_val != 0 - 1 {
+        let st = st_val as *mut AstStruct;
+        return st.is_linear == 1;
+    }
+    false
 }
 
 pub fn tc_is_effect_covered(tc: &TypeChecker, eff_sym: i64) -> bool {
@@ -202,6 +245,14 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &HashMap, fn_defs: &HashMap, ext_defs
         let interner_ref = tc.interner as &Interner;
         let s = interner_lookup(interner_ref, sym);
 
+        if tc.linear_vars != (0 as *mut HashMap) {
+            let status = hashmap_get(tc.linear_vars, s);
+            if status == 2 {
+                report_err("Linear Resource Violation: use-after-consume of resource variable", 1, 1);
+                tc.pos = tc.pos + 1;
+            }
+        }
+
         if unsafe { strcmp(s as *const u8, "true" as *const u8) == 0 || strcmp(s as *const u8, "false" as *const u8) == 0 } {
             return alloc_tc_type(tc.arena, ty_bool(), 0);
         }
@@ -237,7 +288,7 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &HashMap, fn_defs: &HashMap, ext_defs
             return alloc_tc_type(tc.arena, ty_bool(), 0);
         }
         if op == tok_minus() {
-            if inner_ty.op >= 0 {
+            if tc_is_refined(inner_ty) {
                 let min = 0 - inner_ty.op;
                 let max = 0 - inner_ty.int_val;
                 return alloc_tc_refined(tc.arena, inner_ty.kind, min, max);
@@ -263,22 +314,62 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &HashMap, fn_defs: &HashMap, ext_defs
             return alloc_tc_type(tc.arena, ty_bool(), 0);
         }
 
+        if r_ty != (0 as *mut TcType) {
+            if op == tok_slash() {
+                if tc_is_refined(r_ty) {
+                    if r_ty.int_val <= 0 && r_ty.op >= 0 {
+                        report_err("Refinement Violation: potential division by zero (divisor interval spans 0)", 1, 1);
+                        tc.pos = tc.pos + 1;
+                    }
+                }
+            }
+            if op == tok_percent() {
+                if r_ty.int_val <= 0 && r_ty.op >= 0 {
+                    report_err("Refinement Violation: potential division by zero in modulo operation", 1, 1);
+                    tc.pos = tc.pos + 1;
+                }
+            }
+        }
+
         // Arithmetic operators compute refinement intervals if both operands are refined
         if l_ty != (0 as *mut TcType) {
             if r_ty != (0 as *mut TcType) {
-                if l_ty.op >= 0 {
-                    if r_ty.op >= 0 {
-                        if op == tok_plus() {
-                            return alloc_tc_refined(tc.arena, ty_int(), l_ty.int_val + r_ty.int_val, l_ty.op + r_ty.op);
+                if tc_is_refined(l_ty) && tc_is_refined(r_ty) {
+                    if op == tok_plus() {
+                        return alloc_tc_refined(tc.arena, ty_int(), l_ty.int_val + r_ty.int_val, l_ty.op + r_ty.op);
+                    }
+                    if op == tok_minus() {
+                        return alloc_tc_refined(tc.arena, ty_int(), l_ty.int_val - r_ty.op, l_ty.op - r_ty.int_val);
+                    }
+                    if op == tok_star() {
+                        let p1 = l_ty.int_val * r_ty.int_val;
+                        let p2 = l_ty.int_val * r_ty.op;
+                        let p3 = l_ty.op * r_ty.int_val;
+                        let p4 = l_ty.op * r_ty.op;
+                        let min_prod = tc_min4(p1, p2, p3, p4);
+                        let max_prod = tc_max4(p1, p2, p3, p4);
+                        return alloc_tc_refined(tc.arena, ty_int(), min_prod, max_prod);
+                    }
+                    if op == tok_slash() {
+                        if !(r_ty.int_val <= 0 && r_ty.op >= 0) {
+                            let q1 = l_ty.int_val / r_ty.int_val;
+                            let q2 = l_ty.int_val / r_ty.op;
+                            let q3 = l_ty.op / r_ty.int_val;
+                            let q4 = l_ty.op / r_ty.op;
+                            let min_q = tc_min4(q1, q2, q3, q4);
+                            let max_q = tc_max4(q1, q2, q3, q4);
+                            return alloc_tc_refined(tc.arena, ty_int(), min_q, max_q);
                         }
-                        if op == tok_minus() {
-                            return alloc_tc_refined(tc.arena, ty_int(), l_ty.int_val - r_ty.op, l_ty.op - r_ty.int_val);
-                        }
-                        if op == tok_star() {
-                            if l_ty.int_val >= 0 {
-                                if r_ty.int_val >= 0 {
-                                    return alloc_tc_refined(tc.arena, ty_int(), l_ty.int_val * r_ty.int_val, l_ty.op * r_ty.op);
+                    }
+                    if op == tok_percent() {
+                        if !(r_ty.int_val <= 0 && r_ty.op >= 0) {
+                            if r_ty.int_val > 0 {
+                                let rem_max = r_ty.op - 1;
+                                let mut rem_min: i64 = 0;
+                                if l_ty.int_val < 0 {
+                                    rem_min = 0 - rem_max;
                                 }
+                                return alloc_tc_refined(tc.arena, ty_int(), rem_min, rem_max);
                             }
                         }
                     }
@@ -294,6 +385,22 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &HashMap, fn_defs: &HashMap, ext_defs
         let interner_ref = tc.interner as &Interner;
         let s = interner_lookup(interner_ref, fn_sym);
 
+        if unsafe { strcmp(s as *const u8, "consume" as *const u8) == 0 || strcmp(s as *const u8, "drop" as *const u8) == 0 } {
+            if expr.args.len > 0 {
+                let arg0 = vec_get(&expr.args, 0);
+                if arg0 != (0 as *mut AstExpr) && arg0.kind == expr_var() {
+                    let arg_s = interner_lookup(interner_ref, arg0.sym);
+                    if tc.linear_vars != (0 as *mut HashMap) {
+                        let st = hashmap_get(tc.linear_vars, arg_s);
+                        if st == 1 {
+                            hashmap_insert(tc.linear_vars, arg_s, 2);
+                        }
+                    }
+                }
+            }
+            return alloc_tc_type(tc.arena, ty_unit(), 0);
+        }
+
         let fn_val = hashmap_get(fn_defs, s);
         let mut target_fn: *mut AstFn = 0 as *mut AstFn;
         if fn_val != 0 - 1 {
@@ -306,6 +413,18 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &HashMap, fn_defs: &HashMap, ext_defs
         while i < args_len {
             let arg_expr = vec_get(&expr.args, i);
             let arg_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, arg_expr);
+
+            // Linear consumption: passing a linear resource variable to a function consumes it
+            if arg_expr != (0 as *mut AstExpr) && arg_expr.kind == expr_var() {
+                let arg_s = interner_lookup(interner_ref, arg_expr.sym);
+                if tc.linear_vars != (0 as *mut HashMap) {
+                    let st = hashmap_get(tc.linear_vars, arg_s);
+                    if st == 1 {
+                        hashmap_insert(tc.linear_vars, arg_s, 2);
+                    }
+                }
+            }
+
             if target_fn != (0 as *mut AstFn) {
                 if i < target_fn.params.len {
                     let p = vec_get(&target_fn.params, i);
@@ -313,8 +432,8 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &HashMap, fn_defs: &HashMap, ext_defs
                     if param_ty != (0 as *mut TcType) {
                         if arg_ty != (0 as *mut TcType) {
                             if param_ty.sym != 0 {
-                                if param_ty.op >= 0 {
-                                    if arg_ty.op >= 0 {
+                                if tc_is_refined(param_ty) {
+                                    if tc_is_refined(arg_ty) {
                                         if arg_ty.int_val < param_ty.int_val || arg_ty.op > param_ty.op {
                                             report_err("Refinement Constraint Violation: argument out of bounds for refined parameter", 1, 1);
                                             tc.pos = tc.pos + 1;
@@ -618,6 +737,109 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &HashMap, fn_defs: &HashMap, ext_defs
 }
 
 // -----------------------------------------------------------------------------
+// Path-Sensitive Interval Narrowing
+// -----------------------------------------------------------------------------
+pub fn tc_narrow_condition(tc: &mut TypeChecker, vars: &mut HashMap, cond: *mut AstExpr, modified_syms: &mut Vec<i64>, original_types: &mut Vec<*mut TcType>) {
+    if cond == (0 as *mut AstExpr) {
+        return;
+    }
+    if cond.kind == expr_binop() {
+        let op = cond.op;
+        if op == tok_and() {
+            tc_narrow_condition(tc, vars, cond.left, modified_syms, original_types);
+            tc_narrow_condition(tc, vars, cond.right, modified_syms, original_types);
+            return;
+        }
+
+        let mut var_sym: i64 = 0;
+        let mut int_val: i64 = 0;
+        let mut cmp_op: i64 = 0;
+
+        if cond.left != (0 as *mut AstExpr) && cond.right != (0 as *mut AstExpr) {
+            if cond.left.kind == expr_var() && cond.right.kind == expr_int() {
+                var_sym = cond.left.sym;
+                int_val = cond.right.int_val;
+                cmp_op = op;
+            } else if cond.left.kind == expr_int() && cond.right.kind == expr_var() {
+                var_sym = cond.right.sym;
+                int_val = cond.left.int_val;
+                if op == tok_lt() { cmp_op = tok_gt(); }
+                else if op == tok_lte() { cmp_op = tok_gte(); }
+                else if op == tok_gt() { cmp_op = tok_lt(); }
+                else if op == tok_gte() { cmp_op = tok_lte(); }
+                else if op == tok_eqeq() { cmp_op = tok_eqeq(); }
+            }
+        }
+
+        if var_sym != 0 {
+            let interner_ref = tc.interner as &Interner;
+            let s = interner_lookup(interner_ref, var_sym);
+            let old_ty_val = hashmap_get(vars, s);
+            if old_ty_val != 0 - 1 {
+                let old_ty = old_ty_val as *mut TcType;
+                let mut min_bound: i64 = 0 - 2147483647;
+                let mut max_bound: i64 = 2147483647;
+                if tc_is_refined(old_ty) {
+                    min_bound = old_ty.int_val;
+                    max_bound = old_ty.op;
+                }
+
+                let mut handled = false;
+                if cmp_op == tok_gte() {
+                    min_bound = tc_max2(min_bound, int_val);
+                    handled = true;
+                } else if cmp_op == tok_gt() {
+                    min_bound = tc_max2(min_bound, int_val + 1);
+                    handled = true;
+                } else if cmp_op == tok_lte() {
+                    max_bound = tc_min2(max_bound, int_val);
+                    handled = true;
+                } else if cmp_op == tok_lt() {
+                    max_bound = tc_min2(max_bound, int_val - 1);
+                    handled = true;
+                } else if cmp_op == tok_eqeq() {
+                    min_bound = tc_max2(min_bound, int_val);
+                    max_bound = tc_min2(max_bound, int_val);
+                    handled = true;
+                } else if cmp_op == tok_neq() {
+                    if int_val == 0 {
+                        if min_bound == 0 {
+                            min_bound = 1;
+                            handled = true;
+                        }
+                        if max_bound == 0 {
+                            max_bound = 0 - 1;
+                            handled = true;
+                        }
+                    }
+                }
+
+                if handled && min_bound <= max_bound {
+                    let mut already_saved = false;
+                    let mut k: i64 = 0;
+                    while k < modified_syms.len {
+                        if vec_get(modified_syms, k) == var_sym {
+                            already_saved = true;
+                            break;
+                        }
+                        k = k + 1;
+                    }
+                    if !already_saved {
+                        vec_push(modified_syms, var_sym);
+                        vec_push(original_types, old_ty);
+                    }
+                    let narrowed_ty = alloc_tc_refined(tc.arena, old_ty.kind, min_bound, max_bound);
+                    narrowed_ty.sym = old_ty.sym;
+                    narrowed_ty.left = old_ty.left;
+                    narrowed_ty.right = old_ty.right;
+                    hashmap_insert(vars, s, narrowed_ty as i64);
+                }
+            }
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
 // Type Checking Statements & Region Escape Analysis
 // -----------------------------------------------------------------------------
 pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_defs: &HashMap, types: &HashMap, struct_defs: &HashMap, ret_ty: *mut TcType, region_depth: i64, cur_region_sym: i64, stmt: *mut AstStmt) -> bool yields [Diagnostics] {
@@ -634,10 +856,16 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
 
         let var_ty = alloc_tc_type(tc.arena, expr_ty.kind, expr_ty.sym);
         if expr_ty != (0 as *mut TcType) {
-            if expr_ty.sym != 0 {
-                if expr_ty.op >= 0 {
-                    var_ty.int_val = expr_ty.int_val;
-                    var_ty.op = expr_ty.op;
+            if tc_is_refined(expr_ty) {
+                var_ty.int_val = expr_ty.int_val;
+                var_ty.op = expr_ty.op;
+                var_ty.is_refined = 1;
+            }
+            // Track linear struct resources
+            if expr_ty.kind == ty_struct() && tc_is_linear_struct(tc, struct_defs, expr_ty.sym) {
+                if tc.linear_vars != (0 as *mut HashMap) {
+                    hashmap_insert(tc.linear_vars, s, 1);
+                    vec_push(tc.linear_names, s);
                 }
             }
         }
@@ -671,8 +899,8 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
         if var_ty != (0 as *mut TcType) {
             if expr_ty != (0 as *mut TcType) {
                 if var_ty.sym != 0 {
-                    if var_ty.op >= 0 {
-                        if expr_ty.op >= 0 {
+                    if tc_is_refined(var_ty) {
+                        if tc_is_refined(expr_ty) {
                             if expr_ty.int_val < var_ty.int_val || expr_ty.op > var_ty.op {
                                 report_err("Refinement Constraint Violation: value out of bounds for refined type", 1, 1);
                                 tc.pos = tc.pos + 1;
@@ -745,11 +973,40 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
         let ret_expr = stmt.expr;
         if ret_expr != (0 as *mut AstExpr) {
             let actual_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_expr);
+
+            // Check if returning a linear resource
+            if ret_expr.kind == expr_var() {
+                let ret_sym = ret_expr.sym;
+                let interner_ref = tc.interner as &Interner;
+                let ret_s = interner_lookup(interner_ref, ret_sym);
+                if tc.linear_vars != (0 as *mut HashMap) {
+                    let st = hashmap_get(tc.linear_vars, ret_s);
+                    if st == 1 {
+                        hashmap_insert(tc.linear_vars, ret_s, 2); // Transferred ownership to caller
+                    }
+                }
+            }
+
+            // Check for linear resource leaks on return
+            if tc.linear_names != (0 as *mut Vec<String>) && tc.linear_vars != (0 as *mut HashMap) {
+                let l_len = tc.linear_names.len;
+                let mut li: i64 = 0;
+                while li < l_len {
+                    let name_str = vec_get(tc.linear_names, li);
+                    let st = hashmap_get(tc.linear_vars, name_str);
+                    if st == 1 {
+                        report_err("Linear Resource Violation: resource dropped without being consumed (potential resource leak)", 1, 1);
+                        tc.pos = tc.pos + 1;
+                        hashmap_insert(tc.linear_vars, name_str, 3);
+                    }
+                    li = li + 1;
+                }
+            }
             if ret_ty != (0 as *mut TcType) {
                 if actual_ty != (0 as *mut TcType) {
                     if ret_ty.sym != 0 {
-                        if ret_ty.op >= 0 {
-                            if actual_ty.op >= 0 {
+                        if tc_is_refined(ret_ty) {
+                            if tc_is_refined(actual_ty) {
                                 if actual_ty.int_val < ret_ty.int_val || actual_ty.op > ret_ty.op {
                                     report_err("Refinement Constraint Violation: return value out of bounds for refined return type", 1, 1);
                                     tc.pos = tc.pos + 1;
@@ -782,6 +1039,12 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
 
     if kind == stmt_if() {
         tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, stmt.expr);
+
+        // Path-sensitive interval narrowing for then-branch
+        let mut modified_syms: Vec<i64> = vec_new_in(tc.arena);
+        let mut original_types: Vec<*mut TcType> = vec_new_in(tc.arena);
+        tc_narrow_condition(tc, vars, stmt.expr, &mut modified_syms, &mut original_types);
+
         let then_len = stmt.then_stmts.len;
         let mut i: i64 = 0;
         while i < then_len {
@@ -789,6 +1052,19 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
             tc_stmt(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, region_depth, cur_region_sym, s);
             i = i + 1;
         }
+
+        // Restore narrowed variables
+        let restore_len = modified_syms.len;
+        let mut r: i64 = 0;
+        while r < restore_len {
+            let sym = vec_get(&modified_syms, r);
+            let orig_ty = vec_get(&original_types, r);
+            let interner_ref = tc.interner as &Interner;
+            let s = interner_lookup(interner_ref, sym);
+            hashmap_insert(vars, s, orig_ty as i64);
+            r = r + 1;
+        }
+
         let else_len = stmt.else_stmts.len;
         let mut j: i64 = 0;
         while j < else_len {
@@ -855,7 +1131,14 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
 // -----------------------------------------------------------------------------
 pub fn tc_function(tc: &mut TypeChecker, fn_defs: &HashMap, ext_defs: &HashMap, types: &HashMap, struct_defs: &HashMap, f: *mut AstFn) -> bool yields [Diagnostics] {
     tc.active_yields = &mut f.yields_effects as *mut Vec<i64>;
+    let interner_ref = tc.interner as &Interner;
+    let fn_name = interner_lookup(interner_ref, f.name_sym);
     let mut vars = hashmap_new_in(tc.arena, 64);
+    let mut linear_vars = hashmap_new_in(tc.arena, 32);
+    let mut linear_names: Vec<String> = vec_new_in(tc.arena);
+    tc.linear_vars = &mut linear_vars as *mut HashMap;
+    tc.linear_names = &mut linear_names as *mut Vec<String>;
+
     let params_len = f.params.len;
     let mut i: i64 = 0;
     while i < params_len {
@@ -866,6 +1149,10 @@ pub fn tc_function(tc: &mut TypeChecker, fn_defs: &HashMap, ext_defs: &HashMap, 
         let s = interner_lookup(interner_ref, sym);
         let p_ty = tc_resolve_type(tc, types, struct_defs, ty_sym);
         hashmap_insert(&mut vars, s, p_ty as i64);
+        if p_ty != (0 as *mut TcType) && p_ty.kind == ty_struct() && tc_is_linear_struct(tc, struct_defs, p_ty.sym) {
+            hashmap_insert(&mut linear_vars, s, 1);
+            vec_push(&mut linear_names, s);
+        }
         i = i + 1;
     }
 
@@ -877,6 +1164,19 @@ pub fn tc_function(tc: &mut TypeChecker, fn_defs: &HashMap, ext_defs: &HashMap, 
         let stmt = vec_get(&f.body, j);
         tc_stmt(tc, &mut vars, fn_defs, ext_defs, types, struct_defs, ret_ty, 0, 0, stmt);
         j = j + 1;
+    }
+
+    let l_len = linear_names.len;
+    let mut li: i64 = 0;
+    while li < l_len {
+        let name_str = vec_get(&linear_names, li);
+        let st = hashmap_get(&linear_vars, name_str);
+        if st == 1 {
+            report_err("Linear Resource Violation: resource dropped without being consumed (potential resource leak)", 1, 1);
+            tc.pos = tc.pos + 1;
+            hashmap_insert(&mut linear_vars, name_str, 3);
+        }
+        li = li + 1;
     }
 
     true
@@ -911,7 +1211,7 @@ pub fn typecheck_program(prog: *mut AstProgram, interner: *mut Interner, arena: 
     let aliases_len = prog.vals.len;
     let mut a: i64 = 0;
     while a < aliases_len {
-        let alias = vec_get(&prog.vals, a);
+        let alias: *mut AstTypeAlias = vec_get(&prog.vals, a);
         let interner_ref = interner as &Interner;
         let name_s = interner_lookup(interner_ref, alias.name_sym);
         let base_s = interner_lookup(interner_ref, alias.ty_sym);
@@ -924,6 +1224,7 @@ pub fn typecheck_program(prog: *mut AstProgram, interner: *mut Interner, arena: 
         let t_alias = alloc_tc_type(tc.arena, kind, alias.name_sym);
         t_alias.int_val = alias.int_val;
         t_alias.op = alias.op;
+        t_alias.is_refined = alias.is_refined;
         hashmap_insert(&mut types, name_s, t_alias as i64);
         a = a + 1;
     }
