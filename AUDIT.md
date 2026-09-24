@@ -34,10 +34,10 @@ Through six comprehensive remediation phases (Phases A through F), every archite
 
 The following components are verified functional in the self-hosted toolchain:
 
-* **Self-Hosting Bootstrap Loop:** `bin/tgc.exe` can compile `compiler/main.tg` into LLVM IR text, which links via `clang` into an executable capable of recompiling itself with bitwise identical LLVM IR output.
-* **Bump Arena Memory Allocator:** Emitted directly into LLVM IR (`@tungsten_region_enter`, `@tungsten_region_alloc`, `@tungsten_region_grow`, `@tungsten_region_exit`) in `compiler/codegen.tg`. Supports 16 MB chunk chaining, 8-byte alignment masks, in-place contiguous growth, and bulk teardown.
+* **Self-Hosting Bootstrap Loop:** `bin/mwc.exe` can compile `compiler/main.mw` into LLVM IR text, which links via `clang` into an executable capable of recompiling itself with bitwise identical LLVM IR output.
+* **Bump Arena Memory Allocator:** Emitted directly into LLVM IR (`@morrow_region_enter`, `@morrow_region_alloc`, `@morrow_region_grow`, `@morrow_region_exit`) in `compiler/codegen.mw`. Supports 16 MB chunk chaining, 8-byte alignment masks, in-place contiguous growth, and bulk teardown.
 * **Core Imperative Syntax:** Functions, scalar variables (`var`, `let`), while loops, if/else branching, recursion, primitive arithmetic, string literals, and explicit pointer casts.
-* **Standard Library Collections:** `std/collections.tg` provides functional `Vec`, `StringBuffer`, and Robin Hood `HashMap` implementations using both system heap and scoped arena allocators.
+* **Standard Library Collections:** `std/collections.mw` provides functional `Vec`, `StringBuffer`, and Robin Hood `HashMap` implementations using both system heap and scoped arena allocators.
 * **C FFI & Windows System Calls:** `extern "C"` declarations reliably link and execute against MinGW CRT and Win32 libraries (`msvcrt`, `kernel32`, `gdi32`, `winmm`, `ws2_32`).
 
 ---
