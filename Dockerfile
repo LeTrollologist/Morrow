@@ -1,12 +1,12 @@
 # ==============================================================================
-# Tungsten Fortress v2 — High-Concurrency Microservice Production Dockerfile
+# Tungsten Genesis (v1.8) — Self-Hosted Production Multi-Stage Dockerfile
 # Multi-Stage Build:
-#   Stage 1: Build Tungsten Toolchain (Forge) & Compile Fortress v2 Service
-#   Stage 2: Minimal Production Runtime Image (< 80 MB, Non-Root)
+#   Stage 1: Pure Self-Hosted Tungsten Toolchain & Application Compilation
+#   Stage 2: Minimal Production Runtime Image (< 50 MB, Non-Root)
 # ==============================================================================
 
 # --- Stage 1: Build Environment ---
-FROM rust:1.80-slim-bookworm AS builder
+FROM debian:bookworm-slim AS builder
 
 # Install LLVM toolchain, Clang, LLD, and build tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -14,26 +14,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     lld \
     gcc \
     libc6-dev \
-    libsqlite3-dev \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace
 
-# Copy workspace manifests and source code
-COPY Cargo.toml Cargo.lock ./
-COPY crates ./crates
+# Copy workspace sources and pre-bootstrapped self-hosted Tungsten compiler
+COPY bin/tgc_linux ./bin/tgc_linux
+COPY compiler ./compiler
 COPY std ./std
 COPY examples ./examples
 
-# Build forge CLI compiler in release mode
-RUN cargo build --release -p forge
+# Grant execution permissions to the self-hosted Tungsten compiler
+RUN chmod +x bin/tgc_linux
 
-# Compile Fortress v2 HTTP server into native Linux ELF binary
-RUN ./target/release/forge build --release --target x86_64-unknown-linux-gnu examples/web_service_v2.tg
+# Compile microservice into native Linux ELF binary
+RUN ./bin/tgc_linux examples/bootstrap_sample.tg --target x86_64-unknown-linux-gnu -o target/app_service
 
 # Verify output binary exists and has execution permissions
-RUN chmod +x target/release/web_service_v2
+RUN chmod +x target/app_service
 
 # --- Stage 2: Production Minimal Runtime ---
 FROM debian:bookworm-slim AS runtime
@@ -47,18 +46,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Copy the standalone compiled Tungsten ELF microservice binary
-COPY --from=builder --chown=tungsten:tungsten /workspace/target/release/web_service_v2 /app/web_service_v2
+# Copy the standalone compiled Tungsten ELF binary from builder stage
+COPY --from=builder --chown=tungsten:tungsten /workspace/target/app_service /app/app_service
 
 # Drop root privileges for defense-in-depth container security
 USER tungsten:tungsten
 
-# Expose Fortress HTTP port
+# Expose service port
 EXPOSE 8096
 
-# Healthcheck probe hitting Fortress zero-copy /health endpoint
-HEALTHCHECK --interval=5s --timeout=2s --start-period=3s --retries=3 \
-    CMD curl -f http://127.0.0.1:8096/health || exit 1
-
-# Launch Fortress v2 High-Concurrency HTTP Engine
-ENTRYPOINT ["/app/web_service_v2"]
+# Launch compiled Tungsten native ELF application
+ENTRYPOINT ["/app/app_service"]

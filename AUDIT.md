@@ -254,3 +254,10 @@ Because `target/` is gitignored, a fresh clone on a machine without `clang` or `
 * [x] **Linker Integration & Fallback:** Cross-compilation to Linux ELF via `clang -lc -lpthread -lm -ldl`, automatically falling back to relocatable ELF object generation (`-c`) when host sysroot linking is unavailable.
 * [x] **Cross-Platform Verification:** Verified native execution under Linux (WSL Ubuntu) for both general programs and algebraic effect handlers with delimited continuations.
 * [x] **Bitwise Bootstrap Parity:** 3-stage self-hosting fixed-point verified (`SHA256(stage2.ll) == SHA256(stage3.ll) == 91FE48040F9009D56AB2DE856B8663C5434B2ACE55E61E1821EC186F4CFA0F8A`) with 100% test pass rate across all 13 native test suites.
+* [x] **Multi-Stage Containerization & Native Linux Compiler Build (Phase 11.2):**
+  - Target-directed POSIX shims in codegen (`compiler/codegen.tg`): lowered `GetCommandLineA()` to `/proc/self/cmdline` reader, `CreateDirectoryA(path, NULL)` to `mkdir(path, 0777)`, and `Sleep(ms)` to `usleep(ms * 1000)` on Linux while preserving Win32 system APIs on Windows.
+  - Native Linux ELF executable `bin/tgc_linux` compiled, linked, and verified in Linux (WSL Ubuntu).
+  - Modernized `Dockerfile` to multi-stage pure self-hosted Tungsten build on `debian:bookworm-slim` with zero legacy Rust/Cargo dependencies.
+  - 3-stage bootstrap fixed-point parity verified: `SHA256(stage2.ll) == SHA256(stage3.ll) == 5E4A5D7B0092E5C79D4C6CAC14FCFF090DC5B00C751F29A5DC2680D143102DDC`.
+  - 100% pass rate across all 13 native test suites (`tgc.exe test`).
+

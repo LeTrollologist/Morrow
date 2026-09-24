@@ -338,9 +338,20 @@
      - Verified native execution under Linux (WSL Ubuntu) for both general computation and algebraic effects with delimited continuations.
    - 3-stage self-hosting bootstrap fixed-point parity verified: `SHA256(stage2.ll) == SHA256(stage3.ll) == 91FE48040F9009D56AB2DE856B8663C5434B2ACE55E61E1821EC186F4CFA0F8A`.
    - 100% pass rate across all 13 native test suites.
-2. **AArch64 & macOS Targets**:
+2. **Multi-Stage Linux Containerization & Native Linux Compiler Build (Phase 11.2)** ✅:
+   - Target-sensitive POSIX shims in codegen (`compiler/codegen.tg`):
+     - Dynamic lowering of `GetCommandLineA()` to `@tungsten_get_cmd_line()` (reads and normalizes `/proc/self/cmdline` on Linux; invokes Win32 `@GetCommandLineA()` on Windows).
+     - Dynamic lowering of `CreateDirectoryA(path, NULL)` to `@tungsten_create_dir(path)` (`mkdir(path, 0777)` on Linux; `@CreateDirectoryA` on Windows).
+     - Dynamic lowering of `Sleep(ms)` to `@tungsten_sleep_ms(ms)` (`usleep(ms * 1000)` on Linux; `@Sleep` on Windows).
+   - Eliminated host Win32 assumptions in the self-hosted compiler frontend.
+   - Compiled, linked, and verified native 64-bit Linux ELF compiler binary `bin/tgc_linux`.
+   - Verified native execution under Linux (WSL Ubuntu): `tgc_linux version`, `tgc_linux help`, and `tgc_linux check examples/bootstrap_sample.tg` (passed with 0 errors).
+   - Replaced legacy Rust 1.80 `Dockerfile` with modern multi-stage pure Tungsten containerization using `debian:bookworm-slim` and `bin/tgc_linux`.
+   - 3-stage self-hosting bootstrap fixed-point parity verified: `SHA256(stage2.ll) == SHA256(stage3.ll) == 5E4A5D7B0092E5C79D4C6CAC14FCFF090DC5B00C751F29A5DC2680D143102DDC`.
+   - 100% pass rate across all 13 native test suites (`tgc.exe test`).
+3. **AArch64 & macOS Targets (Phase 11.3)**:
    - ARM64 ELF and Mach-O binary emission via LLVM backend and LLD linker.
    - Apple Silicon / ARM64 POSIX socket and syscall shims in `std/fs` and `std/net`.
-3. **WebAssembly Target (`wasm32-unknown-unknown`)**:
+4. **WebAssembly Target (`wasm32-unknown-unknown`) (Phase 11.4)**:
    - Direct compilation to Wasm bytecode.
    - Algebraic effect mapping to JavaScript host promises and browser Web APIs without runtime shims.

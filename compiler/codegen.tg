@@ -942,10 +942,15 @@ pub fn emit_expr(cg: &mut Codegen, expr_ptr: *mut AstExpr) -> i64 {
         }
 
         if unsafe { strcmp(fn_name as *const u8, "GetCommandLineA" as *const u8) == 0 } {
+            let is_linux = is_linux_target(cg.target_triple);
             let ptr_res = alloc_reg(cg);
             emit_str(cg, "    %t");
             emit_i64(cg, ptr_res);
-            emit_str(cg, " = call ptr @GetCommandLineA()\n");
+            if is_linux {
+                emit_str(cg, " = call ptr @tungsten_get_cmd_line()\n");
+            } else {
+                emit_str(cg, " = call ptr @GetCommandLineA()\n");
+            }
 
             let r = alloc_reg(cg);
             emit_str(cg, "    %t");
@@ -954,6 +959,37 @@ pub fn emit_expr(cg: &mut Codegen, expr_ptr: *mut AstExpr) -> i64 {
             emit_i64(cg, ptr_res);
             emit_str(cg, " to i64\n");
             return r;
+        }
+
+        if unsafe { strcmp(fn_name as *const u8, "CreateDirectoryA" as *const u8) == 0 } {
+            let p_reg = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, p_reg);
+            emit_str(cg, " = inttoptr i64 %t");
+            emit_i64(cg, vec_get(&arg_regs, 0));
+            emit_str(cg, " to ptr\n");
+
+            let r = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, r);
+            emit_str(cg, " = call i64 @tungsten_create_dir(ptr %t");
+            emit_i64(cg, p_reg);
+            emit_str(cg, ")\n");
+            return r;
+        }
+
+        if unsafe { strcmp(fn_name as *const u8, "Sleep" as *const u8) == 0 } {
+            let ms_reg = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, ms_reg);
+            emit_str(cg, " = trunc i64 %t");
+            emit_i64(cg, vec_get(&arg_regs, 0));
+            emit_str(cg, " to i32\n");
+
+            emit_str(cg, "    call void @tungsten_sleep_ms(i32 %t");
+            emit_i64(cg, ms_reg);
+            emit_str(cg, ")\n");
+            return 0;
         }
 
         if unsafe { strcmp(fn_name as *const u8, "tungsten_region_alloc" as *const u8) == 0 } {
@@ -2459,16 +2495,56 @@ fn emit_tir_inst(cg: &mut Codegen, inst: *mut TirInst) {
         }
 
         if unsafe { strcmp(fn_name as *const u8, "GetCommandLineA" as *const u8) == 0 } {
+            let is_linux = is_linux_target(cg.target_triple);
             let ptr_res = alloc_reg(cg);
             emit_str(cg, "    %t");
             emit_i64(cg, ptr_res);
-            emit_str(cg, " = call ptr @GetCommandLineA()\n");
+            if is_linux {
+                emit_str(cg, " = call ptr @tungsten_get_cmd_line()\n");
+            } else {
+                emit_str(cg, " = call ptr @GetCommandLineA()\n");
+            }
 
             emit_str(cg, "    %t");
             emit_i64(cg, dest_reg);
             emit_str(cg, " = ptrtoint ptr %t");
             emit_i64(cg, ptr_res);
             emit_str(cg, " to i64\n");
+            return;
+        }
+
+        if unsafe { strcmp(fn_name as *const u8, "CreateDirectoryA" as *const u8) == 0 } {
+            let p_reg = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, p_reg);
+            emit_str(cg, " = inttoptr i64 %t");
+            emit_i64(cg, vec_get(&arg_regs, 0));
+            emit_str(cg, " to ptr\n");
+
+            emit_str(cg, "    %t");
+            emit_i64(cg, dest_reg);
+            emit_str(cg, " = call i64 @tungsten_create_dir(ptr %t");
+            emit_i64(cg, p_reg);
+            emit_str(cg, ")\n");
+            return;
+        }
+
+        if unsafe { strcmp(fn_name as *const u8, "Sleep" as *const u8) == 0 } {
+            let ms_reg = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, ms_reg);
+            emit_str(cg, " = trunc i64 %t");
+            emit_i64(cg, vec_get(&arg_regs, 0));
+            emit_str(cg, " to i32\n");
+
+            emit_str(cg, "    call void @tungsten_sleep_ms(i32 %t");
+            emit_i64(cg, ms_reg);
+            emit_str(cg, ")\n");
+            if inst.sym != 0 {
+                emit_str(cg, "    %t");
+                emit_i64(cg, dest_reg);
+                emit_str(cg, " = add i64 0, 0\n");
+            }
             return;
         }
 
@@ -3420,8 +3496,13 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
     emit_str(&mut cg, "declare void @tungsten_longjmp(ptr, i32)\n");
     emit_str(&mut cg, "declare i64 @ftell(ptr)\n");
     emit_str(&mut cg, "declare i32 @system(ptr)\n");
-    if !is_linux {
+    if is_linux {
+        emit_str(&mut cg, "declare i32 @mkdir(ptr, i32)\n");
+        emit_str(&mut cg, "declare i32 @usleep(i32)\n");
+    } else {
         emit_str(&mut cg, "declare ptr @GetCommandLineA()\n");
+        emit_str(&mut cg, "declare i32 @CreateDirectoryA(ptr, ptr)\n");
+        emit_str(&mut cg, "declare void @Sleep(i32)\n");
     }
     emit_str(&mut cg, "declare i32 @printf(ptr, ...)\n");
     emit_str(&mut cg, "declare i32 @puts(ptr)\n");
@@ -3458,6 +3539,8 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
                    strcmp(pef, "ftell" as *const u8) == 0 ||
                    strcmp(pef, "system" as *const u8) == 0 ||
                    strcmp(pef, "GetCommandLineA" as *const u8) == 0 ||
+                   strcmp(pef, "CreateDirectoryA" as *const u8) == 0 ||
+                   strcmp(pef, "Sleep" as *const u8) == 0 ||
                    strcmp(pef, "printf" as *const u8) == 0 ||
                    strcmp(pef, "puts" as *const u8) == 0 ||
                    strcmp(pef, "fflush" as *const u8) == 0 {
@@ -3501,6 +3584,9 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
     emit_str(&mut cg, "@str_mode_rb = internal constant [3 x i8] c\"rb\\00\"\n");
     emit_str(&mut cg, "@str_mode_wb = internal constant [3 x i8] c\"wb\\00\"\n");
     emit_str(&mut cg, "@str_empty = internal constant [1 x i8] c\"\\00\"\n");
+    if is_linux {
+        emit_str(&mut cg, "@str_proc_cmdline = internal constant [19 x i8] c\"/proc/self/cmdline\\00\"\n");
+    }
     emit_str(&mut cg, "@tungsten_diag_errors = internal global i64 0\n\n");
 
 
@@ -3754,6 +3840,66 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
     emit_str(&mut cg, "    %res_code_simple = call i32 @system(ptr %cmd)\n");
     emit_str(&mut cg, "    %res_simple_i64 = sext i32 %res_code_simple to i64\n");
     emit_str(&mut cg, "    ret i64 %res_simple_i64\n}\n\n");
+
+    // OS Platform Abstraction Helpers
+    emit_str(&mut cg, "define i32 @tungsten_create_dir(ptr %path) {\n");
+    if is_linux {
+        emit_str(&mut cg, "    %res = call i32 @mkdir(ptr %path, i32 511)\n");
+        emit_str(&mut cg, "    ret i32 %res\n}\n\n");
+    } else {
+        emit_str(&mut cg, "    %res = call i32 @CreateDirectoryA(ptr %path, ptr null)\n");
+        emit_str(&mut cg, "    ret i32 %res\n}\n\n");
+    }
+
+    emit_str(&mut cg, "define void @tungsten_sleep_ms(i32 %ms) {\n");
+    if is_linux {
+        emit_str(&mut cg, "    %usec = mul i32 %ms, 1000\n");
+        emit_str(&mut cg, "    call i32 @usleep(i32 %usec)\n");
+        emit_str(&mut cg, "    ret void\n}\n\n");
+    } else {
+        emit_str(&mut cg, "    call void @Sleep(i32 %ms)\n");
+        emit_str(&mut cg, "    ret void\n}\n\n");
+    }
+
+    emit_str(&mut cg, "define ptr @tungsten_get_cmd_line() {\n");
+    if is_linux {
+        emit_str(&mut cg, "    %fp = call ptr @fopen(ptr @str_proc_cmdline, ptr @str_mode_rb)\n");
+        emit_str(&mut cg, "    %is_null = icmp eq ptr %fp, null\n");
+        emit_str(&mut cg, "    br i1 %is_null, label %ret_empty, label %read_cmd\n");
+        emit_str(&mut cg, "ret_empty:\n");
+        emit_str(&mut cg, "    ret ptr @str_empty\n");
+        emit_str(&mut cg, "read_cmd:\n");
+        emit_str(&mut cg, "    %buf = call ptr @malloc(i64 8192)\n");
+        emit_str(&mut cg, "    %n = call i64 @fread(ptr %buf, i64 1, i64 8191, ptr %fp)\n");
+        emit_str(&mut cg, "    call i32 @fclose(ptr %fp)\n");
+        emit_str(&mut cg, "    %term = getelementptr inbounds i8, ptr %buf, i64 %n\n");
+        emit_str(&mut cg, "    store i8 0, ptr %term\n");
+        emit_str(&mut cg, "    %has_bytes = icmp sgt i64 %n, 1\n");
+        emit_str(&mut cg, "    br i1 %has_bytes, label %loop_init, label %done\n");
+        emit_str(&mut cg, "loop_init:\n");
+        emit_str(&mut cg, "    %limit = sub i64 %n, 1\n");
+        emit_str(&mut cg, "    br label %loop_cond\n");
+        emit_str(&mut cg, "loop_cond:\n");
+        emit_str(&mut cg, "    %idx = phi i64 [ 0, %loop_init ], [ %next_idx, %loop_step ]\n");
+        emit_str(&mut cg, "    %cont = icmp slt i64 %idx, %limit\n");
+        emit_str(&mut cg, "    br i1 %cont, label %loop_body, label %done\n");
+        emit_str(&mut cg, "loop_body:\n");
+        emit_str(&mut cg, "    %byte_ptr = getelementptr inbounds i8, ptr %buf, i64 %idx\n");
+        emit_str(&mut cg, "    %ch = load i8, ptr %byte_ptr\n");
+        emit_str(&mut cg, "    %is_zero = icmp eq i8 %ch, 0\n");
+        emit_str(&mut cg, "    br i1 %is_zero, label %replace_space, label %loop_step\n");
+        emit_str(&mut cg, "replace_space:\n");
+        emit_str(&mut cg, "    store i8 32, ptr %byte_ptr\n");
+        emit_str(&mut cg, "    br label %loop_step\n");
+        emit_str(&mut cg, "loop_step:\n");
+        emit_str(&mut cg, "    %next_idx = add i64 %idx, 1\n");
+        emit_str(&mut cg, "    br label %loop_cond\n");
+        emit_str(&mut cg, "done:\n");
+        emit_str(&mut cg, "    ret ptr %buf\n}\n\n");
+    } else {
+        emit_str(&mut cg, "    %cmd = call ptr @GetCommandLineA()\n");
+        emit_str(&mut cg, "    ret ptr %cmd\n}\n\n");
+    }
 
     // Algebraic Effect Runtime Helpers
     emit_str(&mut cg, "define void @tungsten_effect_push_frame(ptr %frame, i64 %effect_sym, ptr %dispatch_fn) {\nentry:\n");
