@@ -2,7 +2,6 @@
 
 > **Morrow** is a modern systems-level programming language designed to provide fearless concurrency, zero-cost abstractions, and mathematical memory safety without garbage collection, borrow-checker lifetimes, or async function coloring.
 
-NOTE: Morrow is not a production level programming language at the current moment and should not be considered stable. Processes, features, and much more will be changed regularly.
 [![Release](https://img.shields.io/badge/Release-v2.0.0-blue.svg)](https://github.com/LeTrollologist/Tungsten/releases)
 [![Pure Morrow](https://img.shields.io/badge/Language-Pure%20Morrow-blue.svg)](compiler/)
 [![Self-Hosting](https://img.shields.io/badge/Self--Hosting-100%25%20Genesis-brightgreen.svg)](bin/)
