@@ -1,6 +1,6 @@
-# Tungsten Language & Syntax Specification (v1.3 Genesis)
+# Tungsten Language & Syntax Specification (v2.0)
 
-> **Tungsten** is a modern systems-level programming language designed to provide fearless concurrency and zero-cost abstractions, replacing explicit lifetime annotations with **Region-Based Memory Management**, eliminating the async/await function coloring divide through **Algebraic Effects**, and eliminating runtime out-of-bounds panics through **Compile-Time Refinement Types**.
+> **Tungsten** is a modern systems-level programming language designed to provide fearless concurrency and zero-cost abstractions, replacing explicit lifetime annotations with **Region-Based Memory Management**, eliminating the async/await function coloring divide through **Algebraic Effects**, eliminating resource leaks through **Linear & Affine Types**, and eliminating runtime out-of-bounds panics through **Compile-Time Refinement Types**.
 
 ---
 
@@ -8,14 +8,17 @@
 
 1. [Lexical Grammar](#1-lexical-grammar)
 2. [Type System & Refinements](#2-type-system--refinements)
-3. [Memory Model: Scoped Regions](#3-memory-model-scoped-regions)
-4. [Colorless Algebraic Effects](#4-colorless-algebraic-effects)
-5. [Structured Concurrency & Nurseries](#5-structured-concurrency--nurseries)
-6. [Declarations & Items](#6-declarations--items)
-7. [Statements & Control Flow](#7-statements--control-flow)
-8. [Foreign Function Interface (FFI) & Unsafe](#8-foreign-function-interface-ffi--unsafe)
-9. [Standard Library Reference](#9-standard-library-reference)
-10. [Idiomatic Code Patterns](#10-idiomatic-code-patterns)
+3. [Linear & Affine Resource Types](#3-linear--affine-resource-types)
+4. [Memory Model: Scoped Regions](#4-memory-model-scoped-regions)
+5. [Colorless Algebraic Effects](#5-colorless-algebraic-effects)
+6. [Structured Concurrency & Nurseries](#6-structured-concurrency--nurseries)
+7. [Declarations & Items](#7-declarations--items)
+8. [Statements & Control Flow](#8-statements--control-flow)
+9. [Foreign Function Interface (FFI) & Unsafe](#9-foreign-function-interface-ffi--unsafe)
+10. [Package Management & Locking](#10-package-management--locking)
+11. [Multi-Target Compilation](#11-multi-target-compilation)
+12. [Standard Library Reference](#12-standard-library-reference)
+13. [Idiomatic Code Patterns](#13-idiomatic-code-patterns)
 
 ---
 
@@ -48,8 +51,9 @@ let _scratch = "temp";
 ```text
 fn        var       let       if        else      while     for       in
 return    match     struct    enum      type      import    const
-region    nursery   effect    yields    handle    with      resume
-extern    unsafe    true      false     null      as
+region    nursery   effect    yields    handle    with      resume    perform
+linear    affine    consume   drop      extern    unsafe    true      false
+null      as
 ```
 
 ---
@@ -88,6 +92,27 @@ Refinement intervals can reference other variables in scope to enforce relationa
 // Enforces that 'end' must be greater than or equal to 'start'
 fn subslice_len(start: usize, end: usize(>= start)): usize {
     end - start // Guaranteed non-negative, zero bounds check emitted
+}
+```
+
+#### Non-Linear Arithmetic & Provable Zero-Divisor Safety
+Tungsten's interval solver evaluates mixed-sign 4-point extremal multiplication and provable non-zero divisor safety:
+```tungsten
+type Divisor = i64[1..100]; // Strictly positive, does not span 0
+fn safe_divide(x: i64, d: Divisor): i64 {
+    x / d // Guaranteed non-zero divisor, division-by-zero panic statically impossible
+}
+```
+If a divisor interval spans zero (e.g. `[-5..5]`), the compiler statically rejects the operation at compile time.
+
+#### Path-Sensitive Interval Narrowing
+Conditional expressions narrow variable interval bounds within conditional branches and restore original bounds upon exit:
+```tungsten
+fn process_score(score: i64) {
+    if score >= 0 && score <= 100 {
+        // Here, 'score' is automatically narrowed to refinement interval [0..100]
+        let valid_percentage: Percentage = score as Percentage;
+    }
 }
 ```
 
@@ -135,10 +160,64 @@ fn identity<T>(item: T): T {
 // Pair::<i64> { first: 10, second: 20 } -> instantiates and constructs Pair__i64
 ```
 
+---
+
+## 3. Linear & Affine Resource Types
+
+Tungsten provides compile-time ownership semantics for OS handles, hardware peripherals, and critical system resources through **linear** and **affine** structs.
+
+### Linear Structs (`linear struct`) — Exactly-Once Consumption
+A linear struct represents a resource that must be consumed **exactly once**. If a linear resource is dropped or falls out of scope unconsumed, the compiler raises a compile-time leak error:
+
+```tungsten
+linear struct FileHandle {
+    fd: i64,
+}
+
+fn close_file(f: FileHandle) {
+    consume(f); // Zero-cost intrinsic: marks resource consumed
+}
+
+fn leak_violation(f: FileHandle) {
+    // COMPILE ERROR: Linear Resource Violation: resource dropped without being consumed
+}
+```
+
+#### Branch Convergence
+Linear resources must reach identical consumption states across all conditional control-flow branches:
+```tungsten
+fn branch_check(cond: bool, f: FileHandle) {
+    if cond {
+        close_file(f);
+    } else {
+        close_file(f); // Must be consumed along both paths
+    }
+}
+```
+
+### Affine Structs (`affine struct`) — At-Most-Once Consumption
+An affine struct represents a resource that can be consumed **at most once**. If unconsumed, it safely auto-drops at scope exit without error:
+
+```tungsten
+affine struct TempBuffer {
+    ptr: *mut u8,
+}
+
+fn use_temp(b: TempBuffer, early_exit: bool) {
+    if early_exit {
+        return; // OK: Affine resource safely auto-drops at scope exit
+    }
+    consume(b);
+}
+```
+
+### Resource Intrinsics
+- `consume(res)`: Explicitly marks a linear or affine resource as consumed. Any subsequent access triggers a compile-time `use-after-consume` violation.
+- `drop(res)`: Explicitly discards an affine resource.
 
 ---
 
-## 3. Memory Model: Scoped Regions
+## 4. Memory Model: Scoped Regions
 
 Tungsten replaces explicit lifetime annotations with **Lexical Memory Regions**.
 
@@ -177,7 +256,7 @@ fn illegal_escape(): &String {
 
 ---
 
-## 4. Colorless Algebraic Effects
+## 5. Colorless Algebraic Effects
 
 Tungsten eliminates the `async`/`await` and `Result`/`Option` function coloring divide by using **Delimited Algebraic Effects**.
 
@@ -229,7 +308,7 @@ fn main() -> i64 {
 
 ---
 
-## 5. Structured Concurrency & Nurseries
+## 6. Structured Concurrency & Nurseries
 
 Tungsten provides native structured concurrency through **Nurseries** and **Fibers**, multiplexed over an M:N worker task pool driven by kernel-level completion ports (Win32 IOCP).
 
@@ -261,7 +340,7 @@ var val = channel_recv_msg(ch); // val == 42
 
 ---
 
-## 6. Declarations & Items
+## 7. Declarations & Items
 
 ### Functions
 ```tungsten
@@ -331,7 +410,7 @@ import std.process;
 
 ---
 
-## 7. Statements & Control Flow
+## 8. Statements & Control Flow
 
 ### Variables & Mutability
 ```tungsten
@@ -369,7 +448,7 @@ while true {
 
 ---
 
-## 8. Foreign Function Interface (FFI) & Unsafe
+## 9. Foreign Function Interface (FFI) & Unsafe
 
 Tungsten seamlessly binds to native C libraries without runtime wrappers using `extern "C"`.
 
@@ -395,7 +474,76 @@ unsafe {
 
 ---
 
-## 9. Standard Library Reference
+## 10. Package Management & Locking
+
+Tungsten's package system manages modular project manifests and guarantees deterministic dependency resolution.
+
+### Package Manifest (`Forge.toml`)
+Every package defines a root `Forge.toml`:
+```toml
+[package]
+name = "my_service"
+version = "0.1.0"
+edition = "2026"
+
+[dependencies]
+math_core = { path = "../math_core", version = "^1.2.0" }
+net_utils = { path = "../net_utils", version = "0.4.*" }
+```
+
+### Semantic Versioning Rules (SemVer Subset)
+Tungsten supports standard numeric `X.Y.Z` SemVer constraints:
+- Exact: `=1.2.3` or `1.2.3`
+- Caret compatibility:
+  - `^1.2.3` $\implies [1.2.3, 2.0.0)$
+  - `^0.2.3` $\implies [0.2.3, 0.3.0)$
+  - `^0.0.3` $\implies [0.0.3, 0.0.4)$
+- Wildcards: `*`, `1.*`, `1.2.*`
+
+### Lockfile Format & Graph Closure (`Forge.lock`)
+`forge resolve` outputs a canonical `Forge.lock`. Packages and outbound dependencies are sorted alphabetically to ensure byte-identical determinism:
+```toml
+# This file is automatically generated by Forge.
+# Do not edit manually.
+
+[[package]]
+name = "math_core"
+version = "1.2.4"
+source = "local"
+path = "../math_core"
+dependencies = [
+    "algebra_lib 0.8.1",
+]
+
+[[package]]
+name = "algebra_lib"
+version = "0.8.1"
+source = "local"
+path = "../algebra_lib"
+dependencies = []
+```
+**Graph Closure Invariant:** Every dependency listed in `dependencies = [...]` must exist as a top-level `[[package]]` in `Forge.lock` with a matching version.
+
+---
+
+## 11. Multi-Target Compilation
+
+The self-hosted compiler supports native code generation and cross-compilation across multiple target architectures via `--target`:
+
+| Target Triple | Output Binary | ABI & Delimited Continuation Details |
+| :--- | :--- | :--- |
+| `x86_64-pc-windows-gnu` (default) | Windows PE `.exe` | Microsoft x64 ABI (`%rcx`, `%rdx`, `%r8`, `%r9`), CodeView debug info |
+| `x86_64-unknown-linux-gnu` | Linux ELF executable | System V AMD64 ABI (`%rdi`, `%rsi`, `%rdx`), POSIX shims (`/proc/self/cmdline`) |
+| `aarch64-unknown-linux-gnu` | Linux ARM64 ELF | AAPCS64 ABI (`x19–x28`, `x29`, `x30` link register, `d8–d15`) |
+| `wasm32-unknown-unknown` | WebAssembly `.wasm` | Self-contained 32-bit WASM IR, Node.js & browser host interoperability |
+
+```powershell
+tgc file.tg --target wasm32-unknown-unknown -o file.wasm
+```
+
+---
+
+## 12. Standard Library Reference
 
 ### 1. `std.collections`
 - **`HashMap`**: Cache-conscious Robin Hood hash map using Structure-of-Arrays (SoA) layout and FNV-1a hashing. Supports dual allocators (`hashmap_new` / `hashmap_new_in`).
@@ -428,7 +576,7 @@ unsafe {
 
 ---
 
-## 10. Idiomatic Code Patterns
+## 13. Idiomatic Code Patterns
 
 ### Pattern A: Fortress v2 High-Concurrency HTTP Server
 Combines structured concurrency nurseries, fixed M:N worker task pools, Win32 IOCP, and scoped request memory regions:
