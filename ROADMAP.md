@@ -213,7 +213,7 @@
 - [x] **Complete Retirement of Rust Stage-0 Crates**:
   - All legacy Rust crates (`crates/`) and root `Cargo.toml`/`Cargo.lock` archived to `archive/stage0-rust/`.
   - The Tungsten workspace is 100% pure Tungsten.
-- [x] **Comprehensive Genesis Architectural Audit (`AUDIT.md`)**:
+- [x] **Comprehensive Genesis Architectural Audit**:
   - Detailed forensic audit of `compiler/*.tg`, `std/*.tg`, and `examples/*.tg`.
   - Documented working subsystems (self-hosting loop, LLVM IR bump arena, collections, C FFI).
   - Identified critical technical debt: hardcoded struct field name tables in codegen, variable-name-based indexing, disconnected TIR optimizer passes, missing user-defined refinement types, discarded algebraic effects, and error masking in `forge check`.

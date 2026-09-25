@@ -54,10 +54,6 @@
   <a href="ROADMAP.md">
     <img src="https://img.shields.io/badge/🗺️_Roadmap-Milestones_&_Vision-34D399?style=for-the-badge&logoColor=white&labelColor=0f172a" alt="Roadmap" />
   </a>
-  &nbsp;
-  <a href="AUDIT.md">
-    <img src="https://img.shields.io/badge/🛡️_Security-Audit_Report-F472B6?style=for-the-badge&logo=securityscorecard&logoColor=white&labelColor=0f172a" alt="Audit Report" />
-  </a>
 </p>
 
 </div>
