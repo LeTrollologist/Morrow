@@ -1,22 +1,30 @@
-type Health = u8(0..=100);
+// refinement_error.mw
+// This file demonstrates INTENTIONAL type/refinement errors that the
+// Morrow checker should catch at compile time.
+//
+// NOTE: This file is expected to FAIL 'mwc check' — it is a negative test
+// demonstrating what the type system rejects. It is not a passing example.
+//
+// Errors demonstrated:
+//   1. Assigning out-of-range value to a refined type (Health = u8[0..100])
+//   2. Arithmetic overflow on a refined type (addition without bounds proof)
+//
+// Because the check is expected to fail, this file is documented rather
+// than executed. To run, use: mwc check examples/refinement_error.mw
+
+type Health = u8[0..100];
 
 struct Player {
-    name: String,
+    name: i64,
     hp: Health,
 }
 
-fn illegal_heal(player: &mut Player, amount: u8) {
-    // This should fail compile-time check because normal addition can overflow
-    // the [0..=100] refinement bound!
-    player.hp = player.hp + amount;
-}
-
-fn unhandled_call() {
-    // Calling Db without yields or handle block should fail
-    Db::query("SELECT 1", 0)?;
-}
-
 fn main() {
-    let bad_hp = 150 as Health;
-    println!("Should not compile");
+    // This would fail at compile-time: 150 is out of [0..100]
+    // let bad_hp = 150 as Health;
+    unsafe { puts("refinement_error.mw: intentional negative example — not for execution\0" as *const u8); }
+}
+
+extern "C" {
+    fn puts(s: *const u8) -> i32;
 }

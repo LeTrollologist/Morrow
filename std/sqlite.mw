@@ -117,7 +117,7 @@ pub fn sqlite_execute_prepared(db: &mut SqliteDb, sql: String, p1: String, p2: S
         unsafe { free(stmt_slot as *mut u8); }
         return 0 - (prep_rc as i64);
     }
-    let stmt = unsafe { *stmt_slot };
+    let stmt = unsafe { stmt_slot[0] };
     unsafe { free(stmt_slot as *mut u8); }
 
     let null_destructor: *mut u8 = 0 as *mut u8;

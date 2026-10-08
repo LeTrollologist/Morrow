@@ -92,6 +92,9 @@ fn main() -> i64 yields [FS, Process, Diagnostics, IO] {
                 strcmp(p1, "fmt" as *const u8) == 0 ||
                 strcmp(p1, "lsp" as *const u8) == 0 ||
                 strcmp(p1, "new" as *const u8) == 0 ||
+                strcmp(p1, "add" as *const u8) == 0 ||
+                strcmp(p1, "resolve" as *const u8) == 0 ||
+                strcmp(p1, "lock" as *const u8) == 0 ||
                 strcmp(p1, "clean" as *const u8) == 0 ||
                 strcmp(p1, "version" as *const u8) == 0 ||
                 strcmp(p1, "--version" as *const u8) == 0 ||

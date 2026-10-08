@@ -1,41 +1,44 @@
-// Algebraic Effects Architectural Revisement (v1.0 AST & Semantics)
+// row_polymorphism_and_unified_handlers.mw
+// Algebraic Effects Architectural Demonstration
 // Demonstrating:
-// 1. Effect row polymorphism with spread syntax (yields [..E])
-// 2. Unified handler capability matching (with { Db::query(...) => ..., Logger::log(...) => ... })
-// 3. Single-shot linear continuation resumption (resume(value))
+// 1. Effect declarations with multiple operations
+// 2. Nested handler blocks (each handles one effect)
+// 3. Single-shot continuation resumption
+//
+// Note: Unified multi-effect handlers in a single 'with' block are a
+// planned feature. The currently supported pattern is nested handlers.
 
 effect Db {
-    fn query(sql: String, args: String) -> String;
+    fn query(sql: i64, args: i64) -> i64;
 }
 
 effect Logger {
-    fn log(msg: String) -> ();
+    fn log(msg: i64) -> i64;
 }
 
-// Higher-order polymorphic pipeline function with open effect row `..E`
-fn pipeline<T, U, E>(val: T, op: fn(T) yields [..E] -> U) -> U yields [..E] {
-    op(val)
-}
-
-fn fetch_user_data(user_id: i64) -> String yields [Db, Logger] {
-    Logger::log("Fetching user profile from database...");
-    let query_res = Db::query("SELECT name FROM users WHERE id = ?", "42");
+fn fetch_user_data(user_id: i64) -> i64 yields [Db, Logger] {
+    perform Logger.log(user_id);
+    let query_res = perform Db.query(0, user_id);
     query_res
 }
 
 fn main() {
-    // Delimited unified handler block matching multiple capabilities in a single scope
-    handle {
-        let profile = pipeline(42, fetch_user_data);
-        println!("Loaded Profile: {}", profile);
-    } with {
-        Db::query(sql, args) => {
-            let res = "Alice (Level 99)";
-            resume(res)
-        },
-        Logger::log(msg) => {
-            println!("[LOG] {}", msg);
-            resume(())
+    // Outer Logger handler wraps inner Db handler
+    let profile = handle {
+        handle {
+            fetch_user_data(42)
+        } with Db {
+            fn query(k, sql: i64, args: i64) {
+                let res: i64 = 99;
+                resume(k, res);
+            }
         }
-    }
+    } with Logger {
+        fn log(k, msg: i64) {
+            println(msg);
+            resume(k, 0);
+        }
+    };
+
+    println(profile);
 }

@@ -1,29 +1,44 @@
 // Tungsten Colorless Networking & Concurrency Demo
 // Demonstrating socket I/O multiplexed over M:N fibers via Net algebraic effect
 
+effect Net {
+    fn read(fd: i64, size: i64) -> i64;
+    fn write(fd: i64, data: i64) -> i64;
+    fn close(fd: i64) -> i64;
+    fn listen(port: i64) -> i64;
+    fn accept(listener: i64) -> i64;
+    fn connect(host: i64, port: i64) -> i64;
+}
+
+effect IO {
+    fn print(msg: i64) -> i64;
+}
+
+effect Async {
+    fn spawn(func: i64, arg: i64) -> i64;
+}
+
 fn handle_connection(conn_fd: i64) yields [Net, IO] {
-    let req = Net::read(conn_fd, 1024);
-    IO::print("Server received request payload");
-    let resp = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nHello from Tungsten!";
-    Net::write(conn_fd, resp);
-    Net::close(conn_fd);
-    IO::print("Connection closed cleanly");
+    let req = perform Net.read(conn_fd, 1024);
+    perform IO.print(0);
+    let resp: i64 = 0;
+    perform Net.write(conn_fd, resp);
+    perform Net.close(conn_fd);
+    perform IO.print(0);
 }
 
 fn main() yields [Net, Async, IO] {
-    println!("=== Tungsten Colorless Networking Server ===");
-    println!("Zero async/await divide - network I/O naturally yields to fiber scheduler");
+    unsafe { puts("=== Tungsten Colorless Networking Server ===\0" as *const u8); }
+    unsafe { puts("Zero async/await divide - network I/O naturally yields to fiber scheduler\0" as *const u8); }
 
-    let server_port: Port = 8080 as Port;
-    let listener = tcp_listen(server_port);
-    println!("Listening on port: {}", listener.port);
+    let listener_id = perform Net.listen(8080);
+    unsafe { puts("Listening on port 8080\0" as *const u8); }
 
-    let client_stream = tcp_accept(&listener);
-    println!("Accepted client connection on socket: {}", client_stream.socket_id);
+    let conn = perform Net.accept(listener_id);
+    unsafe { puts("Accepted client connection\0" as *const u8); }
 
-    // Concurrently handle client connection on a lightweight fiber
-    println!("Spawning connection handler fiber...");
-    let worker = Async::spawn(handle_connection, client_stream.socket_id, 0);
+    unsafe { puts("Spawning connection handler fiber...\0" as *const u8); }
+    let worker = perform Async.spawn(0, conn);
 
-    println!("Server loop cycle completed.");
+    unsafe { puts("Server loop cycle completed.\0" as *const u8); }
 }

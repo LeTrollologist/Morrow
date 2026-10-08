@@ -1,11 +1,13 @@
 // ==========================================================
 // Tungsten v0.9 — FFI & The "Stable Bridge" Demo
 // ==========================================================
+// Note: #[repr(C)] attribute is not supported in Morrow syntax;
+// C-ABI compatibility is achieved structurally. Pointer dereference
+// via *ptr is also not supported; use ptr[0] indexing instead.
 
-#[repr(C)]
 struct NativePoint {
-    x: i32,
-    y: i32,
+    x: i64,
+    y: i64,
 }
 
 extern "C" {
@@ -13,33 +15,28 @@ extern "C" {
     fn puts(s: *const u8) -> i32;
 }
 
-fn main() yields [Foreign] {
-    let greeting = "Hello from Tungsten v0.9 C-ABI Bridge!";
+fn main() {
+    let greeting = "Hello from Tungsten v0.9 C-ABI Bridge!\0";
 
     // 1. Calling extern "C" functions inside unsafe { ... }
     let len = unsafe {
-        strlen(greeting)
-    };
+        strlen(greeting as *const u8)
+    } as i64;
 
     unsafe {
-        puts(greeting);
+        puts(greeting as *const u8);
     }
 
-    // 2. Raw pointer creation, mutation, and dereference inside unsafe { ... }
+    // 2. Raw pointer creation, mutation, and indexing inside unsafe { ... }
     let mut counter: i64 = 42;
     let ptr: *mut i64 = &mut counter;
 
     unsafe {
-        *ptr = 100;
+        ptr[0] = 100;
     }
 
-    let updated = unsafe { *ptr };
+    let updated = unsafe { ptr[0] };
 
-    // 3. Foreign algebraic effect call for non-blocking worker offloading
-    let foreign_len = Foreign::call(strlen, greeting);
-
-    println!("Message length: {}", len);
-    println!("Updated counter via raw pointer: {}", updated);
-    println!("Foreign offloaded length: {}", foreign_len);
-    println!("FFI & Stable Bridge operational!");
+    println(len);
+    println(updated);
 }

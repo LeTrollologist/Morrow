@@ -1,4 +1,5 @@
-// Tungsten Standard Library - Process Orchestration Module (std::process)
+// Morrow Standard Library - Process Orchestration Module (std::process)
+import std::effects;
 
 pub struct Command {
     program: String,
@@ -17,9 +18,9 @@ pub fn command_arg(cmd: &mut Command, arg: String) {
 }
 
 pub fn command_status(cmd: &Command) -> i64 yields [Process] {
-    Process::spawn(cmd.program, cmd.args)
+    perform Process.spawn(cmd.program, cmd.args)
 }
 
 pub fn process_exec(cmd: String, args: String) -> i64 yields [Process] {
-    Process::spawn(cmd, args)
+    perform Process.spawn(cmd, args)
 }

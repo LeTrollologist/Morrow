@@ -41,6 +41,9 @@ pub fn normalize_path(path: String, arena: *mut u8) -> String {
     let len = unsafe { strlen(p) } as i64;
     let mut buf = string_buffer_new_in(arena);
     let mut i: i64 = 0;
+    if len >= 2 && unsafe { p[0] == 46 && (p[1] == 47 || p[1] == 92) } {
+        i = 2;
+    }
     while i < len {
         let b = unsafe { p[i] };
         if b == 92 as u8 {
@@ -1168,6 +1171,15 @@ pub fn forge_run_fmt(args: &Vec<String>, arena: *mut u8) -> i64 yields [FS, Diag
 pub fn forge_run_new(name: String, arena: *mut u8) -> i64 yields [FS, IO] {
     forge_print("forge: creating new project...");
 
+    unsafe {
+        CreateDirectoryA(name as *const u8, 0 as *const u8);
+        let mut src_dir = string_buffer_new_in(arena);
+        fmt_append_str(&mut src_dir, name);
+        fmt_append_str(&mut src_dir, "/src");
+        string_buffer_push_byte(&mut src_dir, 0 as u8);
+        CreateDirectoryA(string_as_ptr(&src_dir) as *const u8, 0 as *const u8);
+    }
+
     let mut toml_buf = string_buffer_new_in(arena);
     fmt_append_str(&mut toml_buf, "[package]\nname = \"");
     fmt_append_str(&mut toml_buf, name);
@@ -1176,12 +1188,26 @@ pub fn forge_run_new(name: String, arena: *mut u8) -> i64 yields [FS, IO] {
     let toml_str = string_as_ptr(&toml_buf) as String;
 
     let mut toml_path_buf = string_buffer_new_in(arena);
-    fmt_append_str(&mut toml_path_buf, "Forge.toml");
+    fmt_append_str(&mut toml_path_buf, name);
+    fmt_append_str(&mut toml_path_buf, "/Forge.toml");
     string_buffer_push_byte(&mut toml_path_buf, 0 as u8);
     let toml_path = string_as_ptr(&toml_path_buf) as String;
 
     fs_write_string(toml_path, toml_str);
-    forge_print("forge: created Forge.toml");
+
+    let mut main_buf = string_buffer_new_in(arena);
+    fmt_append_str(&mut main_buf, "fn main() {\n    // Welcome to Morrow!\n}\n");
+    string_buffer_push_byte(&mut main_buf, 0 as u8);
+    let main_str = string_as_ptr(&main_buf) as String;
+
+    let mut main_path_buf = string_buffer_new_in(arena);
+    fmt_append_str(&mut main_path_buf, name);
+    fmt_append_str(&mut main_path_buf, "/src/main.mw");
+    string_buffer_push_byte(&mut main_path_buf, 0 as u8);
+    let main_path = string_as_ptr(&main_path_buf) as String;
+
+    fs_write_string(main_path, main_str);
+    forge_print("forge: created project scaffold");
     0
 }
 

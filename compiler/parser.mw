@@ -102,6 +102,18 @@ pub fn parse_type(p: &mut Parser) -> i64 yields [Diagnostics] {
         }
         return parse_type(p);
     }
+    if check(p, tok_lparen()) {
+        advance(p); // consume (
+        if check(p, tok_rparen()) {
+            advance(p); // consume )
+            return 0; // unit / void type
+        }
+        while !check(p, tok_rparen()) && !check(p, tok_eof()) {
+            advance(p);
+        }
+        expect(p, tok_rparen(), "Expected ')' after type");
+        return 0;
+    }
     if check(p, tok_ident()) {
         let tok = advance(p);
         let sym = tok.sym;
@@ -271,7 +283,25 @@ fn parse_primary_expr(p: &mut Parser) -> *mut AstExpr yields [Diagnostics] {
         // int_val == 0 (concrete), enforced by verify_no_unresolved_turbofish.
         // -----------------------------------------------------------------------
         if check(p, tok_coloncolon()) {
-            if peek_kind(p, 1) == tok_lt() {
+            if peek_kind(p, 1) == tok_ident() && peek_kind(p, 2) == tok_lparen() {
+                // Effect::op(args) — desugar to perform Effect.op(args)
+                advance(p); // consume ::
+                let op_tok = expect(p, tok_ident(), "Expected operation name after '::'");
+                let op_sym = op_tok.sym;
+                advance(p); // consume (
+                let mut eff_args: Vec<*mut AstExpr> = vec_new_in(p.arena);
+                if !check(p, tok_rparen()) {
+                    let first_eff_arg = parse_expr(p);
+                    vec_push(&mut eff_args, first_eff_arg);
+                    while check(p, tok_comma()) {
+                        advance(p);
+                        let next_eff_arg = parse_expr(p);
+                        vec_push(&mut eff_args, next_eff_arg);
+                    }
+                }
+                expect(p, tok_rparen(), "Expected ')' after effect operation arguments");
+                return alloc_expr_perform(p.arena, sym, op_sym, eff_args);
+            } else if peek_kind(p, 1) == tok_lt() {
                 advance(p); // consume ::
                 advance(p); // consume <
                 let mut turbo_ty_sym: i64 = 0;
@@ -358,6 +388,28 @@ fn parse_primary_expr(p: &mut Parser) -> *mut AstExpr yields [Diagnostics] {
             return alloc_expr_call(p.arena, sym, args);
         }
 
+        // Macro call: println!(...) or any ident!(...)
+        // Desugared: consume the '!' and treat as a regular function call (sym).
+        // The format string becomes the first argument; extra args are dropped.
+        if check(p, tok_bang()) {
+            advance(p); // consume !
+            expect(p, tok_lparen(), "Expected '(' after macro name");
+            let mut macro_args: Vec<*mut AstExpr> = vec_new_in(p.arena);
+            if !check(p, tok_rparen()) {
+                let first_ma = parse_expr(p);
+                vec_push(&mut macro_args, first_ma);
+                while check(p, tok_comma()) {
+                    advance(p); // consume ,
+                    if !check(p, tok_rparen()) {
+                        let extra_ma = parse_expr(p);
+                        vec_push(&mut macro_args, extra_ma);
+                    }
+                }
+            }
+            expect(p, tok_rparen(), "Expected ')' after macro arguments");
+            return alloc_expr_call(p.arena, sym, macro_args);
+        }
+
         // Struct instantiation: Ident { field: expr, ... }
         if check(p, tok_lbrace()) && peek_kind(p, 1) == tok_ident() && peek_kind(p, 2) == tok_colon() {
             advance(p); // consume {
@@ -376,6 +428,15 @@ fn parse_primary_expr(p: &mut Parser) -> *mut AstExpr yields [Diagnostics] {
         }
 
         return alloc_expr_var(p.arena, sym);
+    }
+
+    if kind == tok_kw_region() {
+        advance(p); // consume region
+        let rname_tok = expect(p, tok_ident(), "Expected region name after 'region'");
+        let rname_sym = rname_tok.sym;
+        let rbody = parse_block(p);
+        // Do NOT consume optional ';' here — the enclosing statement handles that.
+        return alloc_expr_region(p.arena, rname_sym, rbody);
     }
 
     if kind == tok_lparen() {
@@ -477,6 +538,12 @@ fn parse_block(p: &mut Parser) -> Vec<*mut AstStmt> yields [Diagnostics] {
 pub fn parse_stmt(p: &mut Parser) -> *mut AstStmt yields [Diagnostics] {
     let kind = current_kind(p);
 
+    if kind == tok_semicolon() {
+        advance(p);
+        let dummy = alloc_expr_int(p.arena, 0);
+        return alloc_stmt_expr(p.arena, dummy);
+    }
+
     if kind == tok_kw_let() || kind == tok_kw_var() {
         advance(p); // consume let or var
         if check(p, tok_kw_mut()) {
@@ -551,12 +618,18 @@ pub fn parse_stmt(p: &mut Parser) -> *mut AstStmt yields [Diagnostics] {
         advance(p); // consume region
         let name_tok = expect(p, tok_ident(), "Expected region name after 'region'");
         let body = parse_block(p);
+        if check(p, tok_semicolon()) {
+            advance(p);
+        }
         return alloc_stmt_block(p.arena, name_tok.sym, body);
     }
 
     if kind == tok_kw_unsafe() {
         advance(p); // consume unsafe
         let body = parse_block(p);
+        if check(p, tok_semicolon()) {
+            advance(p);
+        }
         return alloc_stmt_block(p.arena, 0, body);
     }
 

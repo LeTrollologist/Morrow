@@ -72,12 +72,27 @@ fn test_type_directed_array_indexing() {
     assert_eq(my_numbers[2], 333, "my_numbers[2] preserves 333");
 }
 
+fn test_arbitrary_variable_array_indexing() {
+    var custom_items = unsafe {
+        morrow_alloc(32, 8) as *mut i64
+    };
+
+    custom_items[0] = 777;
+    custom_items[1] = 888;
+    custom_items[2] = 999;
+
+    assert_eq(custom_items[0], 777, "custom_items[0] preserves 777");
+    assert_eq(custom_items[1], 888, "custom_items[1] preserves 888 (8-byte stride on unlisted identifier)");
+    assert_eq(custom_items[2], 999, "custom_items[2] preserves 999");
+}
+
 fn main() {
     test_print("=== Running Dynamic Struct Field Layout & Indexing Test Suite ===");
 
     test_struct_field_offsets();
     test_multi_struct_independence();
     test_type_directed_array_indexing();
+    test_arbitrary_variable_array_indexing();
 
     test_print("All dynamic struct field layout and indexing tests passed!");
 }

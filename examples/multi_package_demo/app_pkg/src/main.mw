@@ -1,16 +1,29 @@
-// app_pkg: Application Entry Point (src/main.tg)
-// Demonstrates dependency imports, 1:1 submodule imports, and public APIs
+// app_pkg: Application Entry Point (examples/multi_package_demo)
+import examples::multi_package_demo::math_pkg::src::lib;
+import examples::multi_package_demo::math_pkg::src::matrix;
 
-import math_pkg;
-import math_pkg::matrix;
+extern "C" {
+    fn puts(s: *const u8) -> i32;
+    fn fflush(f: *const u8) -> i32;
+}
 
-fn main() {
-    let v1 = math_pkg::make_vector(3, 4);
-    let v2 = math_pkg::make_vector(5, 6);
-    let dot = math_pkg::vector_dot(v1, v2);
-    println!("Vector dot product: {}", dot);
+fn print_msg(msg: String) {
+    unsafe {
+        puts(msg as *const u8);
+        fflush(0 as *const u8);
+    }
+}
 
-    let id = matrix::identity();
-    let det = matrix::determinant(id);
-    println!("Matrix determinant: {}", det);
+fn main() -> i64 {
+    let v1 = make_vector(3, 4);
+    let v2 = make_vector(5, 6);
+    let dot = vector_dot(v1, v2);
+    print_msg("Vector dot product:");
+    println(dot);
+
+    let id = identity();
+    let det = determinant(id);
+    print_msg("Matrix determinant:");
+    println(det);
+    0
 }

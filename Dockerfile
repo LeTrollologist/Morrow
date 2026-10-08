@@ -29,7 +29,7 @@ COPY examples ./examples
 RUN chmod +x bin/tgc_linux
 
 # Compile microservice into native Linux ELF binary
-RUN ./bin/tgc_linux examples/bootstrap_sample.tg --target x86_64-unknown-linux-gnu -o target/app_service
+RUN ./bin/mwc examples/bootstrap_sample.mw --target x86_64-unknown-linux-gnu -o target/app_service
 
 # Verify output binary exists and has execution permissions
 RUN chmod +x target/app_service

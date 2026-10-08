@@ -1,11 +1,12 @@
-// Tungsten Standard Library - I/O Streams Module (std::io)
+// Morrow Standard Library - I/O Streams Module (std::io)
+import std::effects;
 
 pub fn io_print(msg: String) yields [IO] {
-    IO::print(msg)
+    perform IO.print(msg)
 }
 
 pub fn io_read_line() -> String yields [IO] {
-    IO::read_line()
+    perform IO.read_line()
 }
 
 pub struct BufReader {

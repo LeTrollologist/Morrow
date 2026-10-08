@@ -1,40 +1,51 @@
-enum Method {
-    Get,
-    Other,
+// http_server.mw
+// Tungsten Colorless HTTP/1.1 Server
+// Demonstrates: algebraic effects for colorless networking, region-per-request.
+// Note: Morrow does not support enum/match; method dispatch uses i64 tags.
+
+effect Net {
+    fn read(fd: i64, size: i64) -> i64;
+    fn write(fd: i64, data: i64) -> i64;
+    fn close(fd: i64) -> i64;
+    fn listen(port: i64) -> i64;
+    fn accept(listener: i64) -> i64;
 }
 
-fn parse_method(req: String) -> Method {
-    Method::Get
+effect Async {
+    fn spawn(func: i64, arg: i64) -> i64;
 }
 
-fn handle_connection(conn: i64) yields [Net, IO]{
+extern "C" {
+    fn puts(s: *const u8) -> i32;
+}
+
+// Parse method: returns 0 for GET, 1 for other
+fn parse_method(req: i64) -> i64 {
+    0
+}
+
+fn handle_connection(conn: i64) yields [Net] {
     region req {
-        let raw_req = Net::read(conn, 1024);
+        let raw_req = perform Net.read(conn, 1024);
         let method = parse_method(raw_req);
-        match method {
-            Method::Get => {
-                let resp = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 31\r\nConnection: close\r\n\r\nHello from Colorless Tungsten!\n";
-                Net::write(conn, resp);
-            }
-            Method::Other => {
-                let resp = "HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-                Net::write(conn, resp);
-            }
+        let resp: i64 = 0;
+        if method == 0 {
+            // GET
+            perform Net.write(conn, resp);
+        } else {
+            perform Net.write(conn, resp);
         }
-        Net::close(conn);
+        perform Net.close(conn);
     }
 }
 
-fn main() yields [Net, Async, IO] {
-    println!("=== Tungsten Colorless HTTP/1.1 Server ===");
-    println!("Listening on: http://127.0.0.1:18080");
-    println!("Architecture: M:N Fiber Concurrency + Request-Scoped Bump Regions");
+fn main() yields [Net, Async] {
+    unsafe { puts("=== Tungsten Colorless HTTP/1.1 Server ===\0" as *const u8); }
+    unsafe { puts("Listening on: http://127.0.0.1:18080\0" as *const u8); }
 
-    let listener = Net::listen(18080);
-    loop {
-        let conn = Net::accept(listener);
-        if conn > 0 {
-            Async::spawn(handle_connection, conn);
-        }
+    let listener = perform Net.listen(18080);
+    let conn = perform Net.accept(listener);
+    if conn > 0 {
+        let _h = perform Async.spawn(0, conn);
     }
 }

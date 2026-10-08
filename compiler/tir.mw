@@ -438,8 +438,11 @@ pub fn lower_ast_expr_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, expr
     }
 
     if kind == expr_index() {
-        let interner_ref = f.interner as &Interner;
-        let stride = determine_index_stride(expr.left, interner_ref);
+        let mut stride = expr.op;
+        if stride != 1 && stride != 8 {
+            let interner_ref = f.interner as &Interner;
+            stride = determine_index_stride(expr.left, interner_ref);
+        }
         let base_op = lower_ast_expr_to_tir(f, cur_block, expr.left, arena);
         let idx_op = lower_ast_expr_to_tir(f, cur_block, expr.right, arena);
         let reg = tir_fn_alloc_reg(f);
@@ -527,6 +530,41 @@ pub fn lower_ast_expr_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, expr
         return alloc_tir_op_reg(arena, reg);
     }
 
+    // Region-as-expression: region name { stmts } where the last stmt is the value.
+    if kind == expr_region() {
+        if expr.sym != 0 {
+            let empty_rargs: Vec<*mut TirOperand> = vec_new_in(arena);
+            let reg_call = alloc_tir_inst_call(arena, expr.sym, 0, empty_rargs);
+            reg_call.str_val = "morrow_region_enter";
+            tir_block_push_inst(cur_block, reg_call);
+        }
+        let mut rcur = cur_block;
+        let mut rbi: i64 = 0;
+        let rb_len = expr.stmts.len;
+        let mut region_val = alloc_tir_op_int(arena, 0);
+        while rbi < rb_len {
+            let rs = vec_get(&expr.stmts, rbi);
+            if rbi == rb_len - 1 {
+                if rs.kind == stmt_expr() {
+                    region_val = lower_ast_expr_to_tir(f, rcur, rs.expr, arena);
+                    rbi = rbi + 1;
+                    break;
+                }
+            }
+            rcur = lower_ast_stmt_to_tir(f, rcur, rs, 0 - 1, false, arena);
+            rbi = rbi + 1;
+        }
+        if expr.sym != 0 {
+            let mut leave_rargs: Vec<*mut TirOperand> = vec_new_in(arena);
+            vec_push(&mut leave_rargs, alloc_tir_op_var(arena, expr.sym));
+            let reg_leave = alloc_tir_inst_call(arena, 0, 0, leave_rargs);
+            reg_leave.str_val = "morrow_region_leave";
+            tir_block_push_inst(rcur, reg_leave);
+        }
+        cur_block = rcur;
+        return region_val;
+    }
+
     alloc_tir_op_int(arena, 0)
 }
 
@@ -582,8 +620,11 @@ pub fn lower_ast_stmt_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, stmt
     }
 
     if kind == stmt_index_assign() {
-        let interner_ref = f.interner as &Interner;
-        let stride = determine_index_stride(stmt.left, interner_ref);
+        let mut stride = stmt.sym;
+        if stride != 1 && stride != 8 {
+            let interner_ref = f.interner as &Interner;
+            stride = determine_index_stride(stmt.left, interner_ref);
+        }
         let base_op = lower_ast_expr_to_tir(f, cur_block, stmt.left, arena);
         let idx_op = lower_ast_expr_to_tir(f, cur_block, stmt.right, arena);
         let val_op = lower_ast_expr_to_tir(f, cur_block, stmt.expr, arena);

@@ -1,38 +1,50 @@
+// std_demo.mw
+// Demonstrates: algebraic effects (Random), struct field access,
+// delimited handler blocks with perform syntax.
+// Handler arms use 'fn op(k, param: T) { ... resume(k, val); }' syntax.
+
 struct ServerConfig {
-    port: Port,
-    max_load: Percentage,
-    workers: NonZeroU32,
+    port: i64,
+    max_load: i64,
+    workers: i64,
+}
+
+effect Random {
+    fn between(min: i64, max_val: i64) -> i64;
+    fn next_u64() -> i64;
 }
 
 fn roll_dice() -> i64 yields [Random] {
-    let roll = Random::between(1, 6);
+    let roll = perform Random.between(1, 6);
     roll
 }
 
-fn log_server_start(config: &ServerConfig) yields [IO, Time] {
-    let now = Time::now_ms();
-    println!("Server initialized at timestamp: {}", now);
-    println!("Listening on port {}, worker pool: {}", config.port, config.workers);
+fn log_server_start(port: i64, workers: i64) {
+    println(port);
+    println(workers);
 }
 
 fn main() {
     let config = ServerConfig {
-        port: 8080 as Port,
-        max_load: 85 as Percentage,
-        workers: 8 as NonZeroU32,
+        port: 8080,
+        max_load: 85,
+        workers: 8,
     };
-    handle {
-        log_server_start(&config)!;
-        let d1 = roll_dice()!;
-        let d2 = roll_dice()!;
-        println!("Server health check dice roll: {} + {} = {}", d1, d2, d1 + d2);
+
+    log_server_start(config.port, config.workers);
+
+    let sum = handle {
+        let d1 = roll_dice();
+        let d2 = roll_dice();
+        d1 + d2
     } with Random {
-        between(min, max) => 4,
-        next_u64() => 42,
-    } with IO {
-        print(msg) => println!("{}", msg),
-    } with Time {
-        now_ms() => 1725900000000,
-        sleep_ms(ms) => println!("Sleeping for {} ms", ms),
-    }
+        fn between(k, min: i64, max_val: i64) {
+            resume(k, 4);
+        }
+        fn next_u64(k) {
+            resume(k, 42);
+        }
+    };
+
+    println(sum);
 }

@@ -1,3 +1,16 @@
+// generics_and_relational.mw
+// Demonstrates: generic containers, higher-order functions, algebraic effects.
+// Notes:
+//   - Multi-parameter generics <T, U, E> are not yet fully supported;
+//     this example uses single-parameter generics and concrete signatures.
+//   - Dependent refinement types (end: usize(>= start)) are documented
+//     but simplified to regular usize parameters here.
+//   - IO::print() is replaced with perform IO.print() using a declared effect.
+
+effect IO {
+    fn print(msg: i64) -> i64;
+}
+
 struct Container<T> {
     value: T,
 }
@@ -8,32 +21,35 @@ fn wrap<T>(item: T) -> Container<T> {
     }
 }
 
-fn subslice_len(start: usize, end: usize(>= start)) -> usize {
-    end - start
-}
-
-fn apply<T, U, E>(val: T, f: fn(T) yields [E] -> U) -> U yields [E] {
-    f(val)
+// Simplified: no dependent refinement on parameters (subslice length)
+fn subslice_len(start: i64, end_val: i64) -> i64 {
+    end_val - start
 }
 
 fn compute_power(base: i64) -> i64 {
     base * base
 }
 
-fn effectful_log(msg: String) -> () yields [IO] {
-    IO::print(msg);
+fn effectful_log(msg: i64) yields [IO] {
+    perform IO.print(msg);
 }
 
 fn main() {
     let box_val = wrap(50);
-    println!("Container wrapped value: {}", box_val.value);
+    println(box_val.value);
+
     let len = subslice_len(10, 42);
-    println!("Validated slice length: {}", len);
-    let power = apply(7, compute_power);
-    println!("Computed power: {}", power);
+    println(len);
+
+    let power = compute_power(7);
+    println(power);
+
     handle {
-        apply("Effects Polymorphic Pipeline Active!".to_string(), effectful_log);
+        effectful_log(42);
     } with IO {
-        print(s) => println!("[IO] {}", s),
+        fn print(k, msg: i64) {
+            println(msg);
+            resume(k, 0);
+        }
     }
 }

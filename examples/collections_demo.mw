@@ -1,30 +1,47 @@
-// Tungsten Collections & Relational Slices Demo
+// Morrow Collections & Relational Slices Demo
 // Standard Library Collections operating seamlessly across Region memory
 
-fn main() {
-    println!("=== Tungsten Standard Library Collections Demo ===");
+import std::collections;
 
-    // 1. Vector Operations within Region Memory
-    region vector_scope {
-        let v = vec_new();
-        println!("Initialized Vector with length: {}", vec_len(&v));
-        println!("Is vector empty: {}", vec_is_empty(&v));
-    };
+extern "C" {
+    fn puts(s: *const u8) -> i32;
+    fn fflush(f: *const u8) -> i32;
+}
 
-    // 2. HashMap Operations within Sub-Region
-    let map_size = region map_scope {
-        let map = hashmap_new();
-        println!("Initialized HashMap with capacity: {}", map.capacity);
-        hashmap_size(&map)
-    };
-    println!("Retrieved HashMap size after region cleanup: {}", map_size);
+fn print_msg(msg: String) {
+    unsafe {
+        puts(msg as *const u8);
+        fflush(0 as *const u8);
+    }
+}
 
-    // 3. Relational Slice Verification
-    let sub_len = subslice_len(15, 65);
-    println!("Relational slice computed length [15..65]: {}", sub_len);
+fn main() -> i64 {
+    region main_scope {
+        print_msg("=== Morrow Standard Library Collections Demo ===");
 
-    let sl = slice_from_range(20 as usize, 50 as usize);
-    println!("Created validated Slice struct: start={}, len={}", sl.start, sl.len);
+        // 1. Vector Operations within Region Memory
+        let mut v: Vec<i64> = vec_new_in(main_scope);
+        vec_push(&mut v, 10);
+        vec_push(&mut v, 20);
+        vec_push(&mut v, 30);
+        print_msg("Initialized Vector with 3 elements, count:");
+        println(v.len);
 
-    println!("Collections demo completed successfully!");
+        // 2. HashMap Operations within Sub-Region
+        let mut map_count: i64 = 0;
+        region map_scope {
+            let mut map = hashmap_new_in(map_scope);
+            hashmap_insert(&mut map, "alpha", 100, map_scope);
+            hashmap_insert(&mut map, "beta", 200, map_scope);
+            let val = hashmap_get(&map, "alpha");
+            print_msg("Retrieved value from map inside sub-region:");
+            println(val);
+            map_count = map.len;
+        }
+        print_msg("HashMap element count after region scope:");
+        println(map_count);
+
+        print_msg("Collections demo completed successfully!");
+        0
+    }
 }

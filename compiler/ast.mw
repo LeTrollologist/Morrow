@@ -93,6 +93,7 @@ pub fn expr_struct_init() -> i64 { 10 }
 pub fn expr_perform() -> i64 { 11 }
 pub fn expr_resume() -> i64 { 12 }
 pub fn expr_handle() -> i64 { 13 }
+pub fn expr_region() -> i64 { 14 }
 
 pub struct AstExpr {
     kind: i64,
@@ -484,6 +485,28 @@ pub fn alloc_expr_handle(arena: *mut u8, effect_sym: i64, body: Vec<*mut AstStmt
         p.sym = effect_sym;
         p.op = 0;
         p.left = handler as *mut AstExpr;
+        p.right = null_expr;
+        p.args = empty_args;
+        p.stmts = body;
+        p.str_val = "";
+    }
+    p
+}
+
+// Region expression: `region name { stmts }` — used when region appears as RHS of a let binding.
+// sym = region name symbol; stmts = body statements.
+pub fn alloc_expr_region(arena: *mut u8, name_sym: i64, body: Vec<*mut AstStmt>) -> *mut AstExpr {
+    let p = unsafe {
+        morrow_region_alloc(arena, 128, 8) as *mut AstExpr
+    };
+    let empty_args: Vec<*mut AstExpr> = vec_new_in(arena);
+    let null_expr = 0 as *mut AstExpr;
+    unsafe {
+        p.kind = expr_region();
+        p.int_val = 0;
+        p.sym = name_sym;
+        p.op = 0;
+        p.left = null_expr;
         p.right = null_expr;
         p.args = empty_args;
         p.stmts = body;

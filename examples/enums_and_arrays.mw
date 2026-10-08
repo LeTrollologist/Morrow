@@ -1,33 +1,62 @@
-enum Shape {
-    Circle(i64),
-    Rectangle(i64, i64),
-    Point,
+// enums_and_arrays.mw
+// Demonstrates: i64-tagged "enum" structs, array indexing, stride-aware layout.
+// Note: Morrow does not have native enum/match syntax; this example uses
+// struct + constant tags to achieve the same pattern.
+// Array initialization with computed values uses manual element assignment.
+
+struct Shape {
+    tag: i64,
+    arg1: i64,
+    arg2: i64,
+}
+
+fn make_circle(r: i64) -> Shape {
+    Shape { tag: 0, arg1: r, arg2: 0 }
+}
+
+fn make_rectangle(w: i64, h: i64) -> Shape {
+    Shape { tag: 1, arg1: w, arg2: h }
+}
+
+fn make_point() -> Shape {
+    Shape { tag: 2, arg1: 0, arg2: 0 }
 }
 
 fn compute_area(s: Shape) -> i64 {
-    match s {
-        Shape::Circle(r) => r * r * 3,
-        Shape::Rectangle(w, h) => w * h,
-        Shape::Point => 0,
+    if s.tag == 0 {
+        s.arg1 * s.arg1 * 3
+    } else if s.tag == 1 {
+        s.arg1 * s.arg2
+    } else {
+        0
     }
 }
 
+extern "C" {
+    fn puts(s: *const u8) -> i32;
+}
+
 fn main() {
-    let c = Shape::Circle(10);
-    let r = Shape::Rectangle(4, 5);
-    let p = Shape::Point;
+    let c = make_circle(10);
+    let r = make_rectangle(4, 5);
+    let p = make_point();
 
     let a1 = compute_area(c);
     let a2 = compute_area(r);
     let a3 = compute_area(p);
+    let total_area = a1 + a2 + a3;
 
-    let areas: [i64; 3] = [a1, a2, a3];
-    let total_area = areas[0] + areas[1] + areas[2];
+    println(a1);
+    println(a2);
+    println(a3);
+    println(total_area);
 
-    println!("Shape areas: Circle={}, Rectangle={}, Point={}", areas[0], areas[1], areas[2]);
-    println!("Total combined area: {}", total_area);
-
-    // Stride-aware byte array
-    let bytes: [u8; 4] = [72, 101, 121, 33];
-    println!("Byte buffer header: {}, {}, {}, {}", bytes[0], bytes[1], bytes[2], bytes[3]);
+    // Stride-aware byte array: use unsafe alloc + manual element writes
+    var bytes = unsafe { morrow_region_alloc(morrow_global_arena(), 4, 1) as *mut u8 };
+    unsafe { bytes[0] = 72 as u8; }   // 'H'
+    unsafe { bytes[1] = 101 as u8; }  // 'e'
+    unsafe { bytes[2] = 121 as u8; }  // 'y'
+    unsafe { bytes[3] = 33 as u8; }   // '!'
+    println(unsafe { bytes[0] } as i64);
+    println(unsafe { bytes[1] } as i64);
 }
