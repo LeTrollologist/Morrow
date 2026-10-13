@@ -406,3 +406,23 @@
    - **`std/sql_builder.mw`** (NEW): Standalone fluent `QueryBuilder` (`*mut QueryBuilder` region-allocated) with `query_builder_select`, `query_builder_where`, `query_builder_order_by`, `query_builder_limit`, `query_builder_build`, `query_builder_build_count`. No sqlite dependency — usable in any context. Verified by 5-assertion `tests/sql_test.mw`.
    - **`std/sql.mw`** (NEW): High-level sqlite connection wrapper `SqlConn` with transaction management (`sql_conn_begin`, `sql_conn_commit`, `sql_conn_rollback`) and typed record extraction `SqlRecord` (`sql_record_get_str`, `sql_record_get_by_name`, `sql_record_get_i64`, `sql_record_get_bool`). Built on `std::sql_builder` + `std::sqlite`.
    - 100% pass rate across all **17 native test suites** (`mwc.exe test`).
+   - 3-stage self-hosting bootstrap fixed-point parity verified: `SHA256(stage1.ll) == SHA256(stage2.ll) == SHA256(stage3.ll) == D36E9F837A10A4BDA7682A16B74D0C033C0DF2450748839EC0BA1F41075DF6FB`.
+
+---
+
+## Upcoming Milestones: Phase 13+
+
+### Phase 13: Language Server, Net/HTTP Test Coverage & Runtime Benchmarking
+*Target: Developer tooling, stdlib hardening, and zero-cost abstraction proof.*
+
+1. **Language Server Protocol Hardening (Phase 13.1)**:
+   - Port `compiler/lsp.mw` to the current self-hosted compiler pipeline.
+   - Real-time diagnostics, hover type inference, go-to-definition, and format-on-save.
+   - VS Code extension packaging.
+2. **`std::net` & `std::http` Native Test Suites (Phase 13.2)**:
+   - Write `tests/net_test.mw` and `tests/http_test.mw` as 17th+ native test suites.
+   - Cover HTTP parser edge cases (chunked encoding, header limits, malformed requests).
+   - Loopback TCP echo server round-trip test.
+3. **Runtime Benchmarking & `mwc bench` (Phase 13.3)**:
+   - Add `bench` subcommand to `compiler/forge.mw`.
+   - Benchmark suite comparing region allocator throughput vs. malloc, HTTP parsing throughput, and hash map lookup density vs. equivalent C programs.
