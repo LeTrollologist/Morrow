@@ -921,7 +921,7 @@ pub fn compile_file_target(src_path: String, out_ll_path: String, out_exe_path: 
                         string_buffer_push_str(&mut cmd_args, opt_suffix as *const u8, unsafe { strlen(opt_suffix as *const u8) } as i64);
                     } else {
                         let opt_prefix = "--target=x86_64-pc-windows-gnu -nostartfiles -o ";
-                        let opt_suffix = " lib/crt/crt2.o -Llib/crt -lmingw32 -lmingwex -lmsvcrt -lkernel32 -luser32 -lgdi32 -lwinmm -lws2_32 -lgcc";
+                        let opt_suffix = " lib/crt/crt2.o -Llib/crt -lsqlite3 -lbcrypt -lmingw32 -lmingwex -lmsvcrt -lkernel32 -luser32 -lgdi32 -lwinmm -lws2_32 -lgcc";
                         string_buffer_push_str(&mut cmd_args, opt_prefix as *const u8, unsafe { strlen(opt_prefix as *const u8) } as i64);
                         string_buffer_push_str(&mut cmd_args, out_exe_path as *const u8, unsafe { strlen(out_exe_path as *const u8) } as i64);
                         string_buffer_push_byte(&mut cmd_args, 32 as u8);
@@ -1085,6 +1085,9 @@ pub fn forge_run_test(arena: *mut u8) -> i64 yields [FS, Process, Diagnostics, I
     vec_push(&mut test_suites, "tests/generics_test.mw");
     vec_push(&mut test_suites, "tests/effects_test.mw");
     vec_push(&mut test_suites, "tests/formal_verification_test.mw");
+    vec_push(&mut test_suites, "tests/crypto_test.mw");
+    vec_push(&mut test_suites, "tests/io_test.mw");
+    vec_push(&mut test_suites, "tests/sql_test.mw");
 
     let mut passed: i64 = 0;
     let mut failed: i64 = 0;

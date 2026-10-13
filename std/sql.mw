@@ -1,0 +1,177 @@
+// Morrow Standard Library - High-Level SQL & Connection Module (std::sql)
+// Built on top of std::sqlite and std::sql_builder.
+// Provides transaction management and typed record extraction.
+
+import std::collections;
+import std::sqlite;
+import std::sql_builder;
+import std::io;
+
+extern "C" {
+    fn strlen(s: *const u8) -> usize;
+    fn strcmp(s1: *const u8, s2: *const u8) -> i32;
+    fn morrow_region_alloc(arena: *mut u8, size: usize, align: usize) -> *mut u8;
+}
+
+// -----------------------------------------------------------------------------
+// High-Level Connection Wrapper & Transaction Management
+// -----------------------------------------------------------------------------
+
+pub struct SqlConn {
+    db_handle: *mut u8,
+    is_open: bool,
+    in_transaction: bool,
+}
+
+pub fn sql_conn_open(path: String) -> SqlConn {
+    let sqlite_db = sqlite_open(path);
+    SqlConn {
+        db_handle: sqlite_db.db_handle,
+        is_open: sqlite_db.is_open,
+        in_transaction: false,
+    }
+}
+
+pub fn sql_conn_close(conn: &mut SqlConn) {
+    if conn.is_open {
+        let mut db = SqliteDb {
+            db_handle: conn.db_handle,
+            is_open: conn.is_open,
+        };
+        if conn.in_transaction {
+            let _rb = sqlite_execute(&mut db, "ROLLBACK;");
+            conn.in_transaction = false;
+        }
+        sqlite_close(&mut db);
+        conn.db_handle = 0 as *mut u8;
+        conn.is_open = false;
+    }
+}
+
+pub fn sql_conn_is_open(conn: &SqlConn) -> bool {
+    conn.is_open
+}
+
+pub fn sql_conn_exec(conn: &mut SqlConn, sql: String) -> i64 {
+    let mut db = SqliteDb {
+        db_handle: conn.db_handle,
+        is_open: conn.is_open,
+    };
+    sqlite_execute(&mut db, sql)
+}
+
+pub fn sql_conn_exec_prepared(conn: &mut SqlConn, sql: String, p1: String, p2: String) -> i64 {
+    let mut db = SqliteDb {
+        db_handle: conn.db_handle,
+        is_open: conn.is_open,
+    };
+    sqlite_execute_prepared(&mut db, sql, p1, p2)
+}
+
+pub fn sql_conn_query_in(conn: &mut SqlConn, sql: String, arena: *mut u8) -> SqliteResultSet {
+    let mut db = SqliteDb {
+        db_handle: conn.db_handle,
+        is_open: conn.is_open,
+    };
+    sqlite_query_in(&mut db, sql, arena)
+}
+
+pub fn sql_conn_begin(conn: &mut SqlConn) -> bool {
+    if conn.in_transaction {
+        return false;
+    }
+    let mut db = SqliteDb {
+        db_handle: conn.db_handle,
+        is_open: conn.is_open,
+    };
+    let rc = sqlite_execute(&mut db, "BEGIN TRANSACTION;");
+    if rc >= 0 {
+        conn.in_transaction = true;
+        return true;
+    }
+    false
+}
+
+pub fn sql_conn_commit(conn: &mut SqlConn) -> bool {
+    if !conn.in_transaction {
+        return false;
+    }
+    let mut db = SqliteDb {
+        db_handle: conn.db_handle,
+        is_open: conn.is_open,
+    };
+    let rc = sqlite_execute(&mut db, "COMMIT;");
+    conn.in_transaction = false;
+    rc >= 0
+}
+
+pub fn sql_conn_rollback(conn: &mut SqlConn) -> bool {
+    if !conn.in_transaction {
+        return false;
+    }
+    let mut db = SqliteDb {
+        db_handle: conn.db_handle,
+        is_open: conn.is_open,
+    };
+    let rc = sqlite_execute(&mut db, "ROLLBACK;");
+    conn.in_transaction = false;
+    rc >= 0
+}
+
+// -----------------------------------------------------------------------------
+// Typed Record Mapping View
+// -----------------------------------------------------------------------------
+
+pub struct SqlRecord {
+    row_view: SqliteRow,
+}
+
+pub fn sql_record_from_rs(rs: &SqliteResultSet, row_idx: i64) -> SqlRecord {
+    let r = sqlite_row(rs, row_idx);
+    SqlRecord {
+        row_view: r,
+    }
+}
+
+pub fn sql_record_get_str(rec: &SqlRecord, col_idx: i64) -> String {
+    sqlite_row_get(&rec.row_view, col_idx)
+}
+
+pub fn sql_record_get_by_name(rec: &SqlRecord, col_name: String) -> String {
+    sqlite_row_get_by_name(&rec.row_view, col_name)
+}
+
+pub fn sql_record_get_i64(rec: &SqlRecord, col_idx: i64) -> i64 {
+    let s = sqlite_row_get(&rec.row_view, col_idx);
+    let ptr = s as *const u8;
+    let len = unsafe { strlen(ptr) } as i64;
+    if len == 0 {
+        return 0;
+    }
+    let mut num: i64 = 0;
+    let mut i: i64 = 0;
+    let is_neg = unsafe { ptr[0] } == 45 as u8;
+    if is_neg {
+        i = 1;
+    }
+    while i < len {
+        let ch = unsafe { ptr[i] } as i64;
+        if ch >= 48 && ch <= 57 {
+            num = num * 10 + (ch - 48);
+        }
+        i = i + 1;
+    }
+    if is_neg {
+        return 0 - num;
+    }
+    num
+}
+
+pub fn sql_record_get_bool(rec: &SqlRecord, col_idx: i64) -> bool {
+    let s = sqlite_row_get(&rec.row_view, col_idx);
+    let ptr = s as *const u8;
+    if unsafe { strcmp(ptr, "1" as *const u8) == 0 || strcmp(ptr, "true" as *const u8) == 0 || strcmp(ptr, "TRUE" as *const u8) == 0 } {
+        return true;
+    }
+    false
+}

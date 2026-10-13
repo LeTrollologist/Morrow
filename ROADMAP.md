@@ -400,6 +400,9 @@
    - Fixed-point bitwise convergence verified: `SHA256(mwc_stage2.exe.ll) == SHA256(mwc_stage3.exe.ll) == 8E73F92E5CD038B6B8EF757F4081116258A0BDD6B61655E706957B85B18DABF5`.
    - Promoted binaries to `bin/mwc.exe` and `bin/forge.exe`. Completely eliminated legacy `bin/tgc.exe`. Morrow is 100% standalone and self-hosting.
    - 100% pass rate across all 14 native test suites (`mwc.exe test`).
-3. **Standard Library Expansion (Phase 12.3)**:
-   - Extended standard library modules: `std.io`, `std.crypto`, `std.sql`.
-   - Production testing and documentation.
+3. **Standard Library Expansion (Phase 12.3)** ✅:
+   - **`std/crypto.mw`** (NEW): `hex_encode_in`, `hex_decode_in`, FNV-1a / Adler-32 / CRC-32 checksum functions, `CryptoRng` PRNG with `rng_next_u64`, `rng_next_range`, and `rng_fill_bytes`. Verified by 13-assertion `tests/crypto_test.mw`.
+   - **`std/io.mw`** (EXPANDED): Added `i64_to_string_in` integer formatter, `BufReader` line-by-line streaming (`buf_reader_new`, `buf_reader_has_more`, `buf_reader_read_char`, `buf_reader_read_line_in`), and `BufWriter` dynamic string builder (`buf_writer_new_in`, `buf_writer_write_byte`, `buf_writer_write_str`, `buf_writer_write_i64`, `buf_writer_to_string`, `buf_writer_len`). Verified by 11-assertion `tests/io_test.mw`.
+   - **`std/sql_builder.mw`** (NEW): Standalone fluent `QueryBuilder` (`*mut QueryBuilder` region-allocated) with `query_builder_select`, `query_builder_where`, `query_builder_order_by`, `query_builder_limit`, `query_builder_build`, `query_builder_build_count`. No sqlite dependency — usable in any context. Verified by 5-assertion `tests/sql_test.mw`.
+   - **`std/sql.mw`** (NEW): High-level sqlite connection wrapper `SqlConn` with transaction management (`sql_conn_begin`, `sql_conn_commit`, `sql_conn_rollback`) and typed record extraction `SqlRecord` (`sql_record_get_str`, `sql_record_get_by_name`, `sql_record_get_i64`, `sql_record_get_bool`). Built on `std::sql_builder` + `std::sqlite`.
+   - 100% pass rate across all **17 native test suites** (`mwc.exe test`).

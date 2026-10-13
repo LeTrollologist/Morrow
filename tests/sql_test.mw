@@ -1,0 +1,61 @@
+// Pure Morrow Test Suite: Standard Library SQL Query Builder (std::sql_builder)
+import std::test;
+import std::sql_builder;
+import std::collections;
+
+fn test_query_builder_simple() {
+    region r {
+        var qb = query_builder_new_in("users", r);
+        var sql = query_builder_build(qb, r);
+        assert_str_eq(sql, "SELECT * FROM users;", "Default query builder SELECT *");
+    }
+}
+
+fn test_query_builder_select_columns() {
+    region r {
+        var qb = query_builder_new_in("products", r);
+        query_builder_select(qb, "id, title, price, stock");
+        var sql = query_builder_build(qb, r);
+        assert_str_eq(sql, "SELECT id, title, price, stock FROM products;", "Query builder specific columns");
+    }
+}
+
+fn test_query_builder_complex() {
+    region r {
+        var qb = query_builder_new_in("users", r);
+        query_builder_select(qb, "id, name, email");
+        query_builder_where(qb, "active = 1");
+        query_builder_where(qb, "age >= 18");
+        query_builder_order_by(qb, "id ASC");
+        query_builder_limit(qb, 25);
+
+        var sql = query_builder_build(qb, r);
+        assert_str_eq(sql, "SELECT id, name, email FROM users WHERE active = 1 AND age >= 18 ORDER BY id ASC LIMIT 25;", "Complex fluent SQL query builder");
+
+        var count_sql = query_builder_build_count(qb, r);
+        assert_str_eq(count_sql, "SELECT COUNT(*) FROM users WHERE active = 1 AND age >= 18;", "Fluent SQL count query builder");
+    }
+}
+
+fn test_query_builder_order_and_limit() {
+    region r {
+        var qb = query_builder_new_in("orders", r);
+        query_builder_select(qb, "order_id, total_amount");
+        query_builder_where(qb, "status = 'completed'");
+        query_builder_order_by(qb, "created_at DESC");
+        query_builder_limit(qb, 10);
+
+        var sql = query_builder_build(qb, r);
+        assert_str_eq(sql, "SELECT order_id, total_amount FROM orders WHERE status = 'completed' ORDER BY created_at DESC LIMIT 10;", "Order by and Limit query");
+    }
+}
+
+fn main() -> i64 {
+    test_print("=== Running std::sql_builder Test Suite ===");
+    test_query_builder_simple();
+    test_query_builder_select_columns();
+    test_query_builder_complex();
+    test_query_builder_order_and_limit();
+    test_print("All std::sql_builder tests passed!");
+    0
+}

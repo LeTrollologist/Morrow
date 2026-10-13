@@ -1,0 +1,123 @@
+// Morrow Standard Library - Fluent SQL Query Builder (std::sql_builder)
+// Provides QueryBuilder for constructing SQL SELECT statements without any sqlite dependency.
+// Can be used standalone (in tests, or without a database connection).
+
+import std::collections;
+import std::io;
+
+extern "C" {
+    fn strlen(s: *const u8) -> usize;
+    fn morrow_region_alloc(arena: *mut u8, size: usize, align: usize) -> *mut u8;
+}
+
+// -----------------------------------------------------------------------------
+// Fluent Query Builder
+// -----------------------------------------------------------------------------
+
+pub struct QueryBuilder {
+    table: String,
+    columns: String,
+    where_clauses: Vec<String>,
+    order_by: String,
+    limit_val: i64,
+    arena: *mut u8,
+}
+
+pub fn query_builder_new_in(table: String, arena: *mut u8) -> *mut QueryBuilder {
+    let p = unsafe { morrow_region_alloc(arena, 64, 8) as *mut QueryBuilder };
+    let empty_wheres: Vec<String> = vec_new_in(arena);
+    unsafe {
+        p.table = table;
+        p.columns = "*";
+        p.where_clauses = empty_wheres;
+        p.order_by = "";
+        p.limit_val = 0;
+        p.arena = arena;
+    }
+    p
+}
+
+pub fn query_builder_select(qb: *mut QueryBuilder, cols: String) {
+    unsafe {
+        qb.columns = cols;
+    }
+}
+
+pub fn query_builder_where(qb: *mut QueryBuilder, clause: String) {
+    unsafe {
+        vec_push(&mut qb.where_clauses, clause);
+    }
+}
+
+pub fn query_builder_order_by(qb: *mut QueryBuilder, order: String) {
+    unsafe {
+        qb.order_by = order;
+    }
+}
+
+pub fn query_builder_limit(qb: *mut QueryBuilder, limit: i64) {
+    unsafe {
+        qb.limit_val = limit;
+    }
+}
+
+pub fn query_builder_build(qb: *mut QueryBuilder, arena: *mut u8) -> String {
+    let mut w = buf_writer_new_in(arena, 128);
+    buf_writer_write_str(&mut w, "SELECT ");
+    buf_writer_write_str(&mut w, unsafe { qb.columns });
+    buf_writer_write_str(&mut w, " FROM ");
+    buf_writer_write_str(&mut w, unsafe { qb.table });
+
+    let num_wheres = unsafe { vec_len(&qb.where_clauses) };
+    if num_wheres > 0 {
+        buf_writer_write_str(&mut w, " WHERE ");
+        let mut i: i64 = 0;
+        while i < num_wheres {
+            if i > 0 {
+                buf_writer_write_str(&mut w, " AND ");
+            }
+            let cl = unsafe { vec_get(&qb.where_clauses, i) };
+            buf_writer_write_str(&mut w, cl);
+            i = i + 1;
+        }
+    }
+
+    let order_str = unsafe { qb.order_by };
+    let order_len = unsafe { strlen(order_str as *const u8) } as i64;
+    if order_len > 0 {
+        buf_writer_write_str(&mut w, " ORDER BY ");
+        buf_writer_write_str(&mut w, order_str);
+    }
+
+    let lim = unsafe { qb.limit_val };
+    if lim > 0 {
+        buf_writer_write_str(&mut w, " LIMIT ");
+        buf_writer_write_i64(&mut w, lim);
+    }
+
+    buf_writer_write_str(&mut w, ";");
+    buf_writer_to_string(&mut w)
+}
+
+pub fn query_builder_build_count(qb: *mut QueryBuilder, arena: *mut u8) -> String {
+    let mut w = buf_writer_new_in(arena, 128);
+    buf_writer_write_str(&mut w, "SELECT COUNT(*) FROM ");
+    buf_writer_write_str(&mut w, unsafe { qb.table });
+
+    let num_wheres = unsafe { vec_len(&qb.where_clauses) };
+    if num_wheres > 0 {
+        buf_writer_write_str(&mut w, " WHERE ");
+        let mut i: i64 = 0;
+        while i < num_wheres {
+            if i > 0 {
+                buf_writer_write_str(&mut w, " AND ");
+            }
+            let cl = unsafe { vec_get(&qb.where_clauses, i) };
+            buf_writer_write_str(&mut w, cl);
+            i = i + 1;
+        }
+    }
+
+    buf_writer_write_str(&mut w, ";");
+    buf_writer_to_string(&mut w)
+}

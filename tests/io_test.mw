@@ -1,0 +1,62 @@
+// Pure Morrow Test Suite: Standard Library I/O (std::io)
+import std::test;
+import std::io;
+import std::collections;
+
+fn test_i64_to_string() {
+    region r {
+        var s0 = i64_to_string_in(0, r);
+        assert_str_eq(s0, "0", "Format 0");
+
+        var s42 = i64_to_string_in(42, r);
+        assert_str_eq(s42, "42", "Format 42");
+
+        var s_neg = i64_to_string_in(0 - 1234, r);
+        assert_str_eq(s_neg, "-1234", "Format negative integer");
+
+        var s_large = i64_to_string_in(987654321, r);
+        assert_str_eq(s_large, "987654321", "Format 9-digit integer");
+    }
+}
+
+fn test_buf_reader() {
+    region r {
+        var sample = "line 1\nline 2\nfinal line";
+        var reader = buf_reader_new(sample);
+
+        assert(buf_reader_has_more(&reader), "Reader has more content initially");
+
+        var l1 = buf_reader_read_line_in(&mut reader, r);
+        assert_str_eq(l1, "line 1", "Read first line");
+
+        var l2 = buf_reader_read_line_in(&mut reader, r);
+        assert_str_eq(l2, "line 2", "Read second line");
+
+        var l3 = buf_reader_read_line_in(&mut reader, r);
+        assert_str_eq(l3, "final line", "Read final line without trailing newline");
+
+        assert(!buf_reader_has_more(&reader), "Reader reached EOF");
+    }
+}
+
+fn test_buf_writer() {
+    region r {
+        var writer = buf_writer_new_in(r, 16);
+        buf_writer_write_str(&mut writer, "HTTP/1.1 ");
+        buf_writer_write_i64(&mut writer, 200);
+        buf_writer_write_str(&mut writer, " OK");
+
+        var out = buf_writer_to_string(&mut writer);
+        assert_str_eq(out, "HTTP/1.1 200 OK", "BufWriter formatted output string");
+        assert_eq(buf_writer_len(&writer), 15, "BufWriter byte length accurate");
+    }
+}
+
+fn main() -> i64 {
+    test_print("=== Running std::io Test Suite ===");
+    test_i64_to_string();
+    test_buf_reader();
+    test_buf_writer();
+    test_print("All std::io tests passed!");
+    0
+}

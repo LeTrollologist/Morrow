@@ -1,5 +1,16 @@
 // Morrow Standard Library - I/O Streams Module (std::io)
 import std::effects;
+import std::collections;
+
+extern "C" {
+    fn strlen(s: *const u8) -> usize;
+    fn puts(s: *const u8) -> i32;
+    fn morrow_region_alloc(arena: *mut u8, size: usize, align: usize) -> *mut u8;
+}
+
+// -----------------------------------------------------------------------------
+// Effect-based Standard I/O Operations
+// -----------------------------------------------------------------------------
 
 pub fn io_print(msg: String) yields [IO] {
     perform IO.print(msg)
@@ -9,6 +20,75 @@ pub fn io_read_line() -> String yields [IO] {
     perform IO.read_line()
 }
 
+pub fn io_eprint(msg: String) {
+    unsafe {
+        puts(msg as *const u8);
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Integer Formatting Utility
+// -----------------------------------------------------------------------------
+
+pub fn i64_to_string_in(val: i64, arena: *mut u8) -> String {
+    if val == 0 {
+        let zero_buf = unsafe { morrow_region_alloc(arena, 2, 1) as *mut u8 };
+        unsafe {
+            zero_buf[0] = 48 as u8;
+            zero_buf[1] = 0 as u8;
+        }
+        return zero_buf as String;
+    }
+
+    let is_neg = val < 0;
+    let mut num = val;
+    if is_neg {
+        num = 0 - val;
+    }
+
+    let temp_digits = unsafe { morrow_region_alloc(arena, 32, 1) as *mut u8 };
+    let mut count: i64 = 0;
+    while num > 0 {
+        let rem = num - (num / 10) * 10;
+        unsafe {
+            temp_digits[count] = (48 + rem) as u8;
+        }
+        count = count + 1;
+        num = num / 10;
+    }
+
+    let mut total_len = count;
+    if is_neg {
+        total_len = count + 1;
+    }
+
+    let out_buf = unsafe { morrow_region_alloc(arena, (total_len + 1) as usize, 1) as *mut u8 };
+    let mut out_idx: i64 = 0;
+
+    if is_neg {
+        unsafe { out_buf[0] = 45 as u8; } // '-'
+        out_idx = 1;
+    }
+
+    let mut rev_idx = count - 1;
+    while rev_idx >= 0 {
+        unsafe {
+            out_buf[out_idx] = temp_digits[rev_idx];
+        }
+        out_idx = out_idx + 1;
+        rev_idx = rev_idx - 1;
+    }
+
+    unsafe {
+        out_buf[total_len] = 0 as u8;
+    }
+    out_buf as String
+}
+
+// -----------------------------------------------------------------------------
+// BufReader - Memory-backed Line and Byte Stream Ingestion
+// -----------------------------------------------------------------------------
+
 pub struct BufReader {
     buffer: String,
     pos: i64,
@@ -16,9 +96,139 @@ pub struct BufReader {
 }
 
 pub fn buf_reader_new(content: String) -> BufReader {
+    let l = unsafe { strlen(content as *const u8) } as i64;
     BufReader {
         buffer: content,
         pos: 0,
-        len: 0,
+        len: l,
     }
+}
+
+pub fn buf_reader_has_more(r: &BufReader) -> bool {
+    r.pos < r.len
+}
+
+pub fn buf_reader_read_char(r: &mut BufReader) -> i64 {
+    if r.pos >= r.len {
+        return 0 - 1;
+    }
+    let ptr = r.buffer as *const u8;
+    let ch = unsafe { ptr[r.pos] } as i64;
+    r.pos = r.pos + 1;
+    ch
+}
+
+pub fn buf_reader_read_line_in(r: &mut BufReader, arena: *mut u8) -> String {
+    if r.pos >= r.len {
+        let empty_buf = unsafe { morrow_region_alloc(arena, 1, 1) as *mut u8 };
+        unsafe { empty_buf[0] = 0 as u8; }
+        return empty_buf as String;
+    }
+
+    let ptr = r.buffer as *const u8;
+    let start = r.pos;
+    while r.pos < r.len {
+        let ch = unsafe { ptr[r.pos] } as i64;
+        if ch == 10 { // '\n'
+            let line_len = r.pos - start;
+            let line_buf = unsafe { morrow_region_alloc(arena, (line_len + 1) as usize, 1) as *mut u8 };
+            let mut i: i64 = 0;
+            while i < line_len {
+                unsafe { line_buf[i] = ptr[start + i]; }
+                i = i + 1;
+            }
+            // Strip trailing '\r' if present
+            if line_len > 0 && unsafe { line_buf[line_len - 1] } == 13 as u8 {
+                unsafe { line_buf[line_len - 1] = 0 as u8; }
+            } else {
+                unsafe { line_buf[line_len] = 0 as u8; }
+            }
+            r.pos = r.pos + 1; // consume '\n'
+            return line_buf as String;
+        }
+        r.pos = r.pos + 1;
+    }
+
+    // Remaining content without trailing newline
+    let line_len = r.pos - start;
+    let line_buf = unsafe { morrow_region_alloc(arena, (line_len + 1) as usize, 1) as *mut u8 };
+    let mut i: i64 = 0;
+    while i < line_len {
+        unsafe { line_buf[i] = ptr[start + i]; }
+        i = i + 1;
+    }
+    if line_len > 0 && unsafe { line_buf[line_len - 1] } == 13 as u8 {
+        unsafe { line_buf[line_len - 1] = 0 as u8; }
+    } else {
+        unsafe { line_buf[line_len] = 0 as u8; }
+    }
+    line_buf as String
+}
+
+// -----------------------------------------------------------------------------
+// BufWriter / StringBuilder - Dynamic Formatted Output Buffer
+// -----------------------------------------------------------------------------
+
+pub struct BufWriter {
+    data: *mut u8,
+    len: i64,
+    cap: i64,
+    arena: *mut u8,
+}
+
+pub fn buf_writer_new_in(arena: *mut u8, initial_cap: i64) -> BufWriter {
+    let mut c = initial_cap;
+    if c < 16 {
+        c = 16;
+    }
+    let buf = unsafe { morrow_region_alloc(arena, c as usize, 1) as *mut u8 };
+    BufWriter {
+        data: buf,
+        len: 0,
+        cap: c,
+        arena: arena,
+    }
+}
+
+pub fn buf_writer_write_byte(w: &mut BufWriter, b: u8) {
+    if w.len >= w.cap {
+        let new_cap = w.cap * 2;
+        let new_buf = unsafe { morrow_region_alloc(w.arena, new_cap as usize, 1) as *mut u8 };
+        let mut i: i64 = 0;
+        while i < w.len {
+            unsafe { new_buf[i] = w.data[i]; }
+            i = i + 1;
+        }
+        w.data = new_buf;
+        w.cap = new_cap;
+    }
+    unsafe {
+        w.data[w.len] = b;
+    }
+    w.len = w.len + 1;
+}
+
+pub fn buf_writer_write_str(w: &mut BufWriter, s: String) {
+    let ptr = s as *const u8;
+    let s_len = unsafe { strlen(ptr) } as i64;
+    let mut i: i64 = 0;
+    while i < s_len {
+        buf_writer_write_byte(w, unsafe { ptr[i] });
+        i = i + 1;
+    }
+}
+
+pub fn buf_writer_write_i64(w: &mut BufWriter, val: i64) {
+    let s = i64_to_string_in(val, w.arena);
+    buf_writer_write_str(w, s);
+}
+
+pub fn buf_writer_to_string(w: &mut BufWriter) -> String {
+    buf_writer_write_byte(w, 0 as u8);
+    w.len = w.len - 1;
+    w.data as String
+}
+
+pub fn buf_writer_len(w: &BufWriter) -> i64 {
+    w.len
 }

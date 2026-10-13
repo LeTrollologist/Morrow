@@ -1,0 +1,72 @@
+// Pure Morrow Test Suite: Standard Library Cryptography & Hashing (std::crypto)
+import std::test;
+import std::crypto;
+import std::collections;
+
+fn test_hex_encode_decode() {
+    region r {
+        var raw_bytes = unsafe { morrow_region_alloc(r, 4, 1) as *mut u8 };
+        unsafe {
+            raw_bytes[0] = 77 as u8;  // 'M'
+            raw_bytes[1] = 111 as u8; // 'o'
+            raw_bytes[2] = 114 as u8; // 'r'
+            raw_bytes[3] = 119 as u8; // 'w'
+        }
+        var encoded = hex_encode_in(raw_bytes as *const u8, 4, r);
+        assert_str_eq(encoded, "4d6f7277", "Hex encoding 4 bytes");
+
+        var decoded = hex_decode_in(encoded, r);
+        assert_eq(unsafe { decoded[0] } as i64, 77, "Decoded byte 0 matches 'M'");
+        assert_eq(unsafe { decoded[1] } as i64, 111, "Decoded byte 1 matches 'o'");
+        assert_eq(unsafe { decoded[2] } as i64, 114, "Decoded byte 2 matches 'r'");
+        assert_eq(unsafe { decoded[3] } as i64, 119, "Decoded byte 3 matches 'w'");
+    }
+}
+
+fn test_fnv1a_hashing() {
+    var h1 = fnv1a_hash("hello");
+    var h2 = fnv1a_hash("hello");
+    var h3 = fnv1a_hash("world");
+
+    assert_eq(h1, h2, "FNV-1a determinism on identical strings");
+    assert(h1 != h3, "FNV-1a distinct hashes for distinct strings");
+}
+
+fn test_adler32_hashing() {
+    var a1 = adler32_hash("Wikipedia");
+    var a2 = adler32_hash("Wikipedia");
+    var a3 = adler32_hash("Morrow");
+
+    assert_eq(a1, a2, "Adler-32 determinism on identical input");
+    assert(a1 != a3, "Adler-32 distinct hashes for distinct input");
+}
+
+fn test_crc32_hashing() {
+    var c1 = crc32_hash("The quick brown fox jumps over the lazy dog");
+    var c2 = crc32_hash("The quick brown fox jumps over the lazy dog");
+    var c3 = crc32_hash("Morrow Next-Gen Systems Language");
+
+    assert_eq(c1, c2, "CRC-32 determinism on identical input");
+    assert(c1 != c3, "CRC-32 distinct checksums for distinct input");
+}
+
+fn test_crypto_rng() {
+    var rng = rng_new(123456789);
+    var v1 = rng_next_u64(&mut rng);
+    var v2 = rng_next_u64(&mut rng);
+    assert(v1 != v2, "CryptoRng sequential outputs are distinct");
+
+    var ranged = rng_next_range(&mut rng, 10, 20);
+    assert(ranged >= 10 && ranged <= 20, "CryptoRng range bounds [10..20] respected");
+}
+
+fn main() -> i64 {
+    test_print("=== Running std::crypto Test Suite ===");
+    test_hex_encode_decode();
+    test_fnv1a_hashing();
+    test_adler32_hashing();
+    test_crc32_hashing();
+    test_crypto_rng();
+    test_print("All std::crypto tests passed!");
+    0
+}
