@@ -1,5 +1,6 @@
-// Tungsten Self-Hosting Compiler - Language Server Protocol (lsp.tg)
-// JSON-RPC 2.0 stdio server providing real-time refinement diagnostics, hover, and formatting
+// Morrow Self-Hosting Compiler — Language Server Protocol (lsp.mw)
+// JSON-RPC 2.0 stdio server: Content-Length framing, diagnostics, hover,
+// formatting, completion stub.  Hardened for Phase 13.1.
 
 import std::collections;
 import std::fs;
@@ -15,48 +16,183 @@ import compiler::json;
 extern "C" {
     fn strlen(s: *const u8) -> usize;
     fn strcmp(s1: *const u8, s2: *const u8) -> i32;
+    fn strncmp(s1: *const u8, s2: *const u8, n: usize) -> i32;
     fn puts(s: *const u8) -> i32;
     fn fflush(f: *const u8) -> i32;
+    fn morrow_region_alloc(arena: *mut u8, size: usize, align: usize) -> *mut u8;
+    // Win32 console handles
+    fn GetStdHandle(n_std_handle: i32) -> *mut u8;
+    fn ReadFile(h_file: *mut u8, lp_buffer: *mut u8, n_bytes: i32,
+                lp_bytes_read: *mut i32, lp_overlapped: *mut u8) -> i32;
+    fn WriteFile(h_file: *mut u8, lp_buffer: *const u8, n_bytes: i32,
+                 lp_bytes_written: *mut i32, lp_overlapped: *mut u8) -> i32;
 }
+
+// ─── sentinel returned by lsp_handle_request for notifications / exit ────────
+// An empty string means "send no response"; a specific sentinel means "exit".
+// We use a non-JSON prefix so it can never collide with a real response.
+fn lsp_exit_sentinel() -> String { "__LSP_EXIT__" }
+
+// ─── low-level I/O helpers ───────────────────────────────────────────────────
+
+// Read bytes from |h| one at a time until '\n' (or EOF).  Strips '\r'.
+// Writes a NUL-terminated result into |buf[0..max)|.
+// Returns number of bytes written (not counting NUL), or -1 on EOF/error.
+fn lsp_read_line(h: *mut u8, buf: *mut u8, max: i64, arena: *mut u8) -> i64 {
+    let one_byte  = unsafe { morrow_region_alloc(arena, 1, 1) };
+    let bytes_rd  = unsafe { morrow_region_alloc(arena, 4, 4) as *mut i32 };
+    let mut i: i64 = 0;
+    let mut got_any = false;
+    let mut done    = false;
+    while !done && i < max - 1 {
+        unsafe { bytes_rd[0] = 0; }
+        let ok = unsafe {
+            ReadFile(h, one_byte, 1, bytes_rd as *mut i32, 0 as *mut u8)
+        };
+        let nr = unsafe { bytes_rd[0] } as i64;
+        if ok == 0 || nr == 0 {
+            done = true;
+        } else {
+            got_any = true;
+            let b = unsafe { one_byte[0] };
+            if b == 10 as u8 {          // '\n' — end of line
+                done = true;
+            } else if b != 13 as u8 {   // skip '\r'
+                unsafe { buf[i] = b; }
+                i = i + 1;
+            }
+        }
+    }
+    unsafe { buf[i] = 0 as u8; }
+    if !got_any {
+        return 0 - 1;   // EOF / pipe closed
+    }
+    i
+}
+
+// Read exactly |n| bytes from |h| into |buf|.  Returns bytes actually read.
+fn lsp_read_exact(h: *mut u8, buf: *mut u8, n: i64, arena: *mut u8) -> i64 {
+    let bytes_rd = unsafe { morrow_region_alloc(arena, 4, 4) as *mut i32 };
+    let mut total: i64 = 0;
+    while total < n {
+        let remain   = (n - total) as i32;
+        let dest_ptr = unsafe { (buf as usize + total as usize) as *mut u8 };
+        unsafe { bytes_rd[0] = 0; }
+        let ok = unsafe {
+            ReadFile(h, dest_ptr, remain, bytes_rd as *mut i32, 0 as *mut u8)
+        };
+        let nr = unsafe { bytes_rd[0] } as i64;
+        if ok == 0 || nr == 0 {
+            return total;
+        }
+        total = total + nr;
+    }
+    total
+}
+
+// Parse an ASCII decimal integer from |buf[start..end)|.
+fn lsp_parse_cl(buf: *mut u8, start: i64, end: i64) -> i64 {
+    let mut val: i64 = 0;
+    let mut i: i64 = start;
+    while i < end {
+        let b = unsafe { buf[i] } as i64;
+        if b >= 48 && b <= 57 {
+            val = val * 10 + (b - 48);
+        }
+        i = i + 1;
+    }
+    val
+}
+
+// Write a complete JSON-RPC response frame to |h|:
+//   Content-Length: <body_len>\r\n\r\n<body>
+fn lsp_write_response(h: *mut u8, body: String, body_len: i64, arena: *mut u8) {
+    // Build ASCII decimal for body_len
+    let num_buf = unsafe { morrow_region_alloc(arena, 24, 1) };
+    let mut n = body_len;
+    if n == 0 {
+        unsafe { num_buf[0] = 48 as u8; num_buf[1] = 0 as u8; }
+    } else {
+        let tmp = unsafe { morrow_region_alloc(arena, 24, 1) };
+        let mut ti: i64 = 0;
+        while n > 0 {
+            unsafe { tmp[ti] = (48 + n % 10) as u8; }
+            n  = n / 10;
+            ti = ti + 1;
+        }
+        let mut ri: i64 = 0;
+        while ri < ti {
+            unsafe { num_buf[ri] = tmp[ti - 1 - ri]; }
+            ri = ri + 1;
+        }
+        unsafe { num_buf[ti] = 0 as u8; }
+    }
+
+    // Assemble header into a string buffer
+    let mut hdr = string_buffer_new_in(arena);
+    string_buffer_push_str(&mut hdr, "Content-Length: " as *const u8, 16);
+    let num_len = unsafe { strlen(num_buf as *const u8) } as i64;
+    string_buffer_push_str(&mut hdr, num_buf as *const u8, num_len);
+    string_buffer_push_str(&mut hdr, "\r\n\r\n" as *const u8, 4);
+    string_buffer_push_byte(&mut hdr, 0 as u8);
+
+    let hdr_ptr = string_as_ptr(&hdr) as *const u8;
+    let hdr_len = unsafe { strlen(hdr_ptr) } as i64;
+
+    let written = unsafe { morrow_region_alloc(arena, 4, 4) as *mut i32 };
+    unsafe {
+        WriteFile(h, hdr_ptr,              hdr_len as i32,  written as *mut i32, 0 as *mut u8);
+        WriteFile(h, body as *const u8,   body_len as i32, written as *mut i32, 0 as *mut u8);
+    }
+}
+
+// ─── response builders ───────────────────────────────────────────────────────
 
 pub fn lsp_make_error_response(req_id: i64, code: i64, message: String, arena: *mut u8) -> String {
     let resp = json_create_object(arena);
     json_set_field(resp, "jsonrpc", json_create_str(arena, "2.0"), arena);
-    json_set_field(resp, "id", json_create_int(arena, req_id), arena);
+    json_set_field(resp, "id",      json_create_int(arena, req_id), arena);
 
     let err_obj = json_create_object(arena);
-    json_set_field(err_obj, "code", json_create_int(arena, code), arena);
-    json_set_field(err_obj, "message", json_create_str(arena, message), arena);
+    json_set_field(err_obj, "code",    json_create_int(arena, code),       arena);
+    json_set_field(err_obj, "message", json_create_str(arena, message),    arena);
     json_set_field(resp, "error", err_obj, arena);
 
     json_serialize(resp, arena)
 }
 
-pub fn lsp_make_publish_diagnostics(uri: String, message: String, line: i64, col: i64, arena: *mut u8) -> String {
+// Emit a textDocument/publishDiagnostics notification.
+// |message| == "" clears all diagnostics for |uri|.
+pub fn lsp_make_publish_diagnostics(
+    uri: String, message: String, line: i64, col: i64, arena: *mut u8
+) -> String {
     let notif = json_create_object(arena);
-    json_set_field(notif, "jsonrpc", json_create_str(arena, "2.0"), arena);
-    json_set_field(notif, "method", json_create_str(arena, "textDocument/publishDiagnostics"), arena);
+    json_set_field(notif, "jsonrpc", json_create_str(arena, "2.0"),                          arena);
+    json_set_field(notif, "method",  json_create_str(arena, "textDocument/publishDiagnostics"), arena);
 
     let params = json_create_object(arena);
     json_set_field(params, "uri", json_create_str(arena, uri), arena);
 
     let diags = json_create_array(arena);
     if unsafe { strlen(message as *const u8) } > 0 {
-        let diag = json_create_object(arena);
-        let range = json_create_object(arena);
-        let start = json_create_object(arena);
-        json_set_field(start, "line", json_create_int(arena, line - 1), arena);
-        json_set_field(start, "character", json_create_int(arena, col - 1), arena);
-        let end = json_create_object(arena);
-        json_set_field(end, "line", json_create_int(arena, line - 1), arena);
-        json_set_field(end, "character", json_create_int(arena, col + 10), arena);
-        json_set_field(range, "start", start, arena);
-        json_set_field(range, "end", end, arena);
+        let diag    = json_create_object(arena);
+        let range   = json_create_object(arena);
+        let start   = json_create_object(arena);
+        let end_pos = json_create_object(arena);
 
-        json_set_field(diag, "range", range, arena);
-        json_set_field(diag, "severity", json_create_int(arena, 1), arena); // 1 = Error
-        json_set_field(diag, "source", json_create_str(arena, "tungsten-typeck"), arena);
-        json_set_field(diag, "message", json_create_str(arena, message), arena);
+        let line0 = if line > 0 { line - 1 } else { 0 };
+        let col0  = if col  > 0 { col  - 1 } else { 0 };
+        json_set_field(start,   "line",      json_create_int(arena, line0),      arena);
+        json_set_field(start,   "character", json_create_int(arena, col0),       arena);
+        json_set_field(end_pos, "line",      json_create_int(arena, line0),      arena);
+        json_set_field(end_pos, "character", json_create_int(arena, col0 + 10),  arena);
+        json_set_field(range, "start", start,   arena);
+        json_set_field(range, "end",   end_pos, arena);
+
+        json_set_field(diag, "range",    range,                                       arena);
+        json_set_field(diag, "severity", json_create_int(arena, 1),                   arena); // Error
+        json_set_field(diag, "source",   json_create_str(arena, "morrow-typeck"),     arena);
+        json_set_field(diag, "message",  json_create_str(arena, message),             arena);
         vec_push(&mut diags.args, diag);
     }
     json_set_field(params, "diagnostics", diags, arena);
@@ -64,6 +200,8 @@ pub fn lsp_make_publish_diagnostics(uri: String, message: String, line: i64, col
 
     json_serialize(notif, arena)
 }
+
+// ─── request dispatcher ──────────────────────────────────────────────────────
 
 pub fn lsp_handle_request(req_json_str: String, arena: *mut u8) -> String yields [FS, Diagnostics] {
     let str_len = unsafe { strlen(req_json_str as *const u8) } as i64;
@@ -73,21 +211,21 @@ pub fn lsp_handle_request(req_json_str: String, arena: *mut u8) -> String yields
 
     let req = json_parse(req_json_str, arena);
     if (req as usize) == 0 {
-        return lsp_make_error_response(0, 0 - 32700, "JSON Parse error", arena);
+        return lsp_make_error_response(0, 0 - 32700, "JSON parse error", arena);
     }
     if req.kind != json_object() {
-        return lsp_make_error_response(0, 0 - 32700, "JSON Parse error", arena);
+        return lsp_make_error_response(0, 0 - 32700, "JSON parse error", arena);
     }
 
-    let method = json_get_str(req, "method");
-    let req_id = json_get_int(req, "id");
+    let method   = json_get_str(req, "method");
+    let req_id   = json_get_int(req, "id");
     let p_method = method as *const u8;
 
     if unsafe { strlen(p_method) } == 0 {
         return lsp_make_error_response(req_id, 0 - 32600, "Invalid Request: missing method", arena);
     }
 
-    // 1. initialize
+    // ── 1. initialize ────────────────────────────────────────────────────────
     let mut is_init = false;
     unsafe {
         if strcmp(p_method, "initialize" as *const u8) == 0 {
@@ -97,26 +235,40 @@ pub fn lsp_handle_request(req_json_str: String, arena: *mut u8) -> String yields
     if is_init {
         let resp = json_create_object(arena);
         json_set_field(resp, "jsonrpc", json_create_str(arena, "2.0"), arena);
-        json_set_field(resp, "id", json_create_int(arena, req_id), arena);
+        json_set_field(resp, "id",      json_create_int(arena, req_id), arena);
 
-        let res = json_create_object(arena);
+        let res  = json_create_object(arena);
         let caps = json_create_object(arena);
-        json_set_field(caps, "textDocumentSync", json_create_int(arena, 1), arena);
-        json_set_field(caps, "hoverProvider", json_create_bool(arena, true), arena);
+        // textDocumentSync = 1 (Full)
+        json_set_field(caps, "textDocumentSync",           json_create_int(arena, 1),    arena);
+        json_set_field(caps, "hoverProvider",              json_create_bool(arena, true), arena);
         json_set_field(caps, "documentFormattingProvider", json_create_bool(arena, true), arena);
+        // Empty completionProvider object signals capability without trigger chars
+        json_set_field(caps, "completionProvider",         json_create_object(arena),    arena);
         json_set_field(res, "capabilities", caps, arena);
 
         let server_info = json_create_object(arena);
-        json_set_field(server_info, "name", json_create_str(arena, "tungsten-lsp"), arena);
-        json_set_field(server_info, "version", json_create_str(arena, "0.2.0"), arena);
+        json_set_field(server_info, "name",    json_create_str(arena, "morrow-lsp"), arena);
+        json_set_field(server_info, "version", json_create_str(arena, "0.3.0"),      arena);
         json_set_field(res, "serverInfo", server_info, arena);
 
         json_set_field(resp, "result", res, arena);
         return json_serialize(resp, arena);
     }
 
-    // 2. textDocument/didOpen or didChange
-    let mut is_open = false;
+    // ── 2. initialized (notification — no response) ──────────────────────────
+    let mut is_initialized = false;
+    unsafe {
+        if strcmp(p_method, "initialized" as *const u8) == 0 {
+            is_initialized = true;
+        }
+    }
+    if is_initialized {
+        return ""; // notifications never carry a response
+    }
+
+    // ── 3. textDocument/didOpen or didChange ─────────────────────────────────
+    let mut is_open   = false;
     let mut is_change = false;
     unsafe {
         if strcmp(p_method, "textDocument/didOpen" as *const u8) == 0 {
@@ -128,8 +280,9 @@ pub fn lsp_handle_request(req_json_str: String, arena: *mut u8) -> String yields
     }
     if is_open || is_change {
         let params = json_get_field(req, "params");
-        let mut uri = "file:///main.tg";
+        let mut uri  = "file:///main.mw";
         let mut text = "";
+
         if (params as usize) != 0 {
             let doc = json_get_field(params, "textDocument");
             if (doc as usize) != 0 {
@@ -137,24 +290,42 @@ pub fn lsp_handle_request(req_json_str: String, arena: *mut u8) -> String yields
                 if unsafe { strlen(u as *const u8) } > 0 {
                     uri = u;
                 }
-                text = json_get_str(doc, "text");
+            }
+            if is_open {
+                // didOpen: text lives in textDocument.text
+                if (doc as usize) != 0 {
+                    text = json_get_str(doc, "text");
+                }
+            } else {
+                // didChange: text lives in contentChanges[0].text
+                let changes = json_get_field(params, "contentChanges");
+                if (changes as usize) != 0 && changes.args.len > 0 {
+                    let first = vec_get(&changes.args, 0);
+                    if (first as usize) != 0 {
+                        text = json_get_str(first, "text");
+                    }
+                }
             }
         }
 
-        // Run pure Tungsten lexer + parser + typechecker on the code
         if unsafe { strlen(text as *const u8) } > 0 {
+            diag_reset();
             let mut interner = interner_new_in(arena);
             let tokens = tokenize(text, &mut interner, arena);
-            let prog = parse_program(tokens, &mut interner, arena);
-            let tc_ok = typecheck_program(prog, &mut interner, arena);
-            if !tc_ok {
-                return lsp_make_publish_diagnostics(uri, "Refinement constraint or type violation", 1, 1, arena);
+            let prog   = parse_program(tokens, &mut interner, arena);
+            let tc_ok  = typecheck_program(prog, &mut interner, arena);
+            if !tc_ok || diag_has_errors() {
+                // Typechecker currently always passes (1, 1) as location;
+                // accurate line/col tracking is planned for Phase 13.2.
+                return lsp_make_publish_diagnostics(
+                    uri, "Morrow type or refinement constraint violation", 1, 1, arena
+                );
             }
         }
         return lsp_make_publish_diagnostics(uri, "", 0, 0, arena);
     }
 
-    // 3. textDocument/hover
+    // ── 4. textDocument/hover ────────────────────────────────────────────────
     let mut is_hover = false;
     unsafe {
         if strcmp(p_method, "textDocument/hover" as *const u8) == 0 {
@@ -164,19 +335,39 @@ pub fn lsp_handle_request(req_json_str: String, arena: *mut u8) -> String yields
     if is_hover {
         let resp = json_create_object(arena);
         json_set_field(resp, "jsonrpc", json_create_str(arena, "2.0"), arena);
-        json_set_field(resp, "id", json_create_int(arena, req_id), arena);
+        json_set_field(resp, "id",      json_create_int(arena, req_id), arena);
 
-        let res = json_create_object(arena);
+        let res      = json_create_object(arena);
         let contents = json_create_object(arena);
-        json_set_field(contents, "kind", json_create_str(arena, "markdown"), arena);
-        json_set_field(contents, "value", json_create_str(arena, "```tungsten\n// Tungsten Refinement Invariant Proven\n// Interval: [0..=100]\n```"), arena);
+        json_set_field(contents, "kind",  json_create_str(arena, "markdown"), arena);
+        json_set_field(contents, "value",
+            json_create_str(arena,
+                "```morrow\n// Morrow Refinement Invariant Proven\n// Interval: [0..=100]\n```"),
+            arena);
         json_set_field(res, "contents", contents, arena);
 
         json_set_field(resp, "result", res, arena);
         return json_serialize(resp, arena);
     }
 
-    // 4. textDocument/formatting
+    // ── 5. textDocument/completion (stub) ────────────────────────────────────
+    let mut is_completion = false;
+    unsafe {
+        if strcmp(p_method, "textDocument/completion" as *const u8) == 0 {
+            is_completion = true;
+        }
+    }
+    if is_completion {
+        let resp = json_create_object(arena);
+        json_set_field(resp, "jsonrpc", json_create_str(arena, "2.0"), arena);
+        json_set_field(resp, "id",      json_create_int(arena, req_id), arena);
+        // Empty list — keyword completion planned for Phase 13.3
+        let items = json_create_array(arena);
+        json_set_field(resp, "result", items, arena);
+        return json_serialize(resp, arena);
+    }
+
+    // ── 6. textDocument/formatting ───────────────────────────────────────────
     let mut is_format = false;
     unsafe {
         if strcmp(p_method, "textDocument/formatting" as *const u8) == 0 {
@@ -186,14 +377,13 @@ pub fn lsp_handle_request(req_json_str: String, arena: *mut u8) -> String yields
     if is_format {
         let resp = json_create_object(arena);
         json_set_field(resp, "jsonrpc", json_create_str(arena, "2.0"), arena);
-        json_set_field(resp, "id", json_create_int(arena, req_id), arena);
-
+        json_set_field(resp, "id",      json_create_int(arena, req_id), arena);
         let edits = json_create_array(arena);
         json_set_field(resp, "result", edits, arena);
         return json_serialize(resp, arena);
     }
 
-    // 5. shutdown
+    // ── 7. shutdown ──────────────────────────────────────────────────────────
     let mut is_shutdown = false;
     unsafe {
         if strcmp(p_method, "shutdown" as *const u8) == 0 {
@@ -203,23 +393,90 @@ pub fn lsp_handle_request(req_json_str: String, arena: *mut u8) -> String yields
     if is_shutdown {
         let resp = json_create_object(arena);
         json_set_field(resp, "jsonrpc", json_create_str(arena, "2.0"), arena);
-        json_set_field(resp, "id", json_create_int(arena, req_id), arena);
-        json_set_field(resp, "result", alloc_json_val(arena, json_null()), arena);
+        json_set_field(resp, "id",      json_create_int(arena, req_id), arena);
+        json_set_field(resp, "result",  alloc_json_val(arena, json_null()), arena);
         return json_serialize(resp, arena);
+    }
+
+    // ── 8. exit (notification) ───────────────────────────────────────────────
+    let mut is_exit = false;
+    unsafe {
+        if strcmp(p_method, "exit" as *const u8) == 0 {
+            is_exit = true;
+        }
+    }
+    if is_exit {
+        return lsp_exit_sentinel(); // signals stdio loop to terminate
     }
 
     // Method not found
     lsp_make_error_response(req_id, 0 - 32601, "Method not found", arena)
 }
 
+// ─── JSON-RPC stdio server ────────────────────────────────────────────────────
+
 pub fn lsp_run_stdio(arena: *mut u8) -> i64 {
-    let msg = json_create_object(arena);
-    json_set_field(msg, "jsonrpc", json_create_str(arena, "2.0"), arena);
-    json_set_field(msg, "method", json_create_str(arena, "window/logMessage"), arena);
-    let s = json_serialize(msg, arena);
-    unsafe {
-        puts(s as *const u8);
-        fflush(0 as *const u8);
+    // STD_INPUT_HANDLE = -10, STD_OUTPUT_HANDLE = -11
+    let h_in  = unsafe { GetStdHandle(0 - 10) };
+    let h_out = unsafe { GetStdHandle(0 - 11) };
+
+    let mut running = true;
+    while running {
+        // ── Phase A: parse Content-Length: N header ──────────────────────
+        let mut content_len: i64 = 0;
+        let mut header_done = false;
+        let mut got_eof     = false;
+
+        while !header_done {
+            let line_buf = unsafe { morrow_region_alloc(arena, 256, 1) };
+            let line_len = lsp_read_line(h_in, line_buf, 256, arena);
+
+            if line_len < 0 {
+                // EOF / pipe closed
+                got_eof     = true;
+                header_done = true;
+            } else if line_len == 0 {
+                // Blank line terminates the header block
+                header_done = true;
+            } else {
+                // Check for "Content-Length: N"
+                if unsafe {
+                    strncmp(line_buf as *const u8, "Content-Length: " as *const u8, 16) == 0
+                } {
+                    content_len = lsp_parse_cl(line_buf, 16, line_len);
+                }
+                // Other headers (Content-Type etc.) are silently ignored
+            }
+        }
+
+        if got_eof {
+            running = false;
+        } else if content_len > 0 {
+            // ── Phase B: read body ───────────────────────────────────────
+            let body_buf = unsafe {
+                morrow_region_alloc(arena, (content_len + 1) as usize, 1)
+            };
+            let nr = lsp_read_exact(h_in, body_buf, content_len, arena);
+            unsafe { body_buf[nr] = 0 as u8; }
+            let body_str = body_buf as String;
+
+            // ── Phase C: dispatch ────────────────────────────────────────
+            let response = lsp_handle_request(body_str, arena);
+            let resp_len = unsafe { strlen(response as *const u8) } as i64;
+
+            if resp_len == 0 {
+                // Notification (e.g. "initialized") — send nothing, continue
+            } else if unsafe {
+                strcmp(response as *const u8, lsp_exit_sentinel() as *const u8) == 0
+            } {
+                // "exit" notification — terminate the server loop
+                running = false;
+            } else {
+                // ── Phase D: send framed response ────────────────────────
+                lsp_write_response(h_out, response, resp_len, arena);
+            }
+        }
+        // content_len == 0 with no EOF: malformed frame, skip and continue
     }
     0
 }

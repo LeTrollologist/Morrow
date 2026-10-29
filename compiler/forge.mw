@@ -1,4 +1,4 @@
-// Tungsten Self-Hosting Compiler - Unified Developer CLI (forge.tg)
+﻿// Tungsten Self-Hosting Compiler - Unified Developer CLI (forge.tg)
 // Pure Tungsten toolchain manager: check, build, run, test, fmt, lsp, new, clean
 
 import std::collections;
@@ -1088,6 +1088,7 @@ pub fn forge_run_test(arena: *mut u8) -> i64 yields [FS, Process, Diagnostics, I
     vec_push(&mut test_suites, "tests/crypto_test.mw");
     vec_push(&mut test_suites, "tests/io_test.mw");
     vec_push(&mut test_suites, "tests/sql_test.mw");
+    vec_push(&mut test_suites, "tests/lsp_test.mw");
 
     let mut passed: i64 = 0;
     let mut failed: i64 = 0;
