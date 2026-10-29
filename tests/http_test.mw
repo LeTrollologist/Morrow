@@ -1,0 +1,302 @@
+// Phase 13.2 — std::http Test Suite (http_test.mw)
+// Tests the zero-copy HTTP/1.1 parser and response formatter in std::http.
+// All tests are pure (no actual network I/O) — effect Net is not exercised.
+
+import std::http;
+import std::collections;
+import compiler::diagnostics;
+
+extern "C" {
+    fn puts(s: *const u8) -> i32;
+    fn fflush(f: *const u8) -> i32;
+    fn strlen(s: *const u8) -> usize;
+    fn strstr(haystack: *const u8, needle: *const u8) -> *const u8;
+    fn strcmp(s1: *const u8, s2: *const u8) -> i32;
+}
+
+fn http_test_print(msg: String) {
+    unsafe {
+        puts(msg as *const u8);
+        fflush(0 as *const u8);
+    }
+}
+
+fn contains(haystack: String, needle: String) -> bool {
+    let p = unsafe { strstr(haystack as *const u8, needle as *const u8) };
+    (p as usize) != 0
+}
+
+fn str_eq(a: String, b: String) -> bool {
+    unsafe { strcmp(a as *const u8, b as *const u8) == 0 }
+}
+
+fn http_assert(label: String, cond: bool) -> bool yields [Diagnostics] {
+    if !cond {
+        report_err(label, 1, 1);
+    }
+    cond
+}
+
+// ─── Parser tests ─────────────────────────────────────────────────────────────
+
+fn test_parse_get_root(arena: *mut u8) -> bool yields [Diagnostics] {
+    let raw = "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n";
+    let req = http_parse_request_in(raw, arena);
+    let mut ok = true;
+    ok = ok && http_assert("GET /: is_valid",       req.is_valid);
+    ok = ok && http_assert("GET /: method=GET",     str_eq(req.method, "GET"));
+    ok = ok && http_assert("GET /: path=/",         str_eq(req.path, "/"));
+    ok = ok && http_assert("GET /: body empty",     str_eq(req.body, ""));
+    ok
+}
+
+fn test_parse_get_path(arena: *mut u8) -> bool yields [Diagnostics] {
+    let raw = "GET /api/v1/health HTTP/1.1\r\nHost: example.com\r\nAccept: */*\r\n\r\n";
+    let req = http_parse_request_in(raw, arena);
+    let mut ok = true;
+    ok = ok && http_assert("GET path: is_valid",              req.is_valid);
+    ok = ok && http_assert("GET path: method=GET",            str_eq(req.method, "GET"));
+    ok = ok && http_assert("GET path: path=/api/v1/health",   str_eq(req.path, "/api/v1/health"));
+    ok
+}
+
+fn test_parse_post_with_body(arena: *mut u8) -> bool yields [Diagnostics] {
+    let raw = "POST /submit HTTP/1.1\r\nHost: example.com\r\nContent-Length: 13\r\n\r\nhello, world!";
+    let req = http_parse_request_in(raw, arena);
+    let mut ok = true;
+    ok = ok && http_assert("POST body: is_valid",         req.is_valid);
+    ok = ok && http_assert("POST body: method=POST",      str_eq(req.method, "POST"));
+    ok = ok && http_assert("POST body: path=/submit",     str_eq(req.path, "/submit"));
+    ok = ok && http_assert("POST body: body non-empty",   !str_eq(req.body, ""));
+    ok = ok && http_assert("POST body: body content",     contains(req.body, "hello"));
+    ok
+}
+
+fn test_parse_put(arena: *mut u8) -> bool yields [Diagnostics] {
+    let raw = "PUT /resource/42 HTTP/1.1\r\nHost: example.com\r\n\r\n{\"value\":1}";
+    let req = http_parse_request_in(raw, arena);
+    let mut ok = true;
+    ok = ok && http_assert("PUT: is_valid",            req.is_valid);
+    ok = ok && http_assert("PUT: method=PUT",          str_eq(req.method, "PUT"));
+    ok = ok && http_assert("PUT: path=/resource/42",   str_eq(req.path, "/resource/42"));
+    ok
+}
+
+fn test_parse_delete(arena: *mut u8) -> bool yields [Diagnostics] {
+    let raw = "DELETE /item/7 HTTP/1.1\r\nHost: example.com\r\n\r\n";
+    let req = http_parse_request_in(raw, arena);
+    let mut ok = true;
+    ok = ok && http_assert("DELETE: is_valid",        req.is_valid);
+    ok = ok && http_assert("DELETE: method=DELETE",   str_eq(req.method, "DELETE"));
+    ok = ok && http_assert("DELETE: path=/item/7",    str_eq(req.path, "/item/7"));
+    ok
+}
+
+fn test_parse_multiple_headers(arena: *mut u8) -> bool yields [Diagnostics] {
+    let raw = "GET /data HTTP/1.1\r\nHost: api.morrow.dev\r\nAccept: application/json\r\nX-Request-Id: abc123\r\nAuthorization: Bearer tok\r\n\r\n";
+    let req = http_parse_request_in(raw, arena);
+    let mut ok = true;
+    ok = ok && http_assert("multi-header: is_valid",      req.is_valid);
+    ok = ok && http_assert("multi-header: method=GET",    str_eq(req.method, "GET"));
+    ok = ok && http_assert("multi-header: path=/data",    str_eq(req.path, "/data"));
+    ok
+}
+
+// ─── Parser rejection tests ────────────────────────────────────────────────────
+
+fn test_parse_reject_empty(arena: *mut u8) -> bool yields [Diagnostics] {
+    let req = http_parse_request_in("", arena);
+    http_assert("reject empty: not valid", !req.is_valid)
+}
+
+fn test_parse_reject_too_short(arena: *mut u8) -> bool yields [Diagnostics] {
+    let req = http_parse_request_in("GET /", arena);
+    http_assert("reject too short: not valid", !req.is_valid)
+}
+
+fn test_parse_reject_missing_delimiter(arena: *mut u8) -> bool yields [Diagnostics] {
+    // No \r\n\r\n separator
+    let raw = "GET / HTTP/1.1\r\nHost: localhost";
+    let req = http_parse_request_in(raw, arena);
+    http_assert("reject no delimiter: not valid", !req.is_valid)
+}
+
+fn test_parse_reject_bad_version(arena: *mut u8) -> bool yields [Diagnostics] {
+    let raw = "GET / GOPHER/0.9\r\nHost: localhost\r\n\r\n";
+    let req = http_parse_request_in(raw, arena);
+    http_assert("reject bad version: not valid", !req.is_valid)
+}
+
+fn test_parse_reject_malformed_header(arena: *mut u8) -> bool yields [Diagnostics] {
+    // Header line without ':' separator
+    let raw = "GET / HTTP/1.1\r\nBadHeaderLine\r\n\r\n";
+    let req = http_parse_request_in(raw, arena);
+    http_assert("reject malformed header: not valid", !req.is_valid)
+}
+
+// ─── Response constructor tests ───────────────────────────────────────────────
+
+fn test_response_ok(arena: *mut u8) -> bool yields [Diagnostics] {
+    let resp = http_response_ok("{\"status\":\"ok\"}", "application/json");
+    let mut ok = true;
+    ok = ok && http_assert("resp_ok: status 200",    resp.status_code == 200);
+    ok = ok && http_assert("resp_ok: status text",   str_eq(resp.status_text, "OK"));
+    ok = ok && http_assert("resp_ok: content-type",  str_eq(resp.content_type, "application/json"));
+    ok = ok && http_assert("resp_ok: body",          contains(resp.body, "status"));
+    ok
+}
+
+fn test_response_created(arena: *mut u8) -> bool yields [Diagnostics] {
+    let resp = http_response_created("{\"id\":1}");
+    let mut ok = true;
+    ok = ok && http_assert("resp_created: status 201",  resp.status_code == 201);
+    ok = ok && http_assert("resp_created: status text", str_eq(resp.status_text, "Created"));
+    ok
+}
+
+fn test_response_not_found(arena: *mut u8) -> bool yields [Diagnostics] {
+    let resp = http_response_not_found();
+    let mut ok = true;
+    ok = ok && http_assert("resp_404: status 404",   resp.status_code == 404);
+    ok = ok && http_assert("resp_404: status text",  str_eq(resp.status_text, "Not Found"));
+    ok
+}
+
+fn test_response_bad_request(arena: *mut u8) -> bool yields [Diagnostics] {
+    let resp = http_response_bad_request("{\"error\":\"missing field\"}");
+    let mut ok = true;
+    ok = ok && http_assert("resp_400: status 400",   resp.status_code == 400);
+    ok = ok && http_assert("resp_400: status text",  str_eq(resp.status_text, "Bad Request"));
+    ok = ok && http_assert("resp_400: body",         contains(resp.body, "missing field"));
+    ok
+}
+
+// ─── Response formatter tests ─────────────────────────────────────────────────
+
+fn test_format_200_ok(arena: *mut u8) -> bool yields [Diagnostics] {
+    let resp = http_response_ok("Hello, Morrow!", "text/plain");
+    let wire = http_format_response_in(&resp, arena);
+    let mut ok = true;
+    ok = ok && http_assert("fmt 200: status line",    contains(wire, "HTTP/1.1 200 OK"));
+    ok = ok && http_assert("fmt 200: content-type",   contains(wire, "Content-Type: text/plain"));
+    ok = ok && http_assert("fmt 200: content-length", contains(wire, "Content-Length:"));
+    ok = ok && http_assert("fmt 200: connection",     contains(wire, "Connection: close"));
+    ok = ok && http_assert("fmt 200: body",           contains(wire, "Hello, Morrow!"));
+    ok
+}
+
+fn test_format_404(arena: *mut u8) -> bool yields [Diagnostics] {
+    let resp = http_response_not_found();
+    let wire = http_format_response_in(&resp, arena);
+    let mut ok = true;
+    ok = ok && http_assert("fmt 404: status line",  contains(wire, "HTTP/1.1 404 Not Found"));
+    ok = ok && http_assert("fmt 404: body",         contains(wire, "Not Found"));
+    ok
+}
+
+fn test_format_content_length_accuracy(arena: *mut u8) -> bool yields [Diagnostics] {
+    // Body is exactly 4 bytes: "ping"
+    let resp = http_response_ok("ping", "text/plain");
+    let wire = http_format_response_in(&resp, arena);
+    // Content-Length must be 4
+    http_assert("content-length=4", contains(wire, "Content-Length: 4"))
+}
+
+fn test_format_json_body(arena: *mut u8) -> bool yields [Diagnostics] {
+    let resp = http_response_ok("{\"version\":\"0.3.0\",\"lang\":\"morrow\"}", "application/json");
+    let wire = http_format_response_in(&resp, arena);
+    let mut ok = true;
+    ok = ok && http_assert("fmt json: status",  contains(wire, "200 OK"));
+    ok = ok && http_assert("fmt json: body",    contains(wire, "morrow"));
+    ok
+}
+
+fn test_format_empty_body(arena: *mut u8) -> bool yields [Diagnostics] {
+    let resp = HttpResponse {
+        status_code:  204,
+        status_text:  "No Content",
+        content_type: "application/json",
+        body:         "",
+    };
+    let wire = http_format_response_in(&resp, arena);
+    let mut ok = true;
+    ok = ok && http_assert("fmt 204: status",           contains(wire, "HTTP/1.1 204 No Content"));
+    ok = ok && http_assert("fmt 204: content-length 0", contains(wire, "Content-Length: 0"));
+    ok
+}
+
+// ─── Round-trip test ──────────────────────────────────────────────────────────
+
+fn test_roundtrip_post(arena: *mut u8) -> bool yields [Diagnostics] {
+    // Parse a POST request, build a JSON response, format it.
+    let raw = "POST /echo HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n\r\n{\"msg\":\"hello\"}";
+    let req = http_parse_request_in(raw, arena);
+    if !req.is_valid {
+        return http_assert("roundtrip: parse failed", false);
+    }
+    let resp = http_response_ok(req.body, "application/json");
+    let wire = http_format_response_in(&resp, arena);
+    let mut ok = true;
+    ok = ok && http_assert("roundtrip: 200 OK",        contains(wire, "200 OK"));
+    ok = ok && http_assert("roundtrip: body echoed",   contains(wire, "hello"));
+    ok
+}
+
+// ─── main ─────────────────────────────────────────────────────────────────────
+
+fn main() -> i64 yields [Diagnostics] {
+    region http_arena {
+        http_test_print("=== Running std::http Test Suite ===");
+
+        let mut passed: i64 = 0;
+        let mut failed: i64 = 0;
+
+        let run = |name: String, ok: bool| {
+            if ok {
+                passed = passed + 1;
+                http_test_print(name);
+            } else {
+                failed = failed + 1;
+            }
+        };
+
+        // Parser — valid inputs
+        run("  test \nGET / parses correctly\n ... ok",                test_parse_get_root(http_arena));
+        run("  test \nGET /api/v1/health path\n ... ok",              test_parse_get_path(http_arena));
+        run("  test \nPOST with body\n ... ok",                       test_parse_post_with_body(http_arena));
+        run("  test \nPUT request\n ... ok",                          test_parse_put(http_arena));
+        run("  test \nDELETE request\n ... ok",                       test_parse_delete(http_arena));
+        run("  test \nMultiple request headers\n ... ok",             test_parse_multiple_headers(http_arena));
+
+        // Parser — rejections
+        run("  test \nReject empty input\n ... ok",                   test_parse_reject_empty(http_arena));
+        run("  test \nReject too-short request\n ... ok",             test_parse_reject_too_short(http_arena));
+        run("  test \nReject missing header delimiter\n ... ok",      test_parse_reject_missing_delimiter(http_arena));
+        run("  test \nReject non-HTTP version string\n ... ok",       test_parse_reject_bad_version(http_arena));
+        run("  test \nReject malformed header line\n ... ok",         test_parse_reject_malformed_header(http_arena));
+
+        // Response constructors
+        run("  test \nhttp_response_ok fields\n ... ok",              test_response_ok(http_arena));
+        run("  test \nhttp_response_created fields\n ... ok",         test_response_created(http_arena));
+        run("  test \nhttp_response_not_found fields\n ... ok",       test_response_not_found(http_arena));
+        run("  test \nhttp_response_bad_request fields\n ... ok",     test_response_bad_request(http_arena));
+
+        // Formatter
+        run("  test \nFormat 200 OK wire format\n ... ok",            test_format_200_ok(http_arena));
+        run("  test \nFormat 404 Not Found wire format\n ... ok",     test_format_404(http_arena));
+        run("  test \nContent-Length accuracy\n ... ok",              test_format_content_length_accuracy(http_arena));
+        run("  test \nJSON response body formatting\n ... ok",        test_format_json_body(http_arena));
+        run("  test \n204 No Content empty body\n ... ok",            test_format_empty_body(http_arena));
+
+        // Round-trip
+        run("  test \nPOST /echo round-trip\n ... ok",               test_roundtrip_post(http_arena));
+
+        if failed == 0 {
+            http_test_print("All std::http tests passed!");
+            0
+        } else {
+            http_test_print("[http_test] FAILURES detected");
+            1
+        }
+    }
+}

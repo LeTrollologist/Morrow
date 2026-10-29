@@ -1089,6 +1089,8 @@ pub fn forge_run_test(arena: *mut u8) -> i64 yields [FS, Process, Diagnostics, I
     vec_push(&mut test_suites, "tests/io_test.mw");
     vec_push(&mut test_suites, "tests/sql_test.mw");
     vec_push(&mut test_suites, "tests/lsp_test.mw");
+    vec_push(&mut test_suites, "tests/http_test.mw");
+    vec_push(&mut test_suites, "tests/net_test.mw");
 
     let mut passed: i64 = 0;
     let mut failed: i64 = 0;
