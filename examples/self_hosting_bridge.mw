@@ -47,7 +47,7 @@ fn main() -> i64 yields [FS, Process, IO] {
         let read_back = fs_read_to_string_in(test_file, r);
         println("Read back contents successfully from region.");
 
-        let mut symbols = hashmap_new_in(r);
+        let mut symbols = hashmap_new_in(r, 64);
         hashmap_insert(&mut symbols, "fn", 1);
         hashmap_insert(&mut symbols, "main", 2);
         hashmap_insert(&mut symbols, "return", 3);

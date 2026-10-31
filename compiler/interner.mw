@@ -11,7 +11,7 @@ pub struct Interner {
 }
 
 pub fn interner_new_in(arena: *mut u8) -> Interner {
-    let map = hashmap_new_in(arena);
+    let map = hashmap_new_in(arena, 256);
     let symbols: Vec<String> = vec_with_capacity_in(arena, 64);
     Interner {
         map: map,

@@ -1,0 +1,18 @@
+// NEGATIVE TEST: a linear resource consumed on only one branch.
+linear struct Handle {
+    fd: i64,
+}
+
+fn close_handle(h: Handle) {
+    consume(h);
+}
+
+fn maybe(cond: bool, h: Handle) {
+    if cond {
+        close_handle(h);
+    }
+}
+
+fn main() -> i64 {
+    0
+}

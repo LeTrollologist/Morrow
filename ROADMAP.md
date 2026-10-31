@@ -448,5 +448,16 @@
 ### Phase 13.4: Compiler Robustness Follow-ups
 - The lexer now skips a UTF-8 byte-order mark (`EF BB BF`) instead of emitting three "Unexpected character" errors — a BOM in `compiler/forge.mw` had silently blocked the self-hosting rebuild.
 - Runtime diagnostics (`morrow_report_error`) now print `[ERROR] <message> (line <n>, col <n>)` through `printf` instead of a location-free `puts`, so parse and type errors are actionable.
-- `forge version` reports `forge 2.0.0 (morrow standalone 2026)`, matching the tagged release instead of the stale `0.2.0` build number.
+- `forge version` reports the tagged release version instead of a stale `0.2.0` build number.
 - Open: named diagnostic severities/diagnostic ranges for the LSP, `mwc bench --json` output, and a CI job that stores benchmark deltas.
+
+### Phase 13.5: Compile-Fail Regression Harness ✅
+- `tests/negative/` holds 15 programs that must be **rejected**, each paired with the expected diagnostic substring in `forge_run_test`: refinement literal bounds, zero-spanning divisor, linear leak, one-branch consumption, partial handler, unhandled effect, unknown function, arity too many/too few, block comment, hex literal, float literal, `if`-expression, `enum`, shorthand handler arm.
+- `morrow_diag_last_message()` / `diag_primary_message()` expose the **first** diagnostic of a pass (summary errors such as "Module loading or parsing failed" arrive last and would otherwise mask the cause); the message is heap-allocated so it outlives region teardown.
+- `forge test` now runs the positive suites and then this compile-fail phase, so documented limitations cannot silently regress.
+
+### Phase 13.6: Call Signature Checking ✅
+- The typechecker resolves every call against the merged function and extern tables: unknown callees and wrong argument counts are type errors ("Unknown function called: X", "Call arity mismatch (too many/too few arguments): X"). Variadic C entry points (`printf`/`fprintf`/`sprintf`/`snprintf`) and the `println`/`consume`/`drop` intrinsics are exempt.
+- The module loader no longer skips `std/fs.mw` and `std/process.mw` (a stage-0 leftover), so their functions are typechecked, emitted, and callable. `std::fs` gained `morrow_fs_file_size` / `morrow_fs_delete_file` runtime helpers.
+- `hashmap_new_in` now takes an explicit capacity: `hashmap_new_in(arena, initial_cap)`.
+- Fallout fixed across the tree: 13 compiler/stdlib call sites, 2 examples (`hashmap_insert` arity, missing `puts` declaration), and the negative corpus.

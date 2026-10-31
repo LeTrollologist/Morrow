@@ -1,0 +1,5 @@
+// NEGATIVE TEST: `if` cannot be used as an expression.
+fn main() -> i64 {
+    let x = if true { 1 } else { 2 };
+    x
+}

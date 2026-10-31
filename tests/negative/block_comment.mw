@@ -1,0 +1,5 @@
+// NEGATIVE TEST: block comments are not part of the grammar.
+/* this must not parse */
+fn main() -> i64 {
+    0
+}

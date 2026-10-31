@@ -1,0 +1,10 @@
+// NEGATIVE TEST: dividing by a refined divisor whose interval spans zero.
+type Span = i64[-5..5];
+
+fn divide(x: i64, d: Span) -> i64 {
+    x / d
+}
+
+fn main() -> i64 {
+    0
+}

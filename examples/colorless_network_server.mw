@@ -18,6 +18,10 @@ effect Async {
     fn spawn(func: i64, arg: i64) -> i64;
 }
 
+extern "C" {
+    fn puts(s: *const u8) -> i32;
+}
+
 fn handle_connection(conn_fd: i64) yields [Net, IO] {
     let req = perform Net.read(conn_fd, 1024);
     perform IO.print(0);

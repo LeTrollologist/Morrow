@@ -1,0 +1,7 @@
+// NEGATIVE TEST: an out-of-range literal cast to a refined type must be rejected.
+type Port = u16[1..65535];
+
+fn main() -> i64 {
+    let p: Port = 70000 as Port;
+    0
+}

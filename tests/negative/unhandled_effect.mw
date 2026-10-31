@@ -1,0 +1,13 @@
+// NEGATIVE TEST: calling an effectful function without declaring or handling it.
+effect Db {
+    fn query(sql: String) -> String;
+}
+
+fn read_user() -> String yields [Db] {
+    perform Db.query("select 1");
+}
+
+fn main() -> i64 {
+    let s = read_user();
+    0
+}

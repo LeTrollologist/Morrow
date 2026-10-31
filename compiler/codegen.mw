@@ -3857,7 +3857,8 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
         emit_str(&mut cg, "@str_proc_cmdline = internal constant [19 x i8] c\"/proc/self/cmdline\\00\"\n");
     }
     emit_str(&mut cg, "@morrow_diag_errors = internal global i64 0\n");
-    emit_str(&mut cg, "@tungsten_diag_errors = internal global i64 0\n\n");
+    emit_str(&mut cg, "@tungsten_diag_errors = internal global i64 0\n");
+    emit_str(&mut cg, "@morrow_diag_last_msg = internal global ptr null\n\n");
 
 
     let mut si: i64 = 0;
@@ -3884,7 +3885,16 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
     emit_str(&mut cg, "define i64 @morrow_diag_reset() {\n");
     emit_str(&mut cg, "    store i64 0, ptr @morrow_diag_errors\n");
     emit_str(&mut cg, "    store i64 0, ptr @tungsten_diag_errors\n");
+    emit_str(&mut cg, "    store ptr null, ptr @morrow_diag_last_msg\n");
     emit_str(&mut cg, "    ret i64 0\n}\n\n");
+
+    // Returns the PRIMARY diagnostic of the current pass. The global is written
+    // only for the first error (see morrow_report_error), because summary errors
+    // like "Module loading or parsing failed" are reported after the specific
+    // cause and would otherwise mask it.
+    emit_str(&mut cg, "define ptr @morrow_diag_last_message() {\n");
+    emit_str(&mut cg, "    %m = load ptr, ptr @morrow_diag_last_msg\n");
+    emit_str(&mut cg, "    ret ptr %m\n}\n\n");
 
     emit_str(&mut cg, "define i64 @morrow_diag_inc_error() {\n");
     emit_str(&mut cg, "    %cur = load i64, ptr @morrow_diag_errors\n");
@@ -3898,7 +3908,13 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
     emit_str(&mut cg, "    ret i64 %cur\n}\n\n");
 
     emit_str(&mut cg, "define i1 @morrow_report_error(ptr %msg, i64 %line, i64 %col) {\n");
-    emit_str(&mut cg, "    call i64 @morrow_diag_inc_error()\n");
+    emit_str(&mut cg, "    %count = call i64 @morrow_diag_inc_error()\n");
+    emit_str(&mut cg, "    %is_first = icmp eq i64 %count, 1\n");
+    emit_str(&mut cg, "    br i1 %is_first, label %record_first, label %after_first\n");
+    emit_str(&mut cg, "record_first:\n");
+    emit_str(&mut cg, "    store ptr %msg, ptr @morrow_diag_last_msg\n");
+    emit_str(&mut cg, "    br label %after_first\n");
+    emit_str(&mut cg, "after_first:\n");
     emit_str(&mut cg, "    call i32 @printf(ptr @fmt_diag_err, ptr %msg, i64 %line, i64 %col)\n");
     emit_str(&mut cg, "    call i32 @fflush(ptr null)\n");
     emit_str(&mut cg, "    ret i1 true\n}\n\n");

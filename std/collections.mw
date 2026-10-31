@@ -379,9 +379,12 @@ pub fn hashmap_new() -> HashMap {
     }
 }
 
-pub fn hashmap_new_in(arena: *mut u8) -> HashMap {
-    let initial_cap: i64 = 256;
-    let bytes = (initial_cap * 8) as usize;
+pub fn hashmap_new_in(arena: *mut u8, initial_cap: i64) -> HashMap {
+    let mut cap = initial_cap;
+    if cap < 16 {
+        cap = 16;
+    }
+    let bytes = (cap * 8) as usize;
     let keys_ptr = unsafe { morrow_region_alloc(arena, bytes, 8) as *mut String };
     let vals_ptr = unsafe { morrow_region_alloc(arena, bytes, 8) as *mut i64 };
     let hashes_ptr = unsafe { morrow_region_alloc(arena, bytes, 8) as *mut i64 };
@@ -397,7 +400,7 @@ pub fn hashmap_new_in(arena: *mut u8) -> HashMap {
     HashMap {
         keys: keys_ptr,
         len: 0,
-        cap: initial_cap,
+        cap: cap,
         arena: arena,
         vals: vals_ptr,
         hashes: hashes_ptr,

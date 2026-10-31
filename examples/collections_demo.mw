@@ -30,9 +30,9 @@ fn main() -> i64 {
         // 2. HashMap Operations within Sub-Region
         let mut map_count: i64 = 0;
         region map_scope {
-            let mut map = hashmap_new_in(map_scope);
-            hashmap_insert(&mut map, "alpha", 100, map_scope);
-            hashmap_insert(&mut map, "beta", 200, map_scope);
+            let mut map = hashmap_new_in(map_scope, 32);
+            hashmap_insert(&mut map, "alpha", 100);
+            hashmap_insert(&mut map, "beta", 200);
             let val = hashmap_get(&map, "alpha");
             print_msg("Retrieved value from map inside sub-region:");
             println(val);

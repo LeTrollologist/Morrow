@@ -1,0 +1,13 @@
+// NEGATIVE TEST: handler arms require the `fn op(k, args) { resume(k, v); }` form.
+effect Ping {
+    fn ping() -> i64;
+}
+
+fn main() -> i64 {
+    let r = handle {
+        1
+    } with Ping {
+        ping() => resume(0),
+    };
+    r
+}

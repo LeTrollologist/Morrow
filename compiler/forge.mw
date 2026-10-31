@@ -21,12 +21,18 @@ import compiler::lsp;
 extern "C" {
     fn strlen(s: *const u8) -> usize;
     fn strcmp(s1: *const u8, s2: *const u8) -> i32;
+    fn strstr(haystack: *const u8, needle: *const u8) -> *const u8;
     fn puts(s: *const u8) -> i32;
     fn fflush(f: *const u8) -> i32;
     fn CreateDirectoryA(lpPathName: *const u8, lpSecurityAttributes: *const u8) -> i32;
     fn Sleep(dwMilliseconds: i32);
     fn remove(path: *const u8) -> i32;
     fn rename(oldpath: *const u8, newpath: *const u8) -> i32;
+}
+
+fn forge_contains(haystack: String, needle: String) -> bool {
+    let p = unsafe { strstr(haystack as *const u8, needle as *const u8) };
+    (p as usize) != 0
 }
 
 fn forge_print(msg: String) {
@@ -115,14 +121,11 @@ fn load_module_recursive(path: String, loaded_paths: &mut Vec<String>, prog: *mu
     // 2. Mark as visited to prevent cycles
     vec_push(loaded_paths, norm_path);
 
-    // 3. Skip compiler intrinsics
-    let p_norm = norm_path as *const u8;
-    if unsafe { strcmp(p_norm, "std/fs.mw" as *const u8) == 0 ||
-                strcmp(p_norm, "std/process.mw" as *const u8) == 0 ||
-                strcmp(p_norm, "std/fs.tg" as *const u8) == 0 ||
-                strcmp(p_norm, "std/process.tg" as *const u8) == 0 } {
-        return;
-    }
+    // 3. Load every module, including std/fs.mw and std/process.mw. Those two
+    // used to be skipped because the stage-0 Rust runtime provided their bodies;
+    // the Pure Morrow standard library implements them, and skipping them made
+    // their functions invisible to typechecking (and absent from codegen, so
+    // only the thunked names linked).
 
     // 4. Verify existence and read source
     if !fs_exists(norm_path) {
@@ -1146,6 +1149,84 @@ pub fn forge_run_test(arena: *mut u8) -> i64 yields [FS, Process, Diagnostics, I
         i = i + 1;
     }
 
+    // ---- Compile-fail suites -------------------------------------------------
+    // Each file must be rejected, and the last diagnostic must contain the
+    // expected substring. This is what keeps the documented limitations honest.
+    forge_print("running morrow negative (compile-fail) suites...");
+    let mut neg_files: Vec<String> = vec_new_in(arena);
+    let mut neg_expect: Vec<String> = vec_new_in(arena);
+
+    vec_push(&mut neg_files, "tests/negative/refinement_literal.mw");
+    vec_push(&mut neg_expect, "Refinement Constraint Violation");
+    vec_push(&mut neg_files, "tests/negative/divisor_interval.mw");
+    vec_push(&mut neg_expect, "potential division by zero");
+    vec_push(&mut neg_files, "tests/negative/linear_leak.mw");
+    vec_push(&mut neg_expect, "dropped without being consumed");
+    vec_push(&mut neg_files, "tests/negative/linear_branch.mw");
+    vec_push(&mut neg_expect, "consumed conditionally");
+    vec_push(&mut neg_files, "tests/negative/handler_partial.mw");
+    vec_push(&mut neg_expect, "does not implement all operations");
+    vec_push(&mut neg_files, "tests/negative/unhandled_effect.mw");
+    vec_push(&mut neg_expect, "Unhandled effect");
+    vec_push(&mut neg_files, "tests/negative/unknown_function.mw");
+    vec_push(&mut neg_expect, "Unknown function called");
+    vec_push(&mut neg_files, "tests/negative/arity_too_many.mw");
+    vec_push(&mut neg_expect, "too many arguments");
+    vec_push(&mut neg_files, "tests/negative/arity_too_few.mw");
+    vec_push(&mut neg_expect, "too few arguments");
+    vec_push(&mut neg_files, "tests/negative/block_comment.mw");
+    vec_push(&mut neg_expect, "Unexpected");
+    vec_push(&mut neg_files, "tests/negative/hex_literal.mw");
+    vec_push(&mut neg_expect, "Expected");
+    vec_push(&mut neg_files, "tests/negative/float_literal.mw");
+    vec_push(&mut neg_expect, "Expected field name");
+    vec_push(&mut neg_files, "tests/negative/if_expression.mw");
+    vec_push(&mut neg_expect, "Expected expression");
+    vec_push(&mut neg_files, "tests/negative/enum_match.mw");
+    vec_push(&mut neg_expect, "Unexpected token");
+    vec_push(&mut neg_files, "tests/negative/shorthand_handler.mw");
+    vec_push(&mut neg_expect, "Expected");
+
+    let mut ni: i64 = 0;
+    while ni < neg_files.len {
+        let npath = vec_get(&neg_files, ni);
+        let expect = vec_get(&neg_expect, ni);
+
+        let mut n_exe_buf = string_buffer_new_in(arena);
+        fmt_append_str(&mut n_exe_buf, ".\\target\\tests\\neg_");
+        fmt_append_i64(&mut n_exe_buf, ni);
+        fmt_append_str(&mut n_exe_buf, ".exe");
+        string_buffer_push_byte(&mut n_exe_buf, 0 as u8);
+        let n_exe = string_as_ptr(&n_exe_buf) as String;
+
+        let mut n_ll_buf = string_buffer_new_in(arena);
+        fmt_append_str(&mut n_ll_buf, n_exe);
+        fmt_append_str(&mut n_ll_buf, ".ll");
+        string_buffer_push_byte(&mut n_ll_buf, 0 as u8);
+        let n_ll = string_as_ptr(&n_ll_buf) as String;
+
+        let n_rc = compile_file(npath, n_ll, n_exe);
+        if n_rc == 0 {
+            forge_print("[FAIL] negative suite compiled but should be rejected: ");
+            forge_print(npath);
+            failed = failed + 1;
+        } else {
+            let n_msg = diag_primary_message();
+            if !forge_contains(n_msg, expect) {
+                forge_print("[FAIL] unexpected diagnostic for: ");
+                forge_print(npath);
+                forge_print("       expected substring: ");
+                forge_print(expect);
+                forge_print("       actual message:     ");
+                forge_print(n_msg);
+                failed = failed + 1;
+            } else {
+                passed = passed + 1;
+            }
+        }
+        ni = ni + 1;
+    }
+
     if failed == 0 {
         forge_print("test result: ok. all test suites passed!");
         return 0;
@@ -1619,7 +1700,7 @@ pub fn forge_main(args: Vec<String>, arena: *mut u8) -> i64 yields [FS, Process,
     }
 
     if unsafe { strcmp(p_cmd, "version" as *const u8) == 0 || strcmp(p_cmd, "--version" as *const u8) == 0 || strcmp(p_cmd, "-V" as *const u8) == 0 } {
-        forge_print("forge 2.0.1 (morrow standalone 2026)");
+        forge_print("forge 2.0.2 (morrow standalone 2026)");
         return 0;
     }
 

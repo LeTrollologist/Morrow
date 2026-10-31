@@ -1,0 +1,9 @@
+// NEGATIVE TEST: a linear resource left unconsumed must be rejected.
+linear struct Handle {
+    fd: i64,
+}
+
+fn main() -> i64 {
+    let h = Handle { fd: 1 };
+    0
+}

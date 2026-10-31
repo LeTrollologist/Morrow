@@ -8,6 +8,15 @@ extern "C" {
     fn morrow_diag_reset(): i64;
     fn morrow_diag_inc_error(): i64;
     fn morrow_diag_get_errors(): i64;
+    fn morrow_diag_last_message(): *const u8;
+}
+
+// Primary (first) diagnostic of the current pass. The runtime reports summary
+// errors last ("Module loading or parsing failed"), so tests assert on the first
+// message to see the specific cause.
+pub fn diag_primary_message() -> String {
+    let p = unsafe { morrow_diag_last_message() };
+    p as String
 }
 
 pub fn diag_reset() {

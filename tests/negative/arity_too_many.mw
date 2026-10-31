@@ -1,0 +1,7 @@
+// NEGATIVE TEST: too many arguments (hashmap_new takes none).
+import std::collections;
+
+fn main() -> i64 {
+    let m = hashmap_new(16);
+    0
+}

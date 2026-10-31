@@ -1,0 +1,16 @@
+// NEGATIVE TEST: a handler that does not implement every effect operation.
+effect Logger {
+    fn log(msg: String) -> i64;
+    fn flush() -> i64;
+}
+
+fn main() -> i64 {
+    let r = handle {
+        1
+    } with Logger {
+        fn log(k, msg: String) {
+            resume(k, 0);
+        }
+    };
+    r
+}

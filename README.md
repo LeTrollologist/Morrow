@@ -11,7 +11,7 @@
 <!-- Tier 1: Project Metadata & Quality Assurance Badges -->
 <p align="center">
   <a href="https://github.com/LeTrollologist/Morrow/releases">
-    <img src="https://img.shields.io/badge/Release-v2.0.1_Standalone-6366F1?style=for-the-badge&logo=github&logoColor=white&labelColor=0f172a" alt="Release" />
+    <img src="https://img.shields.io/badge/Release-v2.0.2_Standalone-6366F1?style=for-the-badge&logo=github&logoColor=white&labelColor=0f172a" alt="Release" />
   </a>
   <a href="compiler/">
     <img src="https://img.shields.io/badge/Compiler-Pure_Morrow-8B5CF6?style=for-the-badge&logo=llvm&logoColor=white&labelColor=0f172a" alt="Compiler" />
@@ -103,7 +103,8 @@ tested breakdown lives in [`docs/SYNTAX.md` §14](docs/SYNTAX.md#14-not-implemen
 | Float / hex / underscore literals, `null`, `/* */` comments | ❌ not implemented |
 | Debug info (PDB), LTO, section GC | ❌ not implemented (stage-0 Rust only) |
 | `println` | one value per call: string literal or integer; **no `{}` interpolation** |
-| Signature checking | ❌ arity/types not validated at call sites; `forge build` is the real check |
+| Call signatures | callee existence + argument **count** enforced (v2.0.2); argument *types* not compared |
+| `std::process` | `process_exec` works; `command_new`/`command_arg` link, `command_status` faults (no default `Process` effect handler) |
 
 Toolchain prerequisite: **`clang` on `PATH`** (the compiler emits LLVM IR and
 shells out to clang to link; Windows linking also uses the MinGW CRT in `lib/crt`).
@@ -253,7 +254,9 @@ Morrow/
 All developer workflows are executed natively through [`bin/forge.exe`](bin/forge.exe) and [`bin/mwc.exe`](bin/mwc.exe) without any Cargo or Rust dependency.
 
 ### 1. Run Native Test Suites (`forge test`)
-Run all 21 pure Morrow test suites compiled and executed on the fly:
+Run all 21 pure Morrow test suites compiled and executed on the fly, followed by
+the compile-fail corpus in `tests/negative/` (15 programs that must be rejected
+with a specific diagnostic):
 ```powershell
 .\bin\forge.exe test
 ```
@@ -280,6 +283,7 @@ running morrow native test suites...
 === Running std::http Test Suite === ... ok
 === Running std::net Test Suite === ... ok
 === Running std::time Test Suite === ... ok
+running morrow negative (compile-fail) suites...
 test result: ok. all test suites passed!
 ```
 

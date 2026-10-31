@@ -1,0 +1,5 @@
+// NEGATIVE TEST: calling a function that does not exist.
+fn main() -> i64 {
+    let x = definitely_not_defined(1);
+    0
+}

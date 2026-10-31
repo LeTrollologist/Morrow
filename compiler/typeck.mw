@@ -12,6 +12,31 @@ extern "C" {
     fn morrow_alloc(size: i64, align: i64) -> *mut u8;
 }
 
+// Builds "<prefix><callee name>" diagnostics so a signature error names the
+// function that caused it (e.g. "Unknown function called: hashmap_new").
+// Allocated on the heap, not in the compile region: the message must outlive the
+// region teardown so tooling (and the compile-fail test harness) can read it.
+fn tc_compose_callee_msg(arena: *mut u8, prefix: String, callee: String) -> String {
+    let p_ptr = prefix as *const u8;
+    let c_ptr = callee as *const u8;
+    let plen = unsafe { strlen(p_ptr) } as i64;
+    let clen = unsafe { strlen(c_ptr) } as i64;
+    let total = plen + clen + 1;
+    let buf = unsafe { morrow_alloc(total, 1) };
+    let mut i: i64 = 0;
+    while i < plen {
+        unsafe { buf[i] = p_ptr[i]; }
+        i = i + 1;
+    }
+    i = 0;
+    while i < clen {
+        unsafe { buf[plen + i] = c_ptr[i]; }
+        i = i + 1;
+    }
+    unsafe { buf[plen + clen] = 0 as u8; }
+    buf as String
+}
+
 // -----------------------------------------------------------------------------
 // Type Representation
 // -----------------------------------------------------------------------------
@@ -409,6 +434,55 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &HashMap, fn_defs: &HashMap, ext_defs
                 }
             }
             return alloc_tc_type(tc.arena, ty_unit(), 0);
+        }
+
+        let mut is_intrinsic = false;
+        unsafe {
+            if strcmp(s as *const u8, "println" as *const u8) == 0 {
+                is_intrinsic = true;
+            }
+        }
+
+        // Variadic C entry points are declared with different fixed parameter
+        // lists across modules, so their arity cannot be compared.
+        let mut is_variadic = false;
+        unsafe {
+            if strcmp(s as *const u8, "printf" as *const u8) == 0 ||
+               strcmp(s as *const u8, "fprintf" as *const u8) == 0 ||
+               strcmp(s as *const u8, "sprintf" as *const u8) == 0 ||
+               strcmp(s as *const u8, "snprintf" as *const u8) == 0 {
+                is_variadic = true;
+            }
+        }
+
+        // Signature checking: the callee must be a known function and the call
+        // must supply exactly the declared number of arguments. This stops
+        // silently-accepted calls (extra argument, missing argument, or a name
+        // that does not exist) from compiling into wrong code.
+        if !is_intrinsic && !is_variadic {
+            let mut callee_arity: i64 = 0 - 1;
+            let fn_sig = hashmap_get(fn_defs, s);
+            let ext_sig = hashmap_get(ext_defs, s);
+            if fn_sig != 0 - 1 {
+                let target_sig = fn_sig as *mut AstFn;
+                callee_arity = target_sig.params.len;
+            } else if ext_sig != 0 - 1 {
+                let target_ext_sig = ext_sig as *mut AstExternFn;
+                callee_arity = target_ext_sig.params.len;
+            }
+            if callee_arity < 0 {
+                let umsg = tc_compose_callee_msg(tc.arena, "Unknown function called: " as String, s);
+                report_err(umsg, 1, 1);
+                tc.pos = tc.pos + 1;
+            } else if expr.args.len > callee_arity {
+                let tmsg = tc_compose_callee_msg(tc.arena, "Call arity mismatch (too many arguments): " as String, s);
+                report_err(tmsg, 1, 1);
+                tc.pos = tc.pos + 1;
+            } else if expr.args.len < callee_arity {
+                let fmsg = tc_compose_callee_msg(tc.arena, "Call arity mismatch (too few arguments): " as String, s);
+                report_err(fmsg, 1, 1);
+                tc.pos = tc.pos + 1;
+            }
         }
 
         let fn_val = hashmap_get(fn_defs, s);

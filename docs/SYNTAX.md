@@ -8,8 +8,8 @@
 >
 > Re-verify any claim with `forge check <file.mw>` for typecheck-only or
 > `forge build <file.mw> -o out.exe` for the full pipeline (Morrow → TIR → LLVM IR →
-> clang). `forge check` does **not** resolve function existence or arity; only a
-> full build (link step) proves a program is complete.
+> clang). Calls are now checked for callee existence and arity (v2.0.2), so a
+> typo or a wrong argument count is a type error rather than a wrong program.
 
 ---
 
@@ -208,12 +208,14 @@ Allocators take the region handle as their first argument:
 region r {
     let mut v = vec_new_in(r);                                   // Vec<T>
     let mut b = string_buffer_new_in(r);                         // StringBuffer
-    let mut m = hashmap_new_in(r);                               // HashMap (no capacity arg)
+    let mut m = hashmap_new_in(r, 256);                          // HashMap (capacity hint)
     let raw = unsafe { morrow_region_alloc(r, 64, 8) };          // raw arena bytes
 }
 ```
 Heap variants exist without the `_in` suffix (`vec_new()`, `string_buffer_new()`,
-`hashmap_new()`), as do raw `morrow_alloc(size, align)` / `free(ptr)`.
+`hashmap_new()`), as do raw `morrow_alloc(size, align)` / `free(ptr)`. Note that
+`hashmap_new()` takes no arguments while `hashmap_new_in(arena, initial_cap)` takes
+two — the compiler now enforces both.
 
 ### Escape analysis is not enforced
 References into a region are **not** currently rejected when they escape:
@@ -512,23 +514,24 @@ fn main() -> i64 {
 - Pointer dereference and indexing must sit inside `unsafe { ... }`.
 - Calling an extern function does **not** require `unsafe` (the stdlib and tests
   call `puts`/`strlen` freely).
-- **Arity and argument types of calls are not validated by the type checker.**
-  `hashmap_new(16)` compiles although `hashmap_new()` takes no arguments; the extra
-  argument is dropped. Do not rely on the compiler to catch signature mistakes.
+- **Arity and argument types**: callee existence and argument **count** are
+  validated (v2.0.2) — `hashmap_new(16)` and `add(1)` are type errors. Argument
+  *types* are still not compared, so passing a `String` where an `i64` is declared
+  is accepted.
 
 
 ---
 
 ## 12. Standard Library Reference (verified signatures)
 
-Names below are the real declarations in `std/*.mw`. Because call arity is not
-checked, wrong-arity calls compile silently — passing an extra argument is a
-no-op, and *omitting* an argument leaves the parameter undefined.
+Names below are the real declarations in `std/*.mw`. Since v2.0.2 the compiler
+checks the callee's existence and the argument count, so these signatures are
+enforced at every call site (argument *types* are still not compared).
 
 ### `std.collections`
 ```morrow
 hashmap_new() -> HashMap                 // no capacity argument
-hashmap_new_in(arena: *mut u8) -> HashMap
+hashmap_new_in(arena: *mut u8, initial_cap: i64) -> HashMap
 hashmap_insert(map: &mut HashMap, key: String, val: i64)
 hashmap_get(map: &HashMap, key: String) -> i64
 hashmap_len(map: &HashMap) -> i64
@@ -539,14 +542,15 @@ vec_get(&Vec<T>, i) -> T     vec_set(&mut Vec<T>, i, value)
 vec_len(&Vec<T>) -> i64      vec_cap(&Vec<T>) -> i64
 
 string_buffer_new() -> StringBuffer      string_buffer_new_in(arena) -> StringBuffer
-string_buffer_push_str(&mut StringBuffer, text: *const u8, text_len: i64)  // 2-arg form works
+string_buffer_push_str(&mut StringBuffer, text: *const u8, text_len: i64)
 string_buffer_as_ptr(&StringBuffer) -> *const u8
 string_as_ptr(&StringBuffer) -> *const u8
 string_len(&StringBuffer) -> i64
 string_validate_utf8(ptr: *const u8, len: i64) -> bool
 ```
-`string_buffer_push_str` falls back to `strlen` when the length argument is
-omitted or non-positive, so the 2-argument form used across the examples works.
+`string_buffer_push_str` takes three arguments. It still falls back to `strlen`
+when the length is non-positive, which keeps binaries built by older compilers
+working, but a 2-argument call is now a compile error.
 
 ### `std.io`
 ```morrow
@@ -736,18 +740,22 @@ Implemented but weaker than older drafts claimed:
 - **Affine resources**: no auto-drop; consumption must happen on every path.
 - **Escape analysis**: not enforced (escaping region references compile).
 - **`println`**: one value per call, no `{}` interpolation.
-- **Call signatures**: arity/argument types are not validated; extra arguments are
-  silently ignored, missing arguments are read as undefined registers.
-- **`forge check`**: typecheck only — it does not verify that called functions
-  exist or that arities match; use `forge build` for a real check.
+- **Call signatures**: callee existence and argument **count** are enforced
+  (v2.0.2); argument *types* are not compared, so a `String` passed where an `i64`
+  is declared still compiles.
+- **`forge check`**: runs the full typechecker (including callee existence/arity)
+  but does not link, so a missing C symbol is only caught by `forge build`.
 - **`forge fmt --check`**: the formatter is idempotent, but the repository's own
   sources are not formatted in its canonical style, so running `--check` over the
   tree reports every file as unformatted. Format before enforcing it in CI.
 - **Debug information / LTO**: no CodeView/PDB emission, no LTO or
   function-section GC (older roadmap entries marked these done — they are not).
-- **`std::process`**: `process_exec` resolves through a runtime thunk; the
-  `command_new` / `command_arg` / `command_status` trio is not emitted and fails at
-  link. (`std::fs` read/write/exists/size/delete are all backed by thunks and work.)
+- **`std::process`**: `process_exec` is lowered to a runtime thunk and works.
+  `command_new` / `command_arg` now link and run (the module loader used to skip
+  `std/process.mw`), but `command_status` crashes at runtime because the `Process`
+  **effect has no working default handler** — `perform Process.spawn(...)` faults.
+  Use `process_exec` until effect handlers for the built-in effects are wired up.
+  (`std::fs` read/write/exists/size/delete are all backed by thunks and work.)
 
 Toolchain requirements:
 
@@ -773,6 +781,7 @@ Every claim above was checked against the released compiler with a probe suite:
 4. **Tooling** — `forge resolve` on a two-level dependency graph (lockfile captured
    verbatim above), `--target` builds checked by magic bytes, and every shipped
    example built with the released binary.
-5. **Release gates** — 21/21 native suites, benchmark suite, and the 3-stage
-   self-hosting fixed point.
+5. **Release gates** — 21/21 native suites, 15 compile-fail suites
+   (`tests/negative/*.mw`, asserted by `forge test`), benchmark suite, and the
+   3-stage self-hosting fixed point.
 

@@ -1,0 +1,5 @@
+// NEGATIVE TEST: floating-point literals are not supported.
+fn main() -> i64 {
+    let x = 3.14;
+    0
+}

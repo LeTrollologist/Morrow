@@ -36,7 +36,7 @@ fn bench_hashmap(iters: i64, emit: bool) -> i64 {
     let mut matched: i64 = 0;
 
     region map_reg {
-        let mut map = hashmap_new_in(map_reg);
+        let mut map = hashmap_new_in(map_reg, 512);
 
         let insert_start = time_now_ms();
         let mut i: i64 = 0;

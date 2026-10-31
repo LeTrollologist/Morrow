@@ -1,0 +1,9 @@
+// NEGATIVE TEST: enums are not implemented.
+enum Color {
+    Red,
+    Green,
+}
+
+fn main() -> i64 {
+    0
+}
