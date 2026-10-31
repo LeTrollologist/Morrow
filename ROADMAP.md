@@ -2,7 +2,7 @@
 
 > **Vision:** A systems-level programming language that provides the fearless concurrency and zero-cost abstractions of Rust, while eliminating explicit lifetime annotations through **Region-Based Memory Management**, eliminating the async/await function coloring divide through **Algebraic Effects**, and eliminating runtime bounds panics through **Refinement Types**.
 
-> **Status note (v2.0.1).** Milestones **v0.1–v0.10** describe the archived
+> **Status note (v2.2.0).** Milestones **v0.1–v0.10** describe the archived
 > **Stage-0 Rust** implementation under `archive/stage0-rust/` (crates
 > `tungsten-*`). The shipping **Pure Morrow** compiler (`compiler/*.mw`, binaries
 > in `bin/`) implements a subset of that surface. Features present in the
@@ -11,6 +11,45 @@
 > function-section GC, and `enum`/`match`. See
 > [`docs/SYNTAX.md` §14](docs/SYNTAX.md#14-not-implemented--known-limitations) for
 > the verified list of what v2.0.1 accepts, rejects, and only partially enforces.
+
+---
+
+## Feature Status Matrix: Stage-0 Rust vs. the Current Self-Hosted Compiler
+
+The milestones in this document are historical: **v0.1–v0.10 describe the archived
+Stage-0 Rust implementation** (`archive/stage0-rust/`, crates `tungsten-*`). The
+shipping compiler is `compiler/*.mw` and is Pure Morrow. They do **not** have the
+same feature set, and the table below is the authoritative comparison. Every
+"current" entry is backed by a test, a compile-fail case, or a documented gap in
+[`docs/SYNTAX.md` §14](docs/SYNTAX.md#14-not-implemented--known-limitations).
+
+| Capability | Stage-0 Rust (archived) | Current Pure Morrow compiler |
+|---|---|---|
+| Compiler implementation | Rust crates (`tungsten-*`) | `compiler/*.mw`, 3-stage fixed point verified in CI |
+| Regions (`region r { … }`) | Region inference in `tungsten-typeck` | Implemented, value-yielding; bulk teardown at scope exit |
+| Region escape analysis | Borrow checker in stage-0 | **Partial**: pointer/ref tagging plus region-allocator (`*_in`) tagging; rejects direct returns and outer-scope assignments. Struct-field stores, region-expression values and indirect flows are **not** detected (§4 of SYNTAX) |
+| Refinement types | Linear + relational refinements, SMT intervals | **Partial**: literal bounds, divisor-span rejection, argument/return refinement checks; no path narrowing and no variable-range proofs |
+| Generics / monomorphization | Hindley-Milner-style unification | Implemented: explicit turbofish, call-site monomorphization (`tests/generics_test.mw`) |
+| Algebraic effects | Effect VM + delimited continuations | Implemented: `effect`, `yields`, `perform`, `handle … with`, `resume`; one arm form (`fn op(k, args)`), all ops required |
+| Linear / affine resources | Linear types in stage-0 typeck | Implemented: `linear struct` + `consume`, branch convergence; `affine struct` parsed but requires all-path consumption (no auto-drop) |
+| M:N fibers, `nursery`, IOCP | **Yes** (`tungsten-fiber`, `c100k_tests`) | **Absent** — `nursery` is a parse error |
+| In-memory JIT | **Yes** (`JitEngine`) | **Absent** |
+| CodeView/PDB debug info, LTO, section GC | **Yes** (stage-0 codegen) | **Absent** — no debug metadata or LTO flags are emitted |
+| Package manager (`Forge.toml`, `Forge.lock`) | Rust `forge` crate | Implemented in Morrow: SemVer subset, deterministic lockfile, `forge add/resolve/lock` |
+| Language server | `tungsten-lsp` (stage-0) | Implemented: `morrow-lsp 0.3.0` over stdio JSON-RPC (`tests/lsp_test.mw`) |
+| Formatter | `forge fmt` (stage-0) | Implemented, idempotent (`tests/formatter_tests.mw`); repo sources are not yet canonical |
+| Cross-compilation | Windows + Linux | Implemented: `x86_64-pc-windows-gnu`, `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `wasm32-unknown-unknown` (artifact magic verified) |
+| `enum` / `match`, floats, closures, `if`-expressions | Absent | **Absent** |
+| Built-in effect handlers (`Process`/`FS`/`IO`) | Native in stage-0 runtime | **Partial**: `process_exec`/`fs_*` work via codegen thunks; `perform Process.spawn(...)` faults and `command_status` is unusable |
+
+### How "current" status is verified
+
+- 22 native suites (`forge test`), including region, refinement, generics, effects,
+  linear resources, LSP, HTTP, net and syntax-feature coverage.
+- 15 compile-fail suites (`tests/negative/`), which assert that documented
+  limitations are still rejected with the documented diagnostic.
+- 22/22 examples built by CI; benchmarks run on every push.
+- 3-stage bootstrap fixed point (identical LLVM IR across rebuilds).
 
 ---
 
@@ -474,8 +513,21 @@
 - Reverted. This needs real inference/unification first; arity and callee existence remain enforced (Phase 13.6).
 
 ### Phase 14.2: CI Wiring ✅
-- `.github/workflows/ci.yml` (windows-latest): `forge version`, `forge test` (22 positive + 13 compile-fail), build every example, run `forge bench`, and verify the 3-stage bootstrap fixed point.
+- `.github/workflows/ci.yml` (windows-latest): `forge version`, `forge test` (22 positive + 15 compile-fail), build every example, run `forge bench`, and verify the 3-stage bootstrap fixed point.
 
-### Phase 14.3: Open items
+### Phase 14.3: Region escape analysis — partial ✅ (v2.2.0)
+- Region-scoped values are now tagged from **allocation**, not from type kind: a value is tagged inside a `region` block when it is a pointer/reference **or** the result of an allocator whose callee name ends in `_in` / `morrow_region_alloc`. Previously `let v = vec_new_in(r); return v;` was invisible to the checker because `Vec` is not a pointer kind.
+- Enforced boundaries: `return` of a region-scoped value and assignment of one to an outer-scope variable (`Region Escape Violation`, both pinned in `tests/negative/`).
+- Deliberately **not** enforced (documented in SYNTAX §4 with the matrix): struct-field stores, region-expression values (region expressions are not typed by `tc_expr`, which takes `&HashMap` for `vars` and therefore cannot recurse into `tc_stmt`), and indirect escapes through calls.
+- Tagging is gated on `region_depth > 0`, so arena handles passed as parameters (`fn f(arena: *mut u8) -> Vec<i64>`) — the idiom the compiler itself uses everywhere — remain legal and no false positives appeared in the self-hosted build.
+
+### Phase 14.4: Open items
 - **Built-in effect handlers** for `Process`/`FS`/`IO`: `perform Process.spawn(...)` still faults (only the codegen-thunked `process_exec`/`fs_*` wrappers work), so `command_status` is unusable.
-- **Region escape analysis**: still unenforced; escaping region references compile and fail later.
+- **Struct-field and indirect region escapes**: see Phase 14.3; needs escape flags on `TcType` that propagate through field stores, or a TIR dataflow pass.
+- **Region-expression typing**: `tc_expr` needs mutable `vars` (or a type-environment handle) before region expressions can be typed and checked.
+
+### Phase 14.5: Phase 14.1 blocked item — what real inference would take
+Recorded so the next attempt starts from evidence instead of a reverted patch:
+1. `TcType` needs a `fresh` flag / unification variables; `tc_expr` must stop returning a shared `i64` type for unresolved expressions (it currently allocates `ty_int()` at ~40 sites).
+2. Parameters must be substituted before call checking: generic `T` parameters currently verify as `int`, so any kind comparison must run **after** monomorphization, not in `tc_expr`.
+3. Landing order: (a) string/bool literal kinds preserved through `expr_var` lookups, (b) parameter-kind check behind a flag, (c) enable by default once `forge check` over `compiler/*.mw` and `std/*.mw` reports zero findings. The 152-false-positive result came from step (c) being attempted before (a)/(b).

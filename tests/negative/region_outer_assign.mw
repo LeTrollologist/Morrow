@@ -1,0 +1,15 @@
+// NEGATIVE TEST: a region-allocated value must not be stored in an outer variable.
+import std::collections;
+
+fn leak() -> i64 {
+    let mut leaked: i64 = 0;
+    region r {
+        let v = vec_new_in(r);
+        leaked = v;
+    }
+    leaked
+}
+
+fn main() -> i64 {
+    0
+}

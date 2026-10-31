@@ -1,8 +1,8 @@
-# Morrow Language & Syntax Reference (v2.0.1)
+# Morrow Language & Syntax Reference (v2.2.0)
 
 > This document describes **what the compiler actually accepts and generates**, not
 > an aspirational design. Every construct below was compiled (and where relevant
-> executed) against `forge 2.0.1 (morrow standalone 2026)`; constructs that are
+> executed) against `forge 2.2.0 (morrow standalone 2026)`; constructs that are
 > specified elsewhere but *not* implemented are collected in
 > [§14 Not Implemented / Known Limitations](#14-not-implemented--known-limitations).
 >
@@ -220,20 +220,44 @@ Heap variants exist without the `_in` suffix (`vec_new()`, `string_buffer_new()`
 `hashmap_new()` takes no arguments while `hashmap_new_in(arena, initial_cap)` takes
 two — the compiler now enforces both.
 
-### Escape analysis is not enforced
-References into a region are **not** currently rejected when they escape:
-```morrow
-fn illegal_escape() -> &String {
-    region r {
-        let mut s = string_buffer_new_in(r);
-        string_buffer_push_str(&mut s, "hello");
-        &s
-    }
-}
-```
-This compiles; the failure surfaces later (undefined symbol at link, or
-use-after-free at runtime). Treat the "linear escape analysis" claim as roadmap,
-not behaviour, in v2.0.1.
+### Escape analysis: what is and is not rejected
+
+The typechecker tags **region-scoped values** and rejects escapes on two boundaries.
+A value is region-scoped when, *inside* a `region` block, it is
+
+1. a pointer or reference type (`*T`, `*mut T`, `&T`, `&mut T`), or
+2. the result of a region allocator call — a callee whose name ends in `_in`
+   (`vec_new_in`, `string_buffer_new_in`, `hashmap_new_in`, …) or
+   `morrow_region_alloc(...)`.
+
+| Pattern | Status |
+|---|---|
+| `region r { let p = morrow_region_alloc(r, …); return p; }` | **Rejected** — `Region Escape Violation: region-scoped value returned from function` |
+| `region r { let v = vec_new_in(r); return v; }` | **Rejected** — same diagnostic (allocator-result tagging) |
+| `let mut out: i64 = 0; region r { let v = vec_new_in(r); out = v; }` | **Rejected** — `Region Escape Violation: region-scoped value assigned to outer-scope variable` |
+| `region r { let p = morrow_region_alloc(r, 8, 8) as *mut i64; *p = 1; }` (used, not returned) | Accepted |
+| `region r { let inner: i64 = 99; val = inner; }` (scalar out of the region) | Accepted — scalars carry no tag |
+| Struct-field store: `region r { let p = morrow_region_alloc(r, 8, 8); outer.field = p; }` | **Not detected** (gap R4) |
+| Region-expression value: `let v = region r { vec_new_in(r) };` | **Not detected** (gap R5) — region expressions are not typed by `tc_expr` |
+| Indirect escape: `region r { let v = vec_new_in(r); take(&v); }` where `take` stores/returns it | **Not detected** — no interprocedural analysis |
+
+Two consequences worth stating plainly:
+
+- The rule is **conservative on allocation, not on flow**: a region-allocated value
+  stored in an untagged local inside the region is not tracked any further.
+- Because the check is limited to `return` and direct assignment, a program that
+  passes the checker can still dangle. Escape analysis is enforced for the two
+  common paths and documented as partial everywhere else (see §14 and
+  `ROADMAP.md`), rather than being advertised as complete.
+
+These four detected/rejected patterns are pinned by
+`tests/negative/region_return.mw`, `tests/negative/region_outer_assign.mw`, and the
+accepting cases in `tests/region_escape_test.mw`; the compile-fail harness asserts
+the diagnostic text, so a regression fails CI.
+
+Note that the tagging is gated on being inside a `region` block, so arena handles
+passed **as parameters** (`fn f(arena: *mut u8) -> Vec<i64> { vec_new_in(arena) }`)
+are unaffected — that idiom stays legal, as the compiler itself relies on it.
 
 ---
 
@@ -739,7 +763,11 @@ Implemented but weaker than older drafts claimed:
 - **Refinements**: literal casts and divisor-span checks only; no narrowing, no
   variable-range proofs.
 - **Affine resources**: no auto-drop; consumption must happen on every path.
-- **Escape analysis**: not enforced (escaping region references compile).
+- **Escape analysis**: **partial** (v2.2.0). Region-allocated values (pointers,
+  references and `*_in` allocator results) are rejected on `return` and on
+  assignment to an outer-scope variable; struct-field stores, region-expression
+  values and indirect escapes are still not detected. The full detection matrix is
+  in [§4](#escape-analysis-what-is-and-is-not-rejected).
 - **`println`**: one value per call, no `{}` interpolation.
 - **Call signatures**: callee existence and argument **count** are enforced
   (v2.0.2); argument *types* are not compared, because `tc_expr` currently infers

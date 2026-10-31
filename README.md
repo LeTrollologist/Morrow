@@ -11,7 +11,7 @@
 <!-- Tier 1: Project Metadata & Quality Assurance Badges -->
 <p align="center">
   <a href="https://github.com/LeTrollologist/Morrow/releases">
-    <img src="https://img.shields.io/badge/Release-v2.1.0_Standalone-6366F1?style=for-the-badge&logo=github&logoColor=white&labelColor=0f172a" alt="Release" />
+    <img src="https://img.shields.io/badge/Release-v2.2.0_Standalone-6366F1?style=for-the-badge&logo=github&logoColor=white&labelColor=0f172a" alt="Release" />
   </a>
   <a href="compiler/">
     <img src="https://img.shields.io/badge/Compiler-Pure_Morrow-8B5CF6?style=for-the-badge&logo=llvm&logoColor=white&labelColor=0f172a" alt="Compiler" />
@@ -85,7 +85,7 @@
 
 ---
 
-## Verified Reality (v2.0.1)
+## Verified Reality (v2.2.0)
 
 This README describes what the released compiler **actually does**. The full,
 tested breakdown lives in [`docs/SYNTAX.md` §14](docs/SYNTAX.md#14-not-implemented--known-limitations); the short version:
@@ -98,7 +98,7 @@ tested breakdown lives in [`docs/SYNTAX.md` §14](docs/SYNTAX.md#14-not-implemen
 | Affine resources (`affine struct`) | ⚠️ parsed; all-paths consumption required (no auto-drop on early `return`) |
 | Refinements | ⚠️ literal casts + divisor-span checks only (no variable proofs, no narrowing) |
 | Generics + turbofish (`identity::<i64>(42)`, `Pair::<i64> { … }`) | ✅ implemented |
-| Region escape analysis | ❌ not enforced |
+| Region escape analysis | ⚠️ partial: region-allocated values (pointers, references, `*_in` results) are rejected on `return` and on outer-scope assignment; struct-field stores, region-expression values and indirect escapes are not detected |
 | `enum` / `match`, `for`, `nursery`/fibers, closures, `if`-expressions | ❌ not implemented (parse errors) |
 | Float literals | ❌ not implemented |
 | Debug info (PDB), LTO, section GC | ❌ not implemented (stage-0 Rust only) |

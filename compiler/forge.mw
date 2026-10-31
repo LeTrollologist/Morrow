@@ -1175,6 +1175,10 @@ pub fn forge_run_test(arena: *mut u8) -> i64 yields [FS, Process, Diagnostics, I
     vec_push(&mut neg_expect, "too many arguments");
     vec_push(&mut neg_files, "tests/negative/arity_too_few.mw");
     vec_push(&mut neg_expect, "too few arguments");
+    vec_push(&mut neg_files, "tests/negative/region_return.mw");
+    vec_push(&mut neg_expect, "Region Escape Violation");
+    vec_push(&mut neg_files, "tests/negative/region_outer_assign.mw");
+    vec_push(&mut neg_expect, "Region Escape Violation");
     vec_push(&mut neg_files, "tests/negative/float_literal.mw");
     vec_push(&mut neg_expect, "Expected field name");
     vec_push(&mut neg_files, "tests/negative/if_expression.mw");
@@ -1697,7 +1701,7 @@ pub fn forge_main(args: Vec<String>, arena: *mut u8) -> i64 yields [FS, Process,
     }
 
     if unsafe { strcmp(p_cmd, "version" as *const u8) == 0 || strcmp(p_cmd, "--version" as *const u8) == 0 || strcmp(p_cmd, "-V" as *const u8) == 0 } {
-        forge_print("forge 2.1.0 (morrow standalone 2026)");
+        forge_print("forge 2.2.0 (morrow standalone 2026)");
         return 0;
     }
 

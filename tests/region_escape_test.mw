@@ -37,6 +37,23 @@ fn test_scalar_escape_allowed(): i64 {
 }
 
 // -----------------------------------------------------------------------
+// Test 3: A region-allocated Vec that never leaves the region is accepted.
+// vec_new_in results are tagged as region-scoped (v2.2.0); this pins that the
+// tag alone does not reject region-confined use.
+// -----------------------------------------------------------------------
+fn test_region_vec_confined(): i64 {
+    let total: i64 = 0;
+    region r {
+        let mut v = vec_new_in(r);
+        vec_push(&mut v, 5);
+        vec_push(&mut v, 7);
+        total = vec_len(&v);
+    }
+    total
+}
+
+
+// -----------------------------------------------------------------------
 // Main test runner ? returns 0 on full pass (exit code convention)
 // -----------------------------------------------------------------------
 pub fn main(): i64 {
@@ -60,6 +77,16 @@ pub fn main(): i64 {
         failed = failed + 1;
         puts("  test scalar escape allowed ... FAIL");
     }
+
+    let r3 = test_region_vec_confined();
+    if r3 == 2 {
+        passed = passed + 1;
+        puts("  test region vec confined ... ok");
+    } else {
+        failed = failed + 1;
+        puts("  test region vec confined ... FAIL");
+    }
+
 
     if failed == 0 {
         puts("All Region Escape Tests Passed (100% OK)");

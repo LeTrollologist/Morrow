@@ -18,7 +18,7 @@ jobs:
           clang --version
           .\bin\forge.exe version
 
-      - name: Native suites (21 positive + 13 compile-fail)
+      - name: Native suites (22 positive + 15 compile-fail)
         shell: pwsh
         run: .\bin\forge.exe test
 
@@ -40,6 +40,19 @@ jobs:
       - name: Runtime benchmarks (Morrow + C baselines)
         shell: pwsh
         run: .\bin\forge.exe bench
+
+      - name: Docs declare the current toolchain version
+        shell: pwsh
+        run: |
+          $out = .\bin\forge.exe version
+          if ($out -notmatch 'forge (\d+\.\d+\.\d+)') { Write-Error "unreadable version: $out"; exit 1 }
+          $v = $Matches[1]
+          $head = (Get-Content docs\SYNTAX.md -TotalCount 1)
+          if ($head -notlike "*v$v*") {
+            Write-Error "docs/SYNTAX.md header does not declare v$v (got: $head)"
+            exit 1
+          }
+          Write-Host "docs/SYNTAX.md declares v$v"
 
       - name: Self-hosting fixed point
         shell: pwsh

@@ -83,6 +83,35 @@ pub fn alloc_tc_refined(arena: *mut u8, kind: i64, min_val: i64, max_val: i64) -
     t
 }
 
+// True when the name ends with "_in", i.e. a region-allocator entry point such as
+// vec_new_in / string_buffer_new_in / hashmap_new_in / i64_to_string_in.
+fn tc_name_ends_with_in(s: String) -> bool {
+    let p = s as *const u8;
+    let n = unsafe { strlen(p) } as i64;
+    if n < 3 {
+        return false;
+    }
+    let c0 = unsafe { p[n - 3] } as i64;
+    let c1 = unsafe { p[n - 2] } as i64;
+    let c2 = unsafe { p[n - 1] } as i64;
+    c0 == 95 && c1 == 105 && c2 == 110   // '_' 'i' 'n'
+}
+
+fn tc_is_region_alloc_call(tc: &mut TypeChecker, e: *mut AstExpr) -> bool {
+    if e == (0 as *mut AstExpr) {
+        return false;
+    }
+    if e.kind != expr_call() {
+        return false;
+    }
+    let interner_ref = tc.interner as &Interner;
+    let callee = interner_lookup(interner_ref, e.sym);
+    if unsafe { strcmp(callee as *const u8, "morrow_region_alloc" as *const u8) } == 0 {
+        return true;
+    }
+    tc_name_ends_with_in(callee)
+}
+
 pub fn tc_is_refined(t: *mut TcType) -> bool {
     if t == (0 as *mut TcType) {
         return false;
@@ -963,6 +992,13 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
             if var_ty.kind == ty_ptr() || var_ty.kind == ty_ref() {
                 var_ty.right = cur_region_sym as *mut TcType;
             }
+            // Region-allocator results (vec_new_in, string_buffer_new_in,
+            // hashmap_new_in, …) are region-scoped regardless of their kind, so a
+            // Vec/StringBuffer allocated in a region cannot be returned or stored
+            // in an outer variable.
+            if tc_is_region_alloc_call(tc, stmt.expr) {
+                var_ty.right = cur_region_sym as *mut TcType;
+            }
         }
         hashmap_insert(vars, s, var_ty as i64);
         return true;
@@ -1007,7 +1043,7 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
                 if expr_ty.right != (0 as *mut TcType) {
                     if var_ty != (0 as *mut TcType) {
                         if var_ty.right == (0 as *mut TcType) {
-                            report_err("Region Escape Violation: region-scoped pointer assigned to outer-scope variable", 1, 1);
+                            report_err("Region Escape Violation: region-scoped value assigned to outer-scope variable", 1, 1);
                             tc.pos = tc.pos + 1;
                             return false;
                         }
@@ -1122,7 +1158,7 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
             if region_depth > 0 {
                 if actual_ty != (0 as *mut TcType) {
                     if actual_ty.right != (0 as *mut TcType) {
-                        report_err("Region Escape Violation: region-scoped pointer returned from function", 1, 1);
+                        report_err("Region Escape Violation: region-scoped value returned from function", 1, 1);
                         tc.pos = tc.pos + 1;
                         return false;
                     }
