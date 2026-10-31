@@ -4,45 +4,48 @@
 // 2. Process orchestration via std::process (clang/compiler invocation)
 // 3. Region-allocated Robin Hood HashMap for symbol/token counting
 
+import std::fs;
+import std::process;
+import std::io;
+import std::collections;
+
 fn main() -> i64 yields [FS, Process, IO] {
     // 1. Process Execution: verify compiler toolchain availability
-    println!("--- 1. Testing std::process Execution ---");
-    let mut cmd = command_new("cmd.exe");
-    command_arg(&mut cmd, "/c echo Tungsten Self-Hosting Toolchain Ready");
-    let status = command_status(&cmd);
+    println("--- 1. Testing std::process Execution ---");
+    let status = process_exec("cmd.exe", "/c echo Tungsten Self-Hosting Toolchain Ready");
     if status != 0 {
-        println!("Toolchain command failed!");
+        println("Toolchain command failed!");
         return 1;
     }
-    println!("Toolchain command succeeded with code 0.");
+    println("Toolchain command succeeded with code 0.");
 
     // 2. Filesystem Operations: read and inspect file metadata
-    println!("--- 2. Testing std::fs Operations ---");
+    println("--- 2. Testing std::fs Operations ---");
     let test_file = "bridge_test.tmp";
     let test_content = "fn main() { return 42; }";
     let wrote = fs_write_string(test_file, test_content);
     if !wrote {
-        println!("Failed to write test file");
+        println("Failed to write test file");
         return 2;
     }
 
     let exists = fs_exists(test_file);
     if !exists {
-        println!("File existence check failed");
+        println("File existence check failed");
         return 3;
     }
 
     let sz = fs_size(test_file);
     if sz <= 0 {
-        println!("File size check failed");
+        println("File size check failed");
         return 4;
     }
 
     // 3. Region-Allocated Robin Hood HashMap & File Ingestion
-    println!("--- 3. Testing Region Robin Hood HashMap ---");
+    println("--- 3. Testing Region Robin Hood HashMap ---");
     region r {
         let read_back = fs_read_to_string_in(test_file, r);
-        println!("Read back contents successfully from region.");
+        println("Read back contents successfully from region.");
 
         let mut symbols = hashmap_new_in(r);
         hashmap_insert(&mut symbols, "fn", 1);
@@ -51,7 +54,7 @@ fn main() -> i64 yields [FS, Process, IO] {
         hashmap_insert(&mut symbols, "42", 4);
 
         if hashmap_len(&symbols) != 4 {
-            println!("HashMap length mismatch!");
+            println("HashMap length mismatch!");
             return 5;
         }
 
@@ -61,26 +64,31 @@ fn main() -> i64 yields [FS, Process, IO] {
         let const_id = hashmap_get(&symbols, "42");
 
         if fn_id != 1 || main_id != 2 || ret_id != 3 || const_id != 4 {
-            println!("HashMap lookup mismatch!");
+            println("HashMap lookup mismatch!");
             return 6;
         }
 
         // Test Robin Hood backward-shift removal
         let removed = hashmap_remove(&mut symbols, "main");
         if !removed || hashmap_len(&symbols) != 3 {
-            println!("HashMap removal failed!");
+            println("HashMap removal failed!");
             return 7;
         }
 
         if hashmap_contains(&symbols, "main") {
-            println!("HashMap still contains removed key!");
+            println("HashMap still contains removed key!");
             return 8;
         }
     }
 
-    // Clean up temporary file
-    fs_delete(test_file);
+    // Clean up temporary file (std::fs only exposes read/write/exists/size to
+    // codegen today, so removal goes through the process thunk).
+    let cleanup = process_exec("cmd.exe", "/c del /q bridge_test.tmp");
+    if cleanup != 0 {
+        println("Cleanup command failed!");
+        return 9;
+    }
 
-    println!("Self-Hosting Bridge Validation Complete: 100% SUCCESS");
+    println("Self-Hosting Bridge Validation Complete: 100% SUCCESS");
     0
 }

@@ -108,20 +108,20 @@ fn handle_connection(stream: &TcpStream, db: &mut SqliteDb) -> bool yields [Net]
 }
 
 fn main() yields [Net, IO] {
-    println!("=== Tungsten Fortress Web Server Starting ===");
+    println("=== Tungsten Fortress Web Server Starting ===");
 
     // 1. Initialize in-memory SQLite database
     let mut db = sqlite_open(":memory:");
     sqlite_execute(&mut db, "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT)");
     sqlite_execute_prepared(&mut db, "INSERT INTO users (name, email) VALUES (?, ?)", "Alice", "alice@tungsten.lang");
     sqlite_execute_prepared(&mut db, "INSERT INTO users (name, email) VALUES (?, ?)", "Bob", "bob@tungsten.lang");
-    println!("  [Init] SQLite in-memory database initialized with seeded users");
+    println("  [Init] SQLite in-memory database initialized with seeded users");
 
     // 2. Start TCP Listener on port 8088
     let port: Port = 8088 as Port;
     let listener = tcp_listen(port);
-    println!("  [Listen] Fortress HTTP server listening on http://127.0.0.1:8088");
-    println!("  [Ready] Ready to handle requests with region-per-request isolation...");
+    println("  [Listen] Fortress HTTP server listening on http://127.0.0.1:8088");
+    println("  [Ready] Ready to handle requests with region-per-request isolation...");
 
     // 3. Request loop
     let mut keep_running = true;
@@ -130,7 +130,7 @@ fn main() yields [Net, IO] {
         keep_running = handle_connection(&stream, &mut db);
     }
 
-    println!("  [Shutdown] Closing database and listener cleanly");
+    println("  [Shutdown] Closing database and listener cleanly");
     sqlite_close(&mut db);
-    println!("=== Tungsten Fortress Web Server Terminated Gracefully ===");
+    println("=== Tungsten Fortress Web Server Terminated Gracefully ===");
 }

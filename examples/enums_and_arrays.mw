@@ -34,6 +34,7 @@ fn compute_area(s: Shape) -> i64 {
 
 extern "C" {
     fn puts(s: *const u8) -> i32;
+    fn morrow_region_alloc(arena: *mut u8, size: usize, align: usize) -> *mut u8;
 }
 
 fn main() {
@@ -51,12 +52,14 @@ fn main() {
     println(a3);
     println(total_area);
 
-    // Stride-aware byte array: use unsafe alloc + manual element writes
-    var bytes = unsafe { morrow_region_alloc(morrow_global_arena(), 4, 1) as *mut u8 };
-    unsafe { bytes[0] = 72 as u8; }   // 'H'
-    unsafe { bytes[1] = 101 as u8; }  // 'e'
-    unsafe { bytes[2] = 121 as u8; }  // 'y'
-    unsafe { bytes[3] = 33 as u8; }   // '!'
-    println(unsafe { bytes[0] } as i64);
-    println(unsafe { bytes[1] } as i64);
+    // Stride-aware byte array: allocate inside a scoped region
+    region byte_reg {
+        let bytes = unsafe { morrow_region_alloc(byte_reg, 4, 1) as *mut u8 };
+        unsafe { bytes[0] = 72 as u8; }   // 'H'
+        unsafe { bytes[1] = 101 as u8; }  // 'e'
+        unsafe { bytes[2] = 121 as u8; }  // 'y'
+        unsafe { bytes[3] = 33 as u8; }   // '!'
+        println(unsafe { bytes[0] } as i64);
+        println(unsafe { bytes[1] } as i64);
+    }
 }

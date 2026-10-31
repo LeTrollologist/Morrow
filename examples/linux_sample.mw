@@ -22,15 +22,15 @@ fn main() -> i64 yields [IO] {
     }
 
     // Prints sum of 1..10 = 55
-    println!("{}", sum);
+    println("{}", sum);
 
     // Prints 5! = 120
     let f: i64 = factorial(5);
-    println!("{}", f);
+    println("{}", f);
 
     // Prints 40 + 2 = 42
     let res: i64 = add(40, 2);
-    println!("{}", res);
+    println("{}", res);
 
     return 0;
 }

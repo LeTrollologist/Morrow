@@ -217,8 +217,15 @@ fn string_buffer_push_byte(s: &mut StringBuffer, byte: u8) {
 }
 
 fn string_buffer_push_str(s: &mut StringBuffer, text: *const u8, text_len: i64) {
+    // Older call sites (and the examples) pass only (buffer, text) because call
+    // arity is not validated; in that case text_len arrives as 0/garbage, so fall
+    // back to strlen to keep the 2-argument form working.
+    let mut len = text_len;
+    if len <= 0 {
+        len = unsafe { strlen(text) } as i64;
+    }
     let mut i: i64 = 0;
-    while i < text_len {
+    while i < len {
         let b = unsafe { text[i] };
         string_buffer_push_byte(s, b);
         i = i + 1;

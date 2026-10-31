@@ -310,13 +310,24 @@ fn is_byte_indexing(cg: &mut Codegen, left: *mut AstExpr) -> bool {
 
 fn collect_strings_expr(cg: &mut Codegen, e: *mut AstExpr) {
     if e == 0 as *mut AstExpr { return; }
+    // `handle` keeps its handler in e.left (not an AstExpr), so walk its body and
+    // stop there. `region` expressions additionally carry a statement body whose
+    // literals must be registered before the constant table is emitted, otherwise
+    // the IR references @str_N constants that do not exist.
     if e.kind == expr_handle() {
-        let mut bi: i64 = 0;
-        while bi < e.stmts.len {
-            collect_strings_stmt(cg, vec_get(&e.stmts, bi));
-            bi = bi + 1;
+        let mut hi: i64 = 0;
+        while hi < e.stmts.len {
+            collect_strings_stmt(cg, vec_get(&e.stmts, hi));
+            hi = hi + 1;
         }
         return;
+    }
+    if e.kind == expr_region() {
+        let mut ri: i64 = 0;
+        while ri < e.stmts.len {
+            collect_strings_stmt(cg, vec_get(&e.stmts, ri));
+            ri = ri + 1;
+        }
     }
     if e.kind == expr_str() {
         let sid = cg.strings.len;
@@ -458,11 +469,12 @@ pub fn emit_expr(cg: &mut Codegen, expr_ptr: *mut AstExpr) -> i64 {
     }
 
     if expr_ptr.kind == expr_str() {
+        let sid = get_str_id(cg, expr_ptr.str_val);
         let r = alloc_reg(cg);
         emit_str(cg, "    %t");
         emit_i64(cg, r);
         emit_str(cg, " = ptrtoint ptr @str_");
-        emit_i64(cg, expr_ptr.int_val);
+        emit_i64(cg, sid);
         emit_str(cg, " to i64\n");
         return r;
     }
@@ -831,16 +843,34 @@ pub fn emit_expr(cg: &mut Codegen, expr_ptr: *mut AstExpr) -> i64 {
         let interner_ref = cg.cg_interner as &Interner;
         let fn_name = interner_lookup(interner_ref, expr_ptr.sym);
 
-        // Special runtime call: println
+        // Special runtime call: println (string literal -> puts, otherwise integer)
         if unsafe { strcmp(fn_name as *const u8, "println" as *const u8) == 0 } {
-            let mut arg_reg: i64 = 0;
             if expr_ptr.args.len > 0 {
                 let first_arg = vec_get(&expr_ptr.args, 0);
-                arg_reg = emit_expr(cg, first_arg);
+                if first_arg.kind == expr_str() {
+                    let sid = get_str_id(cg, first_arg.str_val);
+                    let pr = alloc_reg(cg);
+                    emit_str(cg, "    %t");
+                    emit_i64(cg, pr);
+                    emit_str(cg, " = call i32 @puts(ptr @str_");
+                    emit_i64(cg, sid);
+                    emit_str(cg, ")\n");
+                    let fr = alloc_reg(cg);
+                    emit_str(cg, "    %t");
+                    emit_i64(cg, fr);
+                    emit_str(cg, " = call i32 @fflush(ptr null)\n");
+                } else {
+                    let arg_reg = emit_expr(cg, first_arg);
+                    emit_str(cg, "    call void @morrow_println_i64(i64 %t");
+                    emit_i64(cg, arg_reg);
+                    emit_str(cg, ")\n");
+                }
+            } else {
+                let er = alloc_reg(cg);
+                emit_str(cg, "    %t");
+                emit_i64(cg, er);
+                emit_str(cg, " = call i32 @puts(ptr @str_empty)\n");
             }
-            emit_str(cg, "    call void @morrow_println_i64(i64 %t");
-            emit_i64(cg, arg_reg);
-            emit_str(cg, ")\n");
             return 0;
         }
 
@@ -1197,6 +1227,47 @@ pub fn emit_expr(cg: &mut Codegen, expr_ptr: *mut AstExpr) -> i64 {
             emit_str(cg, "    %t");
             emit_i64(cg, b_reg);
             emit_str(cg, " = call i1 @morrow_fs_file_exists(ptr %t");
+            emit_i64(cg, p_reg);
+            emit_str(cg, ")\n");
+
+            let r = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, r);
+            emit_str(cg, " = zext i1 %t");
+            emit_i64(cg, b_reg);
+            emit_str(cg, " to i64\n");
+            return r;
+        }
+
+        if unsafe { strcmp(fn_name as *const u8, "fs_size" as *const u8) == 0 } {
+            let p_reg = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, p_reg);
+            emit_str(cg, " = inttoptr i64 %t");
+            emit_i64(cg, vec_get(&arg_regs, 0));
+            emit_str(cg, " to ptr\n");
+
+            let r = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, r);
+            emit_str(cg, " = call i64 @morrow_fs_file_size(ptr %t");
+            emit_i64(cg, p_reg);
+            emit_str(cg, ")\n");
+            return r;
+        }
+
+        if unsafe { strcmp(fn_name as *const u8, "fs_delete" as *const u8) == 0 } {
+            let p_reg = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, p_reg);
+            emit_str(cg, " = inttoptr i64 %t");
+            emit_i64(cg, vec_get(&arg_regs, 0));
+            emit_str(cg, " to ptr\n");
+
+            let b_reg = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, b_reg);
+            emit_str(cg, " = call i1 @morrow_fs_delete_file(ptr %t");
             emit_i64(cg, p_reg);
             emit_str(cg, ")\n");
 
@@ -2373,15 +2444,37 @@ fn emit_tir_inst(cg: &mut Codegen, inst: *mut TirInst) {
         let interner_ref = cg.cg_interner as &Interner;
         let fn_name = interner_lookup(interner_ref, inst.int_val);
 
+        // Special runtime call: println
+        // Two supported shapes (no formatting, no interpolation):
+        //   println("text")   -> puts(@str_N)  (string literal operand)
+        //   println(value)    -> printf("%lld\n", value)
         if unsafe { strcmp(fn_name as *const u8, "println" as *const u8) == 0 } {
-            let mut arg_reg: i64 = 0;
             if inst.args.len > 0 {
                 let first_arg = vec_get(&inst.args, 0);
-                arg_reg = emit_tir_op(cg, first_arg);
+                if first_arg.kind == tir_op_str() {
+                    let sid = get_str_id(cg, first_arg.str_val);
+                    let pr = alloc_reg(cg);
+                    emit_str(cg, "    %t");
+                    emit_i64(cg, pr);
+                    emit_str(cg, " = call i32 @puts(ptr @str_");
+                    emit_i64(cg, sid);
+                    emit_str(cg, ")\n");
+                    let fr = alloc_reg(cg);
+                    emit_str(cg, "    %t");
+                    emit_i64(cg, fr);
+                    emit_str(cg, " = call i32 @fflush(ptr null)\n");
+                } else {
+                    let arg_reg = emit_tir_op(cg, first_arg);
+                    emit_str(cg, "    call void @morrow_println_i64(i64 %t");
+                    emit_i64(cg, arg_reg);
+                    emit_str(cg, ")\n");
+                }
+            } else {
+                let er = alloc_reg(cg);
+                emit_str(cg, "    %t");
+                emit_i64(cg, er);
+                emit_str(cg, " = call i32 @puts(ptr @str_empty)\n");
             }
-            emit_str(cg, "    call void @morrow_println_i64(i64 %t");
-            emit_i64(cg, arg_reg);
-            emit_str(cg, ")\n");
             if inst.sym != 0 {
                 emit_str(cg, "    %t");
                 emit_i64(cg, inst.sym);
@@ -2755,6 +2848,45 @@ fn emit_tir_inst(cg: &mut Codegen, inst: *mut TirInst) {
             emit_str(cg, "    %t");
             emit_i64(cg, b_reg);
             emit_str(cg, " = call i1 @morrow_fs_file_exists(ptr %t");
+            emit_i64(cg, p_reg);
+            emit_str(cg, ")\n");
+
+            emit_str(cg, "    %t");
+            emit_i64(cg, dest_reg);
+            emit_str(cg, " = zext i1 %t");
+            emit_i64(cg, b_reg);
+            emit_str(cg, " to i64\n");
+            return;
+        }
+
+        if unsafe { strcmp(fn_name as *const u8, "fs_size" as *const u8) == 0 } {
+            let p_reg = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, p_reg);
+            emit_str(cg, " = inttoptr i64 %t");
+            emit_i64(cg, vec_get(&arg_regs, 0));
+            emit_str(cg, " to ptr\n");
+
+            emit_str(cg, "    %t");
+            emit_i64(cg, dest_reg);
+            emit_str(cg, " = call i64 @morrow_fs_file_size(ptr %t");
+            emit_i64(cg, p_reg);
+            emit_str(cg, ")\n");
+            return;
+        }
+
+        if unsafe { strcmp(fn_name as *const u8, "fs_delete" as *const u8) == 0 } {
+            let p_reg = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, p_reg);
+            emit_str(cg, " = inttoptr i64 %t");
+            emit_i64(cg, vec_get(&arg_regs, 0));
+            emit_str(cg, " to ptr\n");
+
+            let b_reg = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, b_reg);
+            emit_str(cg, " = call i1 @morrow_fs_delete_file(ptr %t");
             emit_i64(cg, p_reg);
             emit_str(cg, ")\n");
 
@@ -3625,6 +3757,7 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
         emit_str(&mut cg, "declare void @tungsten_longjmp(ptr, i32)\n");
     }
     emit_str(&mut cg, "declare i64 @ftell(ptr)\n");
+    emit_str(&mut cg, "declare i32 @remove(ptr)\n");
     emit_str(&mut cg, "declare i32 @system(ptr)\n");
     if is_linux {
         emit_str(&mut cg, "declare i32 @mkdir(ptr, i32)\n");
@@ -3672,6 +3805,7 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
                    strcmp(pef, "fwrite" as *const u8) == 0 ||
                    strcmp(pef, "fseek" as *const u8) == 0 ||
                    strcmp(pef, "ftell" as *const u8) == 0 ||
+                   strcmp(pef, "remove" as *const u8) == 0 ||
                    strcmp(pef, "system" as *const u8) == 0 ||
                    strcmp(pef, "GetCommandLineA" as *const u8) == 0 ||
                    strcmp(pef, "CreateDirectoryA" as *const u8) == 0 ||
@@ -3950,6 +4084,25 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
     emit_str(&mut cg, "    ret i1 true\n");
     emit_str(&mut cg, "not_exists:\n");
     emit_str(&mut cg, "    ret i1 false\n}\n\n");
+
+    // Size in bytes via fopen/fseek(end)/ftell; -1 when the file cannot be opened.
+    emit_str(&mut cg, "define i64 @morrow_fs_file_size(ptr %path) {\n");
+    emit_str(&mut cg, "    %fp = call ptr @fopen(ptr %path, ptr @str_mode_rb)\n");
+    emit_str(&mut cg, "    %is_null = icmp eq ptr %fp, null\n");
+    emit_str(&mut cg, "    br i1 %is_null, label %missing, label %measure\n");
+    emit_str(&mut cg, "measure:\n");
+    emit_str(&mut cg, "    call i32 @fseek(ptr %fp, i64 0, i32 2)\n");
+    emit_str(&mut cg, "    %pos = call i64 @ftell(ptr %fp)\n");
+    emit_str(&mut cg, "    call i32 @fclose(ptr %fp)\n");
+    emit_str(&mut cg, "    ret i64 %pos\n");
+    emit_str(&mut cg, "missing:\n");
+    emit_str(&mut cg, "    ret i64 -1\n}\n\n");
+
+    // Delete a file; uses the C runtime remove() so it works on Windows and Linux.
+    emit_str(&mut cg, "define i1 @morrow_fs_delete_file(ptr %path) {\n");
+    emit_str(&mut cg, "    %rc = call i32 @remove(ptr %path)\n");
+    emit_str(&mut cg, "    %ok = icmp eq i32 %rc, 0\n");
+    emit_str(&mut cg, "    ret i1 %ok\n}\n\n");
 
     emit_str(&mut cg, "define i64 @morrow_process_exec(ptr %cmd, ptr %args) {\n");
     emit_str(&mut cg, "    %is_args_null = icmp eq ptr %args, null\n");

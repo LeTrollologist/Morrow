@@ -11,7 +11,7 @@
 <!-- Tier 1: Project Metadata & Quality Assurance Badges -->
 <p align="center">
   <a href="https://github.com/LeTrollologist/Morrow/releases">
-    <img src="https://img.shields.io/badge/Release-v2.0.0_Standalone-6366F1?style=for-the-badge&logo=github&logoColor=white&labelColor=0f172a" alt="Release" />
+    <img src="https://img.shields.io/badge/Release-v2.0.1_Standalone-6366F1?style=for-the-badge&logo=github&logoColor=white&labelColor=0f172a" alt="Release" />
   </a>
   <a href="compiler/">
     <img src="https://img.shields.io/badge/Compiler-Pure_Morrow-8B5CF6?style=for-the-badge&logo=llvm&logoColor=white&labelColor=0f172a" alt="Compiler" />
@@ -68,11 +68,11 @@
 2. **Colorless Functions via Algebraic Effects**  
    No `async` or `await` infection. Functions declare effect capabilities (`yields [Db, IOError, Diagnostics]`). Delimited handlers with native machine-level continuations (`resume`) support synchronous execution, fiber suspension, or pure unit-test mocking.
 
-3. **Compile-Time Refinement Types & SMT Verification**  
-   Declare bounded types like `type Health = u8[0..100];` and `type Port = u16[1..65535];`. The compiler mathematically proves arithmetic constraints at compile time, eliminating runtime out-of-bounds panics. Path-sensitive interval narrowing and non-linear interval arithmetic prevent division by zero.
+3. **Compile-Time Refinement Types**  
+   Declare bounded types like `type Health = u8[0..100];` and `type Port = u16[1..65535];`. The checker rejects out-of-range **literal** casts and statically rejects division by a refined divisor whose interval spans zero. Casts from variables are not yet range-proven, and there is no path-sensitive narrowing — see the verified status table in [`docs/SYNTAX.md` §14](docs/SYNTAX.md#14-not-implemented--known-limitations).
 
 4. **Linear & Affine Resource Types (Leak Prevention)**  
-   `linear struct` enforces exactly-once consumption with branch convergence analysis across `if/else`, eliminating resource leaks. `affine struct` guarantees at-most-once consumption with deterministic auto-drop at scope exit.
+   `linear struct` enforces exactly-once consumption, including branch convergence across `if/else`: dropping an unconsumed handle is a compile error. `affine struct` currently follows the same all-paths consumption rule — automatic drop on early `return` is not implemented yet.
 
 5. **Universal Multi-Target Cross-Compilation**  
    Target Windows GNU (`x86_64-pc-windows-gnu`), Linux ELF (`x86_64-unknown-linux-gnu`), Linux AArch64 (`aarch64-unknown-linux-gnu`), and WebAssembly (`wasm32-unknown-unknown`) from a single compiler binary via `--target`.
@@ -80,8 +80,33 @@
 6. **Deterministic Package Management & Lockfile (`Forge.lock`)**  
    Pure local SemVer resolution (`^`, `*`), 3-state DAG cycle detection, alphabetical lockfile determinism, graph closure verification, and transactional dependency mutation via `forge add` and `forge resolve`.
 
-7. **100% Pure Standalone Self-Hosting Genesis (Independent of Rust, Cargo, & Seed Compilers)**  
-   The entire compiler frontend, typechecker, TIR intermediate representation, middle-end optimizer, LLVM code generator, formatter, LSP server, and Forge CLI are written in **pure Morrow** (`compiler/*.mw`). Standalone binaries (`bin/mwc.exe`, `bin/forge.exe`) provide instant compilation with zero external toolchain dependencies.
+7. **100% Pure Standalone Self-Hosting Compiler (Independent of Rust, Cargo, & Seed Compilers)**  
+   The entire compiler frontend, typechecker, TIR intermediate representation, middle-end optimizer, LLVM code generator, formatter, LSP server, and Forge CLI are written in **pure Morrow** (`compiler/*.mw`). The build path contains no Rust or Cargo — but note that the final link step **does** invoke `clang` on LLVM IR (and uses the MinGW CRT objects in `lib/crt` on Windows), so clang is a runtime requirement of the toolchain.
+
+---
+
+## Verified Reality (v2.0.1)
+
+This README describes what the released compiler **actually does**. The full,
+tested breakdown lives in [`docs/SYNTAX.md` §14](docs/SYNTAX.md#14-not-implemented--known-limitations); the short version:
+
+| Area | Status |
+|---|---|
+| Regions (`region r { ... }`), `_in` allocators, O(1) teardown | ✅ implemented, region bodies yield values |
+| Algebraic effects (`effect`, `yields`, `perform`, `handle … with`, `resume`) | ✅ implemented; arms must be `fn op(k, args) { resume(k, v); }` and cover every op |
+| Linear resources (`linear struct`, `consume`, branch convergence) | ✅ enforced |
+| Affine resources (`affine struct`) | ⚠️ parsed; all-paths consumption required (no auto-drop on early `return`) |
+| Refinements | ⚠️ literal casts + divisor-span checks only (no variable proofs, no narrowing) |
+| Generics + turbofish (`identity::<i64>(42)`, `Pair::<i64> { … }`) | ✅ implemented |
+| Region escape analysis | ❌ not enforced |
+| `enum` / `match`, `for`, `nursery`/fibers, closures, `if`-expressions, `continue` | ❌ not implemented (parse errors) |
+| Float / hex / underscore literals, `null`, `/* */` comments | ❌ not implemented |
+| Debug info (PDB), LTO, section GC | ❌ not implemented (stage-0 Rust only) |
+| `println` | one value per call: string literal or integer; **no `{}` interpolation** |
+| Signature checking | ❌ arity/types not validated at call sites; `forge build` is the real check |
+
+Toolchain prerequisite: **`clang` on `PATH`** (the compiler emits LLVM IR and
+shells out to clang to link; Windows linking also uses the MinGW CRT in `lib/crt`).
 
 ---
 
@@ -306,6 +331,10 @@ Perform instantaneous lexical, syntactical, refinement interval, and region esca
 # Validate formatting in CI
 .\bin\forge.exe fmt --check examples\bootstrap_sample.mw
 ```
+The formatter is idempotent (formatting twice is a no-op, and `--check` passes on
+its own output). Note that the repository's existing sources are not yet written in
+that canonical style, so running `--check` across the tree reports every file as
+unformatted — format files before enabling `--check` as a CI gate.
 
 ### 7. Self-Compiling the Compiler (Fixed-Point Bootstrap Loop)
 Recompile the entire Morrow compiler using its own binary:
@@ -323,28 +352,29 @@ claims can be checked against hand-written C on the same machine:
 ```powershell
 .\bin\forge.exe bench
 ```
+Representative output (best of three runs on a busy developer host, v2.0.1):
 ```
 running morrow runtime benchmarks...
 === Benchmark: benchmarks/bench_region_alloc.mw ===
 === Morrow Benchmark: Region Allocator vs malloc ===
-BENCH morrow_region_bump iterations=1000000 elapsed_ms=14 ops_per_sec=71428571
+BENCH morrow_region_bump iterations=1000000 elapsed_ms=17 ops_per_sec=58823529
 BENCH morrow_malloc_free iterations=1000000 elapsed_ms=27 ops_per_sec=37037037
 === Benchmark: benchmarks/bench_http_parse.mw ===
 === Morrow Benchmark: std::http Parser Throughput ===
-BENCH morrow_http_parse iterations=200000 elapsed_ms=177 ops_per_sec=1129943
+BENCH morrow_http_parse iterations=200000 elapsed_ms=206 ops_per_sec=970873
 === Benchmark: benchmarks/bench_hashmap.mw ===
 === Morrow Benchmark: HashMap Insert/Lookup Density ===
-BENCH morrow_hashmap_insert iterations=200000 elapsed_ms=43 ops_per_sec=4651162
-BENCH morrow_hashmap_lookup iterations=200000 elapsed_ms=28 ops_per_sec=7142857
+BENCH morrow_hashmap_insert iterations=200000 elapsed_ms=54 ops_per_sec=3703703
+BENCH morrow_hashmap_lookup iterations=200000 elapsed_ms=31 ops_per_sec=6451612
 === C baselines (clang -O2) ===
 === C Baseline: malloc/free vs bump allocator ===
 BENCH c_malloc_free iterations=1000000 elapsed_ms=27 ops_per_sec=37037037
-BENCH c_bump_alloc iterations=1000000 elapsed_ms=10 ops_per_sec=100000000
+BENCH c_bump_alloc iterations=1000000 elapsed_ms=14 ops_per_sec=71428571
 === C Baseline: HTTP/1.1 request parser ===
 BENCH c_http_parse iterations=200000 elapsed_ms=7 ops_per_sec=28571428
 === C Baseline: open-addressing hash table ===
 BENCH c_hashmap_insert iterations=200000 elapsed_ms=19 ops_per_sec=10526315
-BENCH c_hashmap_lookup iterations=200000 elapsed_ms=9 ops_per_sec=22222222
+BENCH c_hashmap_lookup iterations=200000 elapsed_ms=8 ops_per_sec=25000000
 bench result: ok. all benchmark programs completed.
 ```
 
