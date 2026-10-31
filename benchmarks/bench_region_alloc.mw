@@ -1,0 +1,86 @@
+// Phase 13.3 — Morrow Runtime Benchmark: Region Allocator vs malloc
+// Measures raw allocation throughput of region bump allocation (with bulk
+// O(1) teardown on region exit) against an equivalent malloc/free loop.
+//
+// Run directly:   .\bin\forge.exe run benchmarks\bench_region_alloc.mw
+// Run via suite:  .\bin\forge.exe bench
+
+import std::time;
+
+extern "C" {
+    fn puts(s: *const u8) -> i32;
+    fn fflush(f: *const u8) -> i32;
+    fn printf(fmt: *const u8, name: *const u8, iters: i64, ms: i64, ops: i64) -> i32;
+    fn morrow_alloc(size: usize, align: usize) -> *mut u8;
+    fn morrow_region_alloc(arena: *mut u8, size: usize, align: usize) -> *mut u8;
+    fn free(ptr: *mut u8);
+}
+
+fn bench_print(msg: String) {
+    unsafe {
+        puts(msg as *const u8);
+        fflush(0 as *const u8);
+    }
+}
+
+fn bench_report(name: String, iterations: i64, elapsed_ms: i64) {
+    let ops = time_ops_per_sec(iterations, elapsed_ms);
+    unsafe {
+        printf("BENCH %s iterations=%lld elapsed_ms=%lld ops_per_sec=%lld\n" as *const u8,
+               name as *const u8, iterations, elapsed_ms, ops);
+        fflush(0 as *const u8);
+    }
+}
+
+// 1,000,000 x 64-byte allocations inside one region. Teardown is part of the
+// measurement because the region exit reclaims every block at once.
+fn bench_region_bump(iters: i64) -> i64 {
+    let t0 = time_now_ms();
+    region alloc_reg {
+        let mut i: i64 = 0;
+        while i < iters {
+            let block = unsafe { morrow_region_alloc(alloc_reg, 64, 8) };
+            unsafe {
+                block[0] = 1 as u8;
+            }
+            i = i + 1;
+        }
+    }
+    let t1 = time_now_ms();
+    t1 - t0
+}
+
+// Same payload volume through heap malloc/free pairs.
+fn bench_malloc_free(iters: i64) -> i64 {
+    let t0 = time_now_ms();
+    let mut i: i64 = 0;
+    while i < iters {
+        let block = unsafe { morrow_alloc(64, 8) };
+        unsafe {
+            block[0] = 1 as u8;
+            free(block);
+        }
+        i = i + 1;
+    }
+    let t1 = time_now_ms();
+    t1 - t0
+}
+
+fn main() -> i64 {
+    let iters: i64 = 1000000;
+    bench_print("=== Morrow Benchmark: Region Allocator vs malloc ===");
+
+    // Warm-up (page-in + allocator metadata), discarded from the report.
+    let warm_ms = bench_region_bump(iters / 10);
+
+    let region_ms = bench_region_bump(iters);
+    let malloc_ms = bench_malloc_free(iters);
+
+    bench_report("morrow_region_bump", iters, region_ms);
+    bench_report("morrow_malloc_free", iters, malloc_ms);
+
+    if warm_ms < 0 {
+        return 1;
+    }
+    0
+}

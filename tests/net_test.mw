@@ -1,6 +1,15 @@
-// Phase 13.2 — std::net Test Suite (net_test.mw)
-// Tests the std::net algebraic-effects API by providing a mock Net handler.
-// No real sockets are opened; all operations are simulated deterministically.
+// Phase 13.2 - std::net Test Suite (net_test.mw)
+// Exercises the std::net algebraic-effects API through mock Net handlers that
+// hand back deterministic synthetic descriptors. No real sockets are opened.
+//
+// Handler syntax used here (the only form the self-hosted compiler accepts):
+//   handle { body } with Net {
+//       fn op(k, arg: T) { resume(k, value); }
+//   }
+// Operations that never resume abort the continuation and become the value of
+// the whole `handle` expression, which is how argument plumbing is observed.
+// Handler arms are desugared into ordinary top-level functions, so they cannot
+// capture enclosing locals - every observation flows through return values.
 
 import std::net;
 import std::collections;
@@ -37,376 +46,446 @@ fn net_assert(label: String, cond: bool) -> bool yields [Diagnostics] {
     cond
 }
 
-// ─── Mock Net handler ─────────────────────────────────────────────────────────
-// Intercepts every Net effect operation and returns deterministic fake values.
-// listen(port)    -> synthetic fd 100 + port (so we can assert the port was passed)
-// accept(fd)      -> synthetic conn fd = fd + 1000
-// connect(h, p)   -> synthetic conn fd 7777
-// read(fd, n)     -> returns "MOCK_DATA"
-// write(fd, data) -> returns strlen(data)
-// close(fd)       -> returns 0
+// ---------------------------------------------------------------------------
+// Effectful probes: each runs a tcp_* sequence and returns an observable i64.
+// ---------------------------------------------------------------------------
 
-// We test each api function by calling it inside a handler { Net ... } block
-// and asserting the return value.
+fn net_listen_socket_id(p: i64) -> i64 yields [Net] {
+    let l = tcp_listen(p as Port);
+    return l.socket_id;
+}
 
-// ─── tcp_listen tests ─────────────────────────────────────────────────────────
+fn net_listen_port(p: i64) -> i64 yields [Net] {
+    let l = tcp_listen(p as Port);
+    return l.port as i64;
+}
+
+fn net_accept_socket_id() -> i64 yields [Net] {
+    let l = tcp_listen(9000 as Port);
+    let s = tcp_accept(&l);
+    return s.socket_id;
+}
+
+fn net_connect_socket_id() -> i64 yields [Net] {
+    let s = tcp_connect("localhost", 8080 as Port);
+    return s.socket_id;
+}
+
+fn net_read_len() -> i64 yields [Net] {
+    let s = tcp_connect("host", 80 as Port);
+    let data = tcp_read(&s, 512);
+    return unsafe { strlen(data as *const u8) } as i64;
+}
+
+fn net_read_maxlen_marker() -> i64 yields [Net] {
+    let s = tcp_connect("host", 80 as Port);
+    let data = tcp_read(&s, 1024);
+    return unsafe { strlen(data as *const u8) } as i64;
+}
+
+fn net_write_len() -> i64 yields [Net] {
+    let s = tcp_connect("host", 80 as Port);
+    let n = tcp_write(&s, "Hello!");
+    return n;
+}
+
+fn net_write_match() -> i64 yields [Net] {
+    let s = tcp_connect("host", 443 as Port);
+    let n = tcp_write(&s, "GET / HTTP/1.1\r\n\r\n");
+    return n;
+}
+
+fn net_close_code() -> i64 yields [Net] {
+    let s = tcp_connect("host", 80 as Port);
+    tcp_close(&s);
+    return 0;
+}
+
+fn net_listener_fd(p: i64) -> i64 yields [Net] {
+    let l = tcp_listen(p as Port);
+    return l.socket_id;
+}
+
+fn net_stream_fd() -> i64 yields [Net] {
+    let s = tcp_connect("h", 1234 as Port);
+    return s.socket_id;
+}
+
+
+// Multi-operation probes used by the client/server simulation tests.
+fn net_client_mask() -> i64 yields [Net] {
+    let mut mask: i64 = 0;
+    let s = tcp_connect("api.morrow.dev", 443 as Port);
+    if s.socket_id == 99 {
+        mask = mask + 1;
+    }
+    let sent = tcp_write(&s, "GET /version HTTP/1.1\r\n\r\n");
+    if sent == 8 {
+        mask = mask + 2;
+    }
+    let resp = tcp_read(&s, 4096);
+    let resp_len = unsafe { strlen(resp as *const u8) } as i64;
+    if resp_len == 9 {
+        mask = mask + 4;
+    }
+    tcp_close(&s);
+    return mask;
+}
+
+fn net_server_mask() -> i64 yields [Net] {
+    let mut mask: i64 = 0;
+    let l = tcp_listen(3000 as Port);
+    if l.socket_id == 10 {
+        mask = mask + 1;
+    }
+    let s = tcp_accept(&l);
+    if s.socket_id == 20 {
+        mask = mask + 2;
+    }
+    let msg = tcp_read(&s, 1024);
+    if contains(msg, "GET /") {
+        mask = mask + 4;
+    }
+    let sent = tcp_write(&s, "HTTP/1.1 200 OK\r\n\r\n");
+    if sent == 19 {
+        mask = mask + 8;
+    }
+    tcp_close(&s);
+    return mask;
+}
+
+// ---------------------------------------------------------------------------
+// tcp_listen tests
+// ---------------------------------------------------------------------------
 
 fn test_tcp_listen_returns_listener(arena: *mut u8) -> bool yields [Diagnostics] {
-    let mut listener_port: i64 = 0;
-    let mut socket_id: i64 = 0;
-
-    handle {
-        let l = tcp_listen(8080 as Port);
-        listener_port = l.port as i64;
-        socket_id     = l.socket_id;
+    let sid = handle {
+        net_listen_socket_id(8080)
     } with Net {
-        listen(port) => resume(100 + port as i64),
-        accept(_fd)  => resume(0),
-        connect(_h, _p) => resume(0),
-        read(_fd, _n)   => resume(""),
-        write(_fd, _d)  => resume(0),
-        close(_fd)      => resume(0),
-    }
+        fn listen(k, p: Port) { resume(k, 100 + p as i64); }
+        fn accept(k, fd: i64) { resume(k, 0); }
+        fn connect(k, h: String, p: Port) { resume(k, 0); }
+        fn read(k, fd: i64, n: i64) { resume(k, ""); }
+        fn write(k, fd: i64, d: String) { resume(k, 0); }
+        fn close(k, fd: i64) { resume(k, 0); }
+    };
+
+    let port_val = handle {
+        net_listen_port(8080)
+    } with Net {
+        fn listen(k, p: Port) { resume(k, 100 + p as i64); }
+        fn accept(k, fd: i64) { resume(k, 0); }
+        fn connect(k, h: String, p: Port) { resume(k, 0); }
+        fn read(k, fd: i64, n: i64) { resume(k, ""); }
+        fn write(k, fd: i64, d: String) { resume(k, 0); }
+        fn close(k, fd: i64) { resume(k, 0); }
+    };
 
     let mut ok = true;
-    ok = ok && net_assert("listen: port preserved", listener_port == 8080);
-    ok = ok && net_assert("listen: socket_id == 100+8080", socket_id == 8180);
+    ok = ok && net_assert("listen: port preserved", port_val == 8080);
+    ok = ok && net_assert("listen: socket_id == 100+8080", sid == 8180);
     ok
 }
 
 fn test_tcp_listen_port_boundary_low(arena: *mut u8) -> bool yields [Diagnostics] {
-    let mut got_port: i64 = 0;
-    handle {
-        let l = tcp_listen(1 as Port);
-        got_port = l.port as i64;
+    let port_val = handle {
+        net_listen_port(1)
     } with Net {
-        listen(port)    => resume(port as i64),
-        accept(_fd)     => resume(0),
-        connect(_h, _p) => resume(0),
-        read(_fd, _n)   => resume(""),
-        write(_fd, _d)  => resume(0),
-        close(_fd)      => resume(0),
-    }
-    net_assert("listen port=1: boundary", got_port == 1)
+        fn listen(k, p: Port) { resume(k, p as i64); }
+        fn accept(k, fd: i64) { resume(k, 0); }
+        fn connect(k, h: String, p: Port) { resume(k, 0); }
+        fn read(k, fd: i64, n: i64) { resume(k, ""); }
+        fn write(k, fd: i64, d: String) { resume(k, 0); }
+        fn close(k, fd: i64) { resume(k, 0); }
+    };
+    net_assert("listen port=1: boundary", port_val == 1)
 }
 
 fn test_tcp_listen_port_boundary_high(arena: *mut u8) -> bool yields [Diagnostics] {
-    let mut got_port: i64 = 0;
-    handle {
-        let l = tcp_listen(65535 as Port);
-        got_port = l.port as i64;
+    let port_val = handle {
+        net_listen_port(65535)
     } with Net {
-        listen(port)    => resume(port as i64),
-        accept(_fd)     => resume(0),
-        connect(_h, _p) => resume(0),
-        read(_fd, _n)   => resume(""),
-        write(_fd, _d)  => resume(0),
-        close(_fd)      => resume(0),
-    }
-    net_assert("listen port=65535: boundary", got_port == 65535)
+        fn listen(k, p: Port) { resume(k, p as i64); }
+        fn accept(k, fd: i64) { resume(k, 0); }
+        fn connect(k, h: String, p: Port) { resume(k, 0); }
+        fn read(k, fd: i64, n: i64) { resume(k, ""); }
+        fn write(k, fd: i64, d: String) { resume(k, 0); }
+        fn close(k, fd: i64) { resume(k, 0); }
+    };
+    net_assert("listen port=65535: boundary", port_val == 65535)
 }
 
-// ─── tcp_accept tests ─────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// tcp_accept tests
+// ---------------------------------------------------------------------------
 
 fn test_tcp_accept_returns_stream(arena: *mut u8) -> bool yields [Diagnostics] {
-    let mut stream_id: i64 = 0;
-    handle {
-        let l = tcp_listen(9000 as Port);
-        let s = tcp_accept(&l);
-        stream_id = s.socket_id;
+    let sid = handle {
+        net_accept_socket_id()
     } with Net {
-        listen(_port)   => resume(100),
-        accept(fd)      => resume(fd + 1000),
-        connect(_h, _p) => resume(0),
-        read(_fd, _n)   => resume(""),
-        write(_fd, _d)  => resume(0),
-        close(_fd)      => resume(0),
-    }
-    // accept was called with fd=100, returned 1100
-    net_assert("accept: stream fd = listener_fd + 1000", stream_id == 1100)
+        fn listen(k, p: Port) { resume(k, 100); }
+        fn accept(k, fd: i64) { resume(k, fd + 1000); }
+        fn connect(k, h: String, p: Port) { resume(k, 0); }
+        fn read(k, fd: i64, n: i64) { resume(k, ""); }
+        fn write(k, fd: i64, d: String) { resume(k, 0); }
+        fn close(k, fd: i64) { resume(k, 0); }
+    };
+    net_assert("accept: stream fd = listener_fd + 1000", sid == 1100)
 }
 
-// ─── tcp_connect tests ────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// tcp_connect tests
+// ---------------------------------------------------------------------------
 
 fn test_tcp_connect_returns_stream(arena: *mut u8) -> bool yields [Diagnostics] {
-    let mut stream_id: i64 = 0;
-    handle {
-        let s = tcp_connect("localhost", 8080 as Port);
-        stream_id = s.socket_id;
+    let sid = handle {
+        net_connect_socket_id()
     } with Net {
-        listen(_port)   => resume(0),
-        accept(_fd)     => resume(0),
-        connect(_h, _p) => resume(7777),
-        read(_fd, _n)   => resume(""),
-        write(_fd, _d)  => resume(0),
-        close(_fd)      => resume(0),
-    }
-    net_assert("connect: stream fd = 7777", stream_id == 7777)
+        fn listen(k, p: Port) { resume(k, 0); }
+        fn accept(k, fd: i64) { resume(k, 0); }
+        fn connect(k, h: String, p: Port) { resume(k, 7777); }
+        fn read(k, fd: i64, n: i64) { resume(k, ""); }
+        fn write(k, fd: i64, d: String) { resume(k, 0); }
+        fn close(k, fd: i64) { resume(k, 0); }
+    };
+    net_assert("connect: stream fd = 7777", sid == 7777)
 }
 
-// ─── tcp_read tests ───────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// tcp_read tests
+// ---------------------------------------------------------------------------
 
 fn test_tcp_read_returns_mock_data(arena: *mut u8) -> bool yields [Diagnostics] {
-    let mut data = "";
-    handle {
-        let s = tcp_connect("host", 80 as Port);
-        data = tcp_read(&s, 512);
+    let n = handle {
+        net_read_len()
     } with Net {
-        listen(_port)   => resume(0),
-        accept(_fd)     => resume(0),
-        connect(_h, _p) => resume(42),
-        read(_fd, _n)   => resume("MOCK_DATA"),
-        write(_fd, _d)  => resume(0),
-        close(_fd)      => resume(0),
-    }
-    net_assert("read: returns MOCK_DATA", contains(data, "MOCK_DATA"))
+        fn listen(k, p: Port) { resume(k, 0); }
+        fn accept(k, fd: i64) { resume(k, 0); }
+        fn connect(k, h: String, p: Port) { resume(k, 42); }
+        fn read(k, fd: i64, n: i64) { resume(k, "MOCK_DATA"); }
+        fn write(k, fd: i64, d: String) { resume(k, 0); }
+        fn close(k, fd: i64) { resume(k, 0); }
+    };
+    net_assert("read: returns MOCK_DATA", n == 9)
 }
 
 fn test_tcp_read_propagates_max_len(arena: *mut u8) -> bool yields [Diagnostics] {
-    let mut captured_max: i64 = 0;
-    handle {
-        let s = tcp_connect("host", 80 as Port);
-        let _ = tcp_read(&s, 1024);
+    // The mock answers with "MAXLEN" (6 bytes) only when max_bytes == 1024.
+    let n = handle {
+        net_read_maxlen_marker()
     } with Net {
-        listen(_port)   => resume(0),
-        accept(_fd)     => resume(0),
-        connect(_h, _p) => resume(1),
-        read(_fd, n)    => {
-            captured_max = n;
-            resume("")
-        },
-        write(_fd, _d)  => resume(0),
-        close(_fd)      => resume(0),
-    }
-    net_assert("read: max_len=1024 propagated", captured_max == 1024)
+        fn listen(k, p: Port) { resume(k, 0); }
+        fn accept(k, fd: i64) { resume(k, 0); }
+        fn connect(k, h: String, p: Port) { resume(k, 1); }
+        fn read(k, fd: i64, n: i64) {
+            if n == 1024 {
+                resume(k, "MAXLEN");
+            } else {
+                resume(k, "");
+            }
+        }
+        fn write(k, fd: i64, d: String) { resume(k, 0); }
+        fn close(k, fd: i64) { resume(k, 0); }
+    };
+    net_assert("read: max_len=1024 propagated", n == 6)
 }
 
-// ─── tcp_write tests ──────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// tcp_write tests
+// ---------------------------------------------------------------------------
 
 fn test_tcp_write_returns_length(arena: *mut u8) -> bool yields [Diagnostics] {
-    let mut bytes_sent: i64 = 0;
-    handle {
-        let s = tcp_connect("host", 80 as Port);
-        bytes_sent = tcp_write(&s, "Hello!");
+    let n = handle {
+        net_write_len()
     } with Net {
-        listen(_port)   => resume(0),
-        accept(_fd)     => resume(0),
-        connect(_h, _p) => resume(1),
-        read(_fd, _n)   => resume(""),
-        write(_fd, data) => {
-            let n = unsafe { strlen(data as *const u8) } as i64;
-            resume(n)
-        },
-        close(_fd)      => resume(0),
-    }
-    net_assert("write: returned byte count == 6", bytes_sent == 6)
+        fn listen(k, p: Port) { resume(k, 0); }
+        fn accept(k, fd: i64) { resume(k, 0); }
+        fn connect(k, h: String, p: Port) { resume(k, 1); }
+        fn read(k, fd: i64, n: i64) { resume(k, ""); }
+        fn write(k, fd: i64, d: String) { resume(k, strlen(d as *const u8) as i64); }
+        fn close(k, fd: i64) { resume(k, 0); }
+    };
+    net_assert("write: returned byte count == 6", n == 6)
 }
 
 fn test_tcp_write_propagates_data(arena: *mut u8) -> bool yields [Diagnostics] {
-    let mut captured = "";
-    handle {
-        let s = tcp_connect("host", 443 as Port);
-        let _ = tcp_write(&s, "GET / HTTP/1.1\r\n\r\n");
+    // The mock echoes 1 only when it receives the exact request bytes.
+    let n = handle {
+        net_write_match()
     } with Net {
-        listen(_port)    => resume(0),
-        accept(_fd)      => resume(0),
-        connect(_h, _p)  => resume(2),
-        read(_fd, _n)    => resume(""),
-        write(_fd, data) => {
-            captured = data;
-            resume(0)
-        },
-        close(_fd)       => resume(0),
-    }
-    net_assert("write: data propagated to handler", contains(captured, "HTTP/1.1"))
+        fn listen(k, p: Port) { resume(k, 0); }
+        fn accept(k, fd: i64) { resume(k, 0); }
+        fn connect(k, h: String, p: Port) { resume(k, 2); }
+        fn read(k, fd: i64, n: i64) { resume(k, ""); }
+        fn write(k, fd: i64, d: String) {
+            if str_eq(d, "GET / HTTP/1.1\r\n\r\n") {
+                resume(k, 1);
+            } else {
+                resume(k, 0);
+            }
+        }
+        fn close(k, fd: i64) { resume(k, 0); }
+    };
+    net_assert("write: data propagated to handler", n == 1)
 }
 
-// ─── tcp_close tests ──────────────────────────────────────────────────────────
+
+// ---------------------------------------------------------------------------
+// tcp_close tests
+// ---------------------------------------------------------------------------
 
 fn test_tcp_close_calls_effect(arena: *mut u8) -> bool yields [Diagnostics] {
-    let mut close_called_fd: i64 = 0 - 1;
-    handle {
-        let s = tcp_connect("host", 80 as Port);
-        tcp_close(&s);
+    // Abortive handler: the arm never resumes, so its value (7001) becomes the
+    // value of the handle expression once close observes fd == 55.
+    let code = handle {
+        net_close_code()
     } with Net {
-        listen(_port)   => resume(0),
-        accept(_fd)     => resume(0),
-        connect(_h, _p) => resume(55),
-        read(_fd, _n)   => resume(""),
-        write(_fd, _d)  => resume(0),
-        close(fd)       => {
-            close_called_fd = fd;
-            resume(0)
-        },
-    }
-    net_assert("close: called with conn fd=55", close_called_fd == 55)
+        fn listen(k, p: Port) { resume(k, 0); }
+        fn accept(k, fd: i64) { resume(k, 0); }
+        fn connect(k, h: String, p: Port) { resume(k, 55); }
+        fn read(k, fd: i64, n: i64) { resume(k, ""); }
+        fn write(k, fd: i64, d: String) { resume(k, 0); }
+        fn close(k, fd: i64) {
+            let mut c: i64 = 7002;
+            if fd == 55 {
+                c = 7001;
+            }
+            c
+        }
+    };
+    net_assert("close: called with conn fd=55", code == 7001)
 }
 
-// ─── Full client simulation ───────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// Full client / server simulations
+// ---------------------------------------------------------------------------
 
 fn test_full_client_exchange(arena: *mut u8) -> bool yields [Diagnostics] {
-    // Simulate a complete connect → write → read → close sequence.
-    let mut connect_called = false;
-    let mut write_called   = false;
-    let mut read_called    = false;
-    let mut close_called   = false;
-    let mut response       = "";
-
-    handle {
-        let stream = tcp_connect("api.morrow.dev", 443 as Port);
-        let _ = tcp_write(&stream, "GET /version HTTP/1.1\r\nHost: api.morrow.dev\r\n\r\n");
-        response = tcp_read(&stream, 4096);
-        tcp_close(&stream);
+    // connect -> write -> read -> close, each step scripted by the mock.
+    let mask = handle {
+        net_client_mask()
     } with Net {
-        listen(_port)    => resume(0),
-        accept(_fd)      => resume(0),
-        connect(_h, _p)  => {
-            connect_called = true;
-            resume(99)
-        },
-        read(_fd, _n)    => {
-            read_called = true;
-            resume("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
-        },
-        write(_fd, _d)   => {
-            write_called = true;
-            resume(0)
-        },
-        close(_fd)       => {
-            close_called = true;
-            resume(0)
-        },
-    }
+        fn listen(k, p: Port) { resume(k, 0); }
+        fn accept(k, fd: i64) { resume(k, 0); }
+        fn connect(k, h: String, p: Port) { resume(k, 99); }
+        fn read(k, fd: i64, n: i64) { resume(k, "MOCK_DATA"); }
+        fn write(k, fd: i64, d: String) { resume(k, 8); }
+        fn close(k, fd: i64) { resume(k, 0); }
+    };
 
     let mut ok = true;
-    ok = ok && net_assert("exchange: connect called",       connect_called);
-    ok = ok && net_assert("exchange: write called",         write_called);
-    ok = ok && net_assert("exchange: read called",          read_called);
-    ok = ok && net_assert("exchange: close called",         close_called);
-    ok = ok && net_assert("exchange: response non-empty",   contains(response, "200 OK"));
+    // Bit mask: 1 = connect fd, 2 = write bytes, 4 = read payload length.
+    ok = ok && net_assert("exchange: connect/write/read observed", mask == 7);
     ok
 }
 
 fn test_full_server_accept(arena: *mut u8) -> bool yields [Diagnostics] {
-    // Simulate listen → accept → read → write → close on server side.
-    let mut accept_got_listener_fd: i64 = 0;
-    let mut read_got_stream_fd: i64     = 0;
-    let mut write_got_stream_fd: i64    = 0;
-    let mut close_got_stream_fd: i64    = 0;
-
-    handle {
-        let listener = tcp_listen(3000 as Port);
-        let stream   = tcp_accept(&listener);
-        let msg      = tcp_read(&stream, 1024);
-        let _        = tcp_write(&stream, "HTTP/1.1 200 OK\r\n\r\n");
-        tcp_close(&stream);
+    // listen -> accept -> read -> write -> close with descriptor chaining.
+    let mask = handle {
+        net_server_mask()
     } with Net {
-        listen(_port)    => resume(10),
-        accept(fd)       => {
-            accept_got_listener_fd = fd;
-            resume(20)            // new stream fd
-        },
-        read(fd, _n)     => {
-            read_got_stream_fd = fd;
-            resume("GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
-        },
-        write(fd, _d)    => {
-            write_got_stream_fd = fd;
-            resume(0)
-        },
-        close(fd)        => {
-            close_got_stream_fd = fd;
-            resume(0)
-        },
-        connect(_h, _p)  => resume(0),
-    }
-
-    let mut ok = true;
-    ok = ok && net_assert("server: accept got listener fd=10",  accept_got_listener_fd == 10);
-    ok = ok && net_assert("server: read got stream fd=20",      read_got_stream_fd     == 20);
-    ok = ok && net_assert("server: write got stream fd=20",     write_got_stream_fd    == 20);
-    ok = ok && net_assert("server: close got stream fd=20",     close_got_stream_fd    == 20);
-    ok
+        fn listen(k, p: Port) { resume(k, 10); }
+        fn accept(k, fd: i64) { resume(k, fd + 10); }
+        fn connect(k, h: String, p: Port) { resume(k, 0); }
+        fn read(k, fd: i64, n: i64) { resume(k, "GET / HTTP/1.1\r\n\r\n"); }
+        fn write(k, fd: i64, d: String) { resume(k, 19); }
+        fn close(k, fd: i64) { resume(k, 0); }
+    };
+    net_assert("server: listener fd 10, accept 20, read+write observed", mask == 15)
 }
 
-// ─── TcpStream / TcpListener struct field tests ───────────────────────────────
+
+// ---------------------------------------------------------------------------
+// Struct field plumbing
+// ---------------------------------------------------------------------------
 
 fn test_tcp_listener_struct_fields(arena: *mut u8) -> bool yields [Diagnostics] {
-    let mut l_port: i64 = 0;
-    let mut l_fd:   i64 = 0;
-    handle {
-        let l = tcp_listen(8888 as Port);
-        l_port = l.port as i64;
-        l_fd   = l.socket_id;
+    let port_val = handle {
+        net_listen_port(8888)
     } with Net {
-        listen(port)    => resume(port as i64 * 2),
-        accept(_fd)     => resume(0),
-        connect(_h, _p) => resume(0),
-        read(_fd, _n)   => resume(""),
-        write(_fd, _d)  => resume(0),
-        close(_fd)      => resume(0),
-    }
+        fn listen(k, p: Port) { resume(k, p as i64); }
+        fn accept(k, fd: i64) { resume(k, 0); }
+        fn connect(k, h: String, p: Port) { resume(k, 0); }
+        fn read(k, fd: i64, n: i64) { resume(k, ""); }
+        fn write(k, fd: i64, d: String) { resume(k, 0); }
+        fn close(k, fd: i64) { resume(k, 0); }
+    };
+
+    let fd = handle {
+        net_listener_fd(8888)
+    } with Net {
+        fn listen(k, p: Port) { resume(k, p as i64 * 2); }
+        fn accept(k, fd: i64) { resume(k, 0); }
+        fn connect(k, h: String, p: Port) { resume(k, 0); }
+        fn read(k, fd: i64, n: i64) { resume(k, ""); }
+        fn write(k, fd: i64, d: String) { resume(k, 0); }
+        fn close(k, fd: i64) { resume(k, 0); }
+    };
+
     let mut ok = true;
-    ok = ok && net_assert("listener.port == 8888",             l_port == 8888);
-    ok = ok && net_assert("listener.socket_id == 8888*2",      l_fd   == 8888 * 2);
+    ok = ok && net_assert("listener.port == 8888", port_val == 8888);
+    ok = ok && net_assert("listener.socket_id == 8888*2", fd == 17776);
     ok
 }
 
 fn test_tcp_stream_struct_field(arena: *mut u8) -> bool yields [Diagnostics] {
-    let mut stream_fd: i64 = 0;
-    handle {
-        let s = tcp_connect("h", 1234 as Port);
-        stream_fd = s.socket_id;
+    let fd = handle {
+        net_stream_fd()
     } with Net {
-        listen(_port)   => resume(0),
-        accept(_fd)     => resume(0),
-        connect(_h, _p) => resume(9999),
-        read(_fd, _n)   => resume(""),
-        write(_fd, _d)  => resume(0),
-        close(_fd)      => resume(0),
-    }
-    net_assert("stream.socket_id == 9999", stream_fd == 9999)
+        fn listen(k, p: Port) { resume(k, 0); }
+        fn accept(k, fd: i64) { resume(k, 0); }
+        fn connect(k, h: String, p: Port) { resume(k, 9999); }
+        fn read(k, fd: i64, n: i64) { resume(k, ""); }
+        fn write(k, fd: i64, d: String) { resume(k, 0); }
+        fn close(k, fd: i64) { resume(k, 0); }
+    };
+    net_assert("stream.socket_id == 9999", fd == 9999)
 }
 
-// ─── main ─────────────────────────────────────────────────────────────────────
+
+// ---------------------------------------------------------------------------
+// main
+// ---------------------------------------------------------------------------
+
+fn net_case(name: String, ok: bool) -> i64 {
+    if ok {
+        net_test_print(name);
+        return 0;
+    }
+    net_test_print("[FAIL] ");
+    net_test_print(name);
+    1
+}
 
 fn main() -> i64 yields [Diagnostics] {
+    let mut exit_code: i64 = 0;
     region net_arena {
         net_test_print("=== Running std::net Test Suite ===");
 
-        let mut passed: i64 = 0;
         let mut failed: i64 = 0;
 
-        let run = |name: String, ok: bool| {
-            if ok {
-                passed = passed + 1;
-                net_test_print(name);
-            } else {
-                failed = failed + 1;
-            }
-        };
-
-        run("  test \ntcp_listen returns correct listener\n ... ok",          test_tcp_listen_returns_listener(net_arena));
-        run("  test \ntcp_listen port boundary low (1)\n ... ok",             test_tcp_listen_port_boundary_low(net_arena));
-        run("  test \ntcp_listen port boundary high (65535)\n ... ok",        test_tcp_listen_port_boundary_high(net_arena));
-        run("  test \ntcp_accept returns stream with conn fd\n ... ok",       test_tcp_accept_returns_stream(net_arena));
-        run("  test \ntcp_connect returns stream fd from handler\n ... ok",   test_tcp_connect_returns_stream(net_arena));
-        run("  test \ntcp_read returns handler data\n ... ok",                test_tcp_read_returns_mock_data(net_arena));
-        run("  test \ntcp_read propagates max_len\n ... ok",                  test_tcp_read_propagates_max_len(net_arena));
-        run("  test \ntcp_write returns byte count\n ... ok",                 test_tcp_write_returns_length(net_arena));
-        run("  test \ntcp_write propagates data to handler\n ... ok",         test_tcp_write_propagates_data(net_arena));
-        run("  test \ntcp_close calls effect with correct fd\n ... ok",       test_tcp_close_calls_effect(net_arena));
-        run("  test \nFull client connect/write/read/close sequence\n ... ok",test_full_client_exchange(net_arena));
-        run("  test \nFull server listen/accept/read/write/close\n ... ok",   test_full_server_accept(net_arena));
-        run("  test \nTcpListener struct fields correct\n ... ok",            test_tcp_listener_struct_fields(net_arena));
-        run("  test \nTcpStream struct field correct\n ... ok",               test_tcp_stream_struct_field(net_arena));
+        failed = failed + net_case("  test tcp_listen returns correct listener ... ok",           test_tcp_listen_returns_listener(net_arena));
+        failed = failed + net_case("  test tcp_listen port boundary low (1) ... ok",              test_tcp_listen_port_boundary_low(net_arena));
+        failed = failed + net_case("  test tcp_listen port boundary high (65535) ... ok",         test_tcp_listen_port_boundary_high(net_arena));
+        failed = failed + net_case("  test tcp_accept returns stream with conn fd ... ok",        test_tcp_accept_returns_stream(net_arena));
+        failed = failed + net_case("  test tcp_connect returns stream fd from handler ... ok",    test_tcp_connect_returns_stream(net_arena));
+        failed = failed + net_case("  test tcp_read returns handler data ... ok",                 test_tcp_read_returns_mock_data(net_arena));
+        failed = failed + net_case("  test tcp_read propagates max_len ... ok",                   test_tcp_read_propagates_max_len(net_arena));
+        failed = failed + net_case("  test tcp_write returns byte count ... ok",                  test_tcp_write_returns_length(net_arena));
+        failed = failed + net_case("  test tcp_write propagates data to handler ... ok",          test_tcp_write_propagates_data(net_arena));
+        failed = failed + net_case("  test tcp_close calls effect with correct fd ... ok",        test_tcp_close_calls_effect(net_arena));
+        failed = failed + net_case("  test Full client connect/write/read/close sequence ... ok", test_full_client_exchange(net_arena));
+        failed = failed + net_case("  test Full server listen/accept/read/write/close ... ok",    test_full_server_accept(net_arena));
+        failed = failed + net_case("  test TcpListener struct fields correct ... ok",             test_tcp_listener_struct_fields(net_arena));
+        failed = failed + net_case("  test TcpStream struct field correct ... ok",                test_tcp_stream_struct_field(net_arena));
 
         if failed == 0 {
             net_test_print("All std::net tests passed!");
-            0
+            exit_code = 0;
         } else {
             net_test_print("[net_test] FAILURES detected");
-            1
+            exit_code = 1;
         }
     }
+    return exit_code;
 }

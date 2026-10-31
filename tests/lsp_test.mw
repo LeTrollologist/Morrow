@@ -175,42 +175,44 @@ fn test_missing_method(arena: *mut u8) -> bool yields [FS, Diagnostics] {
 
 // ─── main ────────────────────────────────────────────────────────────────────
 
+// Records a single case: returns 0 on success, 1 (and prints) on failure.
+fn lsp_case(name: String, ok: bool) -> i64 {
+    if ok {
+        return 0;
+    }
+    lsp_test_print("[FAIL] ");
+    lsp_test_print(name);
+    1
+}
+
 fn main() -> i64 yields [FS, Diagnostics] {
+    let mut exit_code: i64 = 0;
     region lsp_test_arena {
         lsp_test_print("[lsp_test] running Phase 13.1 LSP harness tests");
 
-        let mut passed: i64 = 0;
         let mut failed: i64 = 0;
 
-        let run = |name: String, ok: bool| {
-            if ok {
-                passed = passed + 1;
-            } else {
-                failed = failed + 1;
-                lsp_test_print(name);
-            }
-        };
-
-        run("initialize",              test_initialize(lsp_test_arena));
-        run("initialized_notif",       test_initialized_notification(lsp_test_arena));
-        run("didOpen_clean",           test_did_open_clean(lsp_test_arena));
-        run("didOpen_error",           test_did_open_error(lsp_test_arena));
-        run("didChange",               test_did_change(lsp_test_arena));
-        run("hover",                   test_hover(lsp_test_arena));
-        run("completion",              test_completion(lsp_test_arena));
-        run("formatting",              test_formatting(lsp_test_arena));
-        run("shutdown",                test_shutdown(lsp_test_arena));
-        run("exit_notification",       test_exit_notification(lsp_test_arena));
-        run("method_not_found",        test_method_not_found(lsp_test_arena));
-        run("empty_payload",           test_empty_payload(lsp_test_arena));
-        run("missing_method",          test_missing_method(lsp_test_arena));
+        failed = failed + lsp_case("initialize",        test_initialize(lsp_test_arena));
+        failed = failed + lsp_case("initialized_notif", test_initialized_notification(lsp_test_arena));
+        failed = failed + lsp_case("didOpen_clean",     test_did_open_clean(lsp_test_arena));
+        failed = failed + lsp_case("didOpen_error",     test_did_open_error(lsp_test_arena));
+        failed = failed + lsp_case("didChange",         test_did_change(lsp_test_arena));
+        failed = failed + lsp_case("hover",             test_hover(lsp_test_arena));
+        failed = failed + lsp_case("completion",        test_completion(lsp_test_arena));
+        failed = failed + lsp_case("formatting",        test_formatting(lsp_test_arena));
+        failed = failed + lsp_case("shutdown",          test_shutdown(lsp_test_arena));
+        failed = failed + lsp_case("exit_notification", test_exit_notification(lsp_test_arena));
+        failed = failed + lsp_case("method_not_found",  test_method_not_found(lsp_test_arena));
+        failed = failed + lsp_case("empty_payload",     test_empty_payload(lsp_test_arena));
+        failed = failed + lsp_case("missing_method",    test_missing_method(lsp_test_arena));
 
         if failed == 0 {
             lsp_test_print("[lsp_test] ALL PASSED");
-            0
+            exit_code = 0;
         } else {
             lsp_test_print("[lsp_test] FAILURES — see above");
-            1
+            exit_code = 1;
         }
     }
+    return exit_code;
 }

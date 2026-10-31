@@ -23,7 +23,7 @@
     <img src="https://img.shields.io/badge/Parity-Bitwise_Identical-06B6D4?style=for-the-badge&logo=target&logoColor=white&labelColor=0f172a" alt="Parity" />
   </a>
   <a href="tests/">
-    <img src="https://img.shields.io/badge/Tests-14%2F14_Passing-22C55E?style=for-the-badge&logo=checkmarx&logoColor=white&labelColor=0f172a" alt="Tests" />
+    <img src="https://img.shields.io/badge/Tests-21%2F21_Passing-22C55E?style=for-the-badge&logo=checkmarx&logoColor=white&labelColor=0f172a" alt="Tests" />
   </a>
   <a href="LICENSE">
     <img src="https://img.shields.io/badge/License-MIT_%2F_Apache--2.0-F59E0B?style=for-the-badge&logo=open-source-initiative&logoColor=white&labelColor=0f172a" alt="License" />
@@ -167,12 +167,16 @@ Morrow/
 │   ├── fs.mw              # Scoped region filesystem operations
 │   ├── process.mw         # Subprocess spawning and execution
 │   ├── refinements.mw     # Standard mathematical interval refinements
-│   ├── io.mw              # Buffered console I/O
+│   ├── io.mw              # Buffered console I/O, BufReader/BufWriter streams
 │   ├── net.mw             # TCP socket networking
 │   ├── http.mw            # Zero-copy HTTP/1.1 engine
+│   ├── crypto.mw          # Hashing, checksums, hex codecs, CSPRNG
+│   ├── sql.mw             # High-level SQLite connection & transaction wrapper
+│   ├── sql_builder.mw     # Fluent, injection-safe SQL query builder
 │   ├── sqlite.mw          # Parameterized, SQL-injection-immune database driver
-│   └── sync.mw            # Channels and message passing
-├── tests/                 # Pure Morrow Test Suites (14 Native Suites)
+│   ├── sync.mw            # Channels and message passing
+│   └── time.mw            # Monotonic host clock, stopwatch, throughput math
+├── tests/                 # Pure Morrow Test Suites (21 Native Suites)
 │   ├── typeck_refinements.mw # Type checking and interval bounds verification
 │   ├── tir_optimizer.mw   # SSA constant folding and optimization passes
 │   ├── formatter_tests.mw # Pretty-printer output and idempotency check
@@ -186,7 +190,22 @@ Morrow/
 │   ├── region_escape_test.mw # Compile-time lexical region escape analysis
 │   ├── generics_test.mw   # Parametric generics and monomorphization
 │   ├── effects_test.mw    # Delimited continuations, resumption, and abortive unwinding
-│   └── formal_verification_test.mw # Non-linear SMT intervals, affine & linear resources
+│   ├── formal_verification_test.mw # Non-linear SMT intervals, affine & linear resources
+│   ├── crypto_test.mw     # Hex codecs, hashes, checksums, deterministic RNG
+│   ├── io_test.mw         # Integer formatting, BufReader lines, BufWriter assembly
+│   ├── sql_test.mw        # Query builder composition and SQL rendering
+│   ├── lsp_test.mw        # JSON-RPC framing, hover, completion, diagnostics
+│   ├── http_test.mw       # HTTP/1.1 parser edge cases and response formatting
+│   ├── net_test.mw        # std::net effect plumbing against mock handlers
+│   └── time_test.mw       # Monotonic clock, stopwatch reset, throughput helper
+├── benchmarks/            # Phase 13.3 Runtime Benchmark Suite
+│   ├── bench_region_alloc.mw # Region bump allocation vs malloc/free
+│   ├── bench_http_parse.mw   # std::http parser throughput
+│   ├── bench_hashmap.mw      # Robin Hood HashMap insert/lookup density
+│   └── c/                    # Equivalent C baselines (clang -O2, MinGW CRT)
+│       ├── bench_region_alloc.c
+│       ├── bench_http_parse.c
+│       └── bench_hashmap.c
 ├── examples/              # Flagship Examples & Production Microservices
 │   ├── bootstrap_sample.mw# Minimal bootstrap program
 │   ├── wasm_sample.mw     # WebAssembly computation demo
@@ -206,7 +225,7 @@ Morrow/
 All developer workflows are executed natively through [`bin/forge.exe`](bin/forge.exe) and [`bin/mwc.exe`](bin/mwc.exe) without any Cargo or Rust dependency.
 
 ### 1. Run Native Test Suites (`forge test`)
-Run all 14 pure Morrow test suites compiled and executed on the fly:
+Run all 21 pure Morrow test suites compiled and executed on the fly:
 ```powershell
 .\bin\forge.exe test
 ```
@@ -226,6 +245,13 @@ running morrow native test suites...
 === Running Parametric Generics & Monomorphization Test Suite === ... ok
 === Running Delimited Algebraic Effects Test Suite === ... ok
 === Running Formal Verification & Linear Resources Test Suite === ... ok
+=== Running std::crypto Test Suite === ... ok
+=== Running std::io Test Suite === ... ok
+=== Running std::sql_builder Test Suite === ... ok
+=== Running Phase 13.1 LSP Harness Test Suite === ... ok
+=== Running std::http Test Suite === ... ok
+=== Running std::net Test Suite === ... ok
+=== Running std::time Test Suite === ... ok
 test result: ok. all test suites passed!
 ```
 
@@ -286,3 +312,46 @@ Recompile the entire Morrow compiler using its own binary:
 .\target\stage2.exe compiler\main.mw -o target\stage3.exe
 ```
 This produces bitwise identical LLVM IR (`SHA256(stage2.exe.ll) == SHA256(stage3.exe.ll)`), proving mathematical compiler stability.
+
+### 8. Runtime Benchmarking (`forge bench`)
+Compile and run every benchmark in `benchmarks/`, then build and run the
+equivalent C baselines in `benchmarks/c/` with `clang -O2` so Morrow's zero-cost
+claims can be checked against hand-written C on the same machine:
+```powershell
+.\bin\forge.exe bench
+```
+```
+running morrow runtime benchmarks...
+=== Benchmark: benchmarks/bench_region_alloc.mw ===
+=== Morrow Benchmark: Region Allocator vs malloc ===
+BENCH morrow_region_bump iterations=1000000 elapsed_ms=20 ops_per_sec=50000000
+BENCH morrow_malloc_free iterations=1000000 elapsed_ms=29 ops_per_sec=34482758
+=== Benchmark: benchmarks/bench_http_parse.mw ===
+=== Morrow Benchmark: std::http Parser Throughput ===
+BENCH morrow_http_parse iterations=200000 elapsed_ms=179 ops_per_sec=1117318
+=== Benchmark: benchmarks/bench_hashmap.mw ===
+=== Morrow Benchmark: HashMap Insert/Lookup Density ===
+BENCH morrow_hashmap_insert iterations=200000 elapsed_ms=45 ops_per_sec=4444444
+BENCH morrow_hashmap_lookup iterations=200000 elapsed_ms=26 ops_per_sec=7692307
+=== C baselines (clang -O2) ===
+=== C Baseline: malloc/free vs bump allocator ===
+BENCH c_malloc_free iterations=1000000 elapsed_ms=26 ops_per_sec=38461538
+BENCH c_bump_alloc iterations=1000000 elapsed_ms=15 ops_per_sec=66666666
+=== C Baseline: HTTP/1.1 request parser ===
+BENCH c_http_parse iterations=200000 elapsed_ms=6 ops_per_sec=33333333
+=== C Baseline: open-addressing hash table ===
+BENCH c_hashmap_insert iterations=200000 elapsed_ms=26 ops_per_sec=7692307
+BENCH c_hashmap_lookup iterations=200000 elapsed_ms=9 ops_per_sec=22222222
+bench result: ok. all benchmark programs completed.
+```
+
+Every benchmark program is an ordinary Morrow program, so it can also be run
+individually and instrumented with the `std::time` stopwatch:
+```powershell
+.\bin\forge.exe run benchmarks\bench_hashmap.mw
+```
+
+Each result line is machine-readable
+(`BENCH <name> iterations=<n> elapsed_ms=<n> ops_per_sec=<n>`), so the suite can
+be captured in CI logs and diffed across compiler revisions.
+

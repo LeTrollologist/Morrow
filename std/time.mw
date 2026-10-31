@@ -1,0 +1,53 @@
+// Morrow Standard Library - Monotonic Timing Module (std::time)
+// Host clock primitives backing `forge bench` and user-defined benchmarks.
+//
+// The WinMM multimedia timer is used as the monotonic host clock (1 ms
+// resolution). It mirrors the Win32 FFI already exercised by
+// tests/win32_gdi_callback_test.mw and is always linked on Windows hosts
+// (-lwinmm), so importing this module adds no extra link requirements.
+// Benchmarks therefore run on the host only; cross-compiled targets emit
+// code but the clock is not expected to resolve on a bare Linux/WASM target.
+
+extern "C" {
+    fn timeGetTime(): i64;
+    fn Sleep(ms: i32);
+}
+
+pub struct Stopwatch {
+    start_ms: i64,
+}
+
+// Milliseconds elapsed since the system started (monotonic, wraps after ~49 days).
+pub fn time_now_ms() -> i64 {
+    timeGetTime()
+}
+
+pub fn time_sleep_ms(ms: i64) {
+    unsafe {
+        Sleep(ms as i32);
+    }
+}
+
+pub fn stopwatch_start() -> Stopwatch {
+    Stopwatch {
+        start_ms: time_now_ms(),
+    }
+}
+
+pub fn stopwatch_elapsed_ms(sw: &Stopwatch) -> i64 {
+    time_now_ms() - sw.start_ms
+}
+
+pub fn stopwatch_reset(sw: &mut Stopwatch) {
+    sw.start_ms = time_now_ms();
+}
+
+// Integer-only throughput helper: operations per second for `iterations`
+// completed in `elapsed_ms`. Returns 0 for non-positive durations so callers
+// never divide by zero on sub-millisecond runs.
+pub fn time_ops_per_sec(iterations: i64, elapsed_ms: i64) -> i64 {
+    if elapsed_ms <= 0 {
+        return 0;
+    }
+    (iterations * 1000) / elapsed_ms
+}

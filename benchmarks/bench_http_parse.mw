@@ -1,0 +1,73 @@
+// Phase 13.3 — Morrow Runtime Benchmark: HTTP/1.1 Parsing Throughput
+// Parses a realistic HTTP/1.1 request (GET, multiple headers, path) in a
+// loop and reports requests/second for the zero-copy parser in std::http.
+
+import std::time;
+import std::http;
+
+extern "C" {
+    fn puts(s: *const u8) -> i32;
+    fn fflush(f: *const u8) -> i32;
+    fn printf(fmt: *const u8, name: *const u8, iters: i64, ms: i64, ops: i64) -> i32;
+}
+
+fn bench_print(msg: String) {
+    unsafe {
+        puts(msg as *const u8);
+        fflush(0 as *const u8);
+    }
+}
+
+fn bench_report(name: String, iterations: i64, elapsed_ms: i64) {
+    let ops = time_ops_per_sec(iterations, elapsed_ms);
+    unsafe {
+        printf("BENCH %s iterations=%lld elapsed_ms=%lld ops_per_sec=%lld\n" as *const u8,
+               name as *const u8, iterations, elapsed_ms, ops);
+        fflush(0 as *const u8);
+    }
+}
+
+// Returns elapsed_ms; writes the number of successfully parsed requests into
+// the returned (valid_count, elapsed_ms) pair via two separate runs.
+fn bench_http_parse(iters: i64) -> i64 {
+    let raw = "GET /api/v1/health HTTP/1.1\r\nHost: api.morrow.dev\r\nAccept: application/json\r\nX-Request-Id: bench-42\r\nUser-Agent: MorrowBench/1.0\r\n\r\n";
+
+    let t0 = time_now_ms();
+    let mut parsed: i64 = 0;
+    region parse_reg {
+        let mut i: i64 = 0;
+        while i < iters {
+            let req = http_parse_request_in(raw, parse_reg);
+            if req.is_valid {
+                parsed = parsed + 1;
+            }
+            i = i + 1;
+        }
+    }
+    let t1 = time_now_ms();
+
+    if parsed != iters {
+        bench_print("[FAIL] HTTP parser rejected a well-formed request during benchmark");
+        return 0 - 1;
+    }
+    t1 - t0
+}
+
+fn main() -> i64 {
+    let iters: i64 = 200000;
+    bench_print("=== Morrow Benchmark: std::http Parser Throughput ===");
+
+    let warm_ms = bench_http_parse(iters / 10);
+    let parse_ms = bench_http_parse(iters);
+
+    if parse_ms < 0 {
+        return 1;
+    }
+
+    bench_report("morrow_http_parse", iters, parse_ms);
+
+    if warm_ms < 0 {
+        return 1;
+    }
+    0
+}

@@ -3765,7 +3765,7 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
 
     emit_str(&mut cg, "define i1 @morrow_report_error(ptr %msg, i64 %line, i64 %col) {\n");
     emit_str(&mut cg, "    call i64 @morrow_diag_inc_error()\n");
-    emit_str(&mut cg, "    call i32 @puts(ptr %msg)\n");
+    emit_str(&mut cg, "    call i32 @printf(ptr @fmt_diag_err, ptr %msg, i64 %line, i64 %col)\n");
     emit_str(&mut cg, "    call i32 @fflush(ptr null)\n");
     emit_str(&mut cg, "    ret i1 true\n}\n\n");
 

@@ -415,14 +415,27 @@
 ### Phase 13: Language Server, Net/HTTP Test Coverage & Runtime Benchmarking
 *Target: Developer tooling, stdlib hardening, and zero-cost abstraction proof.*
 
-1. **Language Server Protocol Hardening (Phase 13.1)**:
-   - Port `compiler/lsp.mw` to the current self-hosted compiler pipeline.
-   - Real-time diagnostics, hover type inference, go-to-definition, and format-on-save.
-   - VS Code extension packaging.
-2. **`std::net` & `std::http` Native Test Suites (Phase 13.2)**:
-   - Write `tests/net_test.mw` and `tests/http_test.mw` as 17th+ native test suites.
-   - Cover HTTP parser edge cases (chunked encoding, header limits, malformed requests).
-   - Loopback TCP echo server round-trip test.
-3. **Runtime Benchmarking & `mwc bench` (Phase 13.3)**:
-   - Add `bench` subcommand to `compiler/forge.mw`.
-   - Benchmark suite comparing region allocator throughput vs. malloc, HTTP parsing throughput, and hash map lookup density vs. equivalent C programs.
+1. **Language Server Protocol Hardening (Phase 13.1)** ✅:
+   - `compiler/lsp.mw` now compiles through the self-hosted pipeline again: the unsupported `let x = if ... else ...` value form and the expression-bodied `lsp_exit_sentinel` were rewritten, and `lsp_run_stdio` declares its `yields [FS, Diagnostics]` contract so handler-arm dispatch type-checks.
+   - JSON-RPC stdio loop with `Content-Length` framing, `initialize`/`initialized`, `didOpen`/`didChange` diagnostics, hover, completion stub, formatting, `shutdown`, and `exit` sentinel (`morrow-lsp 0.3.0`).
+   - Verified by `tests/lsp_test.mw` (13 cases) — the suite previously used an unsupported closure (`let run = |...|`) in `main`, now expressed as a `lsp_case` helper returning a per-case status.
+   - VS Code extension packaging remains open.
+2. **`std::net` & `std::http` Native Test Suites (Phase 13.2)** ✅:
+   - `tests/http_test.mw` — 21 cases covering valid requests, rejection paths (empty, short, missing delimiter, bad version, malformed header), response constructors, `Content-Length` accuracy, JSON bodies, 204 empty bodies, and a POST round-trip.
+   - `tests/net_test.mw` — 14 cases exercising every `std::net` operation against mock handlers. Handlers were rewritten into the only supported arm form (`fn op(k, args) { resume(k, v); }`); argument plumbing is observed through return values and one abortive `close` handler, because desugared handler arms are top-level functions that cannot capture enclosing locals.
+   - Loopback TCP echo round-trip remains open (tests stay pure / deterministic).
+3. **Runtime Benchmarking & `mwc bench` (Phase 13.3)** ✅:
+   - **`std/time.mw`** (NEW): monotonic host clock (`time_now_ms` backed by the WinMM timer already linked for Win32 FFI), `Stopwatch` (`stopwatch_start`, `stopwatch_elapsed_ms`, `stopwatch_reset`), `time_sleep_ms`, and the integer-only `time_ops_per_sec` helper. Verified by 9 assertions in `tests/time_test.mw`.
+   - **`forge bench`** (NEW subcommand, also reachable as `mwc bench`): compiles and runs every program in `benchmarks/`, then builds and runs the equivalent C baselines in `benchmarks/c/` with `clang --target=x86_64-pc-windows-gnu -nostartfiles -O2` against the shipped MinGW CRT objects.
+   - **`benchmarks/bench_region_alloc.mw`**: 1M × 64-byte region bump allocations (bulk O(1) teardown included) vs malloc/free, reported as ops/sec.
+   - **`benchmarks/bench_http_parse.mw`**: 200k parses of a multi-header `GET` request through `http_parse_request_in`.
+   - **`benchmarks/bench_hashmap.mw`**: 200k inserts + 200k lookups against the Robin Hood `HashMap`, reporting both phases.
+   - **`benchmarks/c/*.c`**: header-free C baselines for the same workloads (allocator, HTTP parser, open-addressing hash table) so Morrow can be compared to hand-written C on the same host. The region-allocator baseline uses a `volatile` sink so `-O2` cannot elide the allocation loops.
+   - Results are emitted as machine-readable `BENCH <name> iterations=<n> elapsed_ms=<n> ops_per_sec=<n>` lines; `forge bench` fails the run if any benchmark or baseline exits non-zero.
+   - 100% pass rate across all **21 native test suites** (`mwc.exe test`).
+   - 3-stage self-hosting bootstrap fixed-point parity re-verified: `SHA256(stage6.ll) == SHA256(stage7.ll) == SHA256(stage8.ll) == A0DCABE4ECC305B2A592D3C90F11440E428A71F748AF6293F2B2A7E245C70C3E`.
+
+### Phase 13.4: Compiler Robustness Follow-ups
+- The lexer now skips a UTF-8 byte-order mark (`EF BB BF`) instead of emitting three "Unexpected character" errors — a BOM in `compiler/forge.mw` had silently blocked the self-hosting rebuild.
+- Runtime diagnostics (`morrow_report_error`) now print `[ERROR] <message> (line <n>, col <n>)` through `printf` instead of a location-free `puts`, so parse and type errors are actionable.
+- Open: named diagnostic severities/diagnostic ranges for the LSP, `mwc bench --json` output, and a CI job that stores benchmark deltas.

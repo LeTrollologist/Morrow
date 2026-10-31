@@ -1,0 +1,89 @@
+// Phase 13.3 — Morrow Runtime Benchmark: HashMap Insert/Lookup Density
+// Inserts 50k integer-keyed entries into std::collections::HashMap (region
+// backed, Robin-Hood style displacement with 70% load-factor growth) and then
+// looks every key back up, reporting insert and lookup throughput separately.
+
+import std::time;
+import std::io;
+import std::collections;
+
+extern "C" {
+    fn puts(s: *const u8) -> i32;
+    fn fflush(f: *const u8) -> i32;
+    fn printf(fmt: *const u8, name: *const u8, iters: i64, ms: i64, ops: i64) -> i32;
+}
+
+fn bench_print(msg: String) {
+    unsafe {
+        puts(msg as *const u8);
+        fflush(0 as *const u8);
+    }
+}
+
+fn bench_report(name: String, iterations: i64, elapsed_ms: i64) {
+    let ops = time_ops_per_sec(iterations, elapsed_ms);
+    unsafe {
+        printf("BENCH %s iterations=%lld elapsed_ms=%lld ops_per_sec=%lld\n" as *const u8,
+               name as *const u8, iterations, elapsed_ms, ops);
+        fflush(0 as *const u8);
+    }
+}
+
+fn bench_hashmap(iters: i64, emit: bool) -> i64 {
+    let mut status: i64 = 0;
+    let mut insert_ms: i64 = 0;
+    let mut lookup_ms: i64 = 0;
+    let mut matched: i64 = 0;
+
+    region map_reg {
+        let mut map = hashmap_new_in(map_reg);
+
+        let insert_start = time_now_ms();
+        let mut i: i64 = 0;
+        while i < iters {
+            let key = i64_to_string_in(i, map_reg);
+            hashmap_insert(&mut map, key, i);
+            i = i + 1;
+        }
+        insert_ms = time_now_ms() - insert_start;
+
+        let lookup_start = time_now_ms();
+        i = 0;
+        while i < iters {
+            let key = i64_to_string_in(i, map_reg);
+            if hashmap_get(&map, key) == i {
+                matched = matched + 1;
+            }
+            i = i + 1;
+        }
+        lookup_ms = time_now_ms() - lookup_start;
+
+        if hashmap_len(&map) != iters {
+            bench_print("[FAIL] HashMap entry count diverged from inserted keys");
+            status = 1;
+        }
+        if matched != iters {
+            bench_print("[FAIL] HashMap lookup mismatch during benchmark");
+            status = 1;
+        }
+
+        if emit {
+            bench_report("morrow_hashmap_insert", iters, insert_ms);
+            bench_report("morrow_hashmap_lookup", iters, lookup_ms);
+        }
+    }
+
+    status
+}
+
+fn main() -> i64 {
+    let iters: i64 = 200000;
+    bench_print("=== Morrow Benchmark: HashMap Insert/Lookup Density ===");
+
+    // Warm-up: primes the arena and the hash path, discarded from reporting.
+    let warm = bench_hashmap(iters / 10, false);
+    if warm != 0 {
+        return 1;
+    }
+    bench_hashmap(iters, true)
+}

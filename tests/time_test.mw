@@ -1,0 +1,43 @@
+// Phase 13.3 — std::time Test Suite (time_test.mw)
+// Verifies the monotonic host clock, stopwatch arithmetic, and the
+// integer-only throughput helper used by the benchmark programs.
+
+import std::test;
+import std::time;
+
+fn test_time_now_ms_monotonic() {
+    let t0 = time_now_ms();
+    time_sleep_ms(10);
+    let t1 = time_now_ms();
+
+    assert(t0 >= 0, "time_now_ms returns non-negative tick count");
+    assert(t1 >= t0, "time_now_ms is monotonic non-decreasing");
+    assert(t1 - t0 >= 1, "time_sleep_ms advances the monotonic clock");
+}
+
+fn test_stopwatch_lifecycle() {
+    let mut sw = stopwatch_start();
+    time_sleep_ms(10);
+    let first = stopwatch_elapsed_ms(&sw);
+    assert(first >= 1, "stopwatch measures elapsed milliseconds");
+
+    stopwatch_reset(&mut sw);
+    let after_reset = stopwatch_elapsed_ms(&sw);
+    assert(after_reset <= first, "stopwatch reset clears accumulated time");
+}
+
+fn test_ops_per_sec() {
+    assert_eq(time_ops_per_sec(1000, 1), 1000000, "Throughput math for 1 ms");
+    assert_eq(time_ops_per_sec(500, 2), 250000, "Throughput math for 2 ms");
+    assert_eq(time_ops_per_sec(100, 0), 0, "Zero elapsed duration is guarded");
+    assert_eq(time_ops_per_sec(0, 5), 0, "Zero iterations yields zero throughput");
+}
+
+fn main() -> i64 {
+    test_print("=== Running std::time Test Suite ===");
+    test_time_now_ms_monotonic();
+    test_stopwatch_lifecycle();
+    test_ops_per_sec();
+    test_print("All std::time tests passed!");
+    0
+}

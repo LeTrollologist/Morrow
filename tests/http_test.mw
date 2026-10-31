@@ -244,59 +244,62 @@ fn test_roundtrip_post(arena: *mut u8) -> bool yields [Diagnostics] {
 
 // ─── main ─────────────────────────────────────────────────────────────────────
 
+// Records one case: prints the name on success, returns 1 on failure.
+fn http_case(name: String, ok: bool) -> i64 {
+    if ok {
+        http_test_print(name);
+        return 0;
+    }
+    http_test_print("[FAIL] ");
+    http_test_print(name);
+    1
+}
+
 fn main() -> i64 yields [Diagnostics] {
+    let mut exit_code: i64 = 0;
     region http_arena {
         http_test_print("=== Running std::http Test Suite ===");
 
-        let mut passed: i64 = 0;
         let mut failed: i64 = 0;
 
-        let run = |name: String, ok: bool| {
-            if ok {
-                passed = passed + 1;
-                http_test_print(name);
-            } else {
-                failed = failed + 1;
-            }
-        };
-
         // Parser — valid inputs
-        run("  test \nGET / parses correctly\n ... ok",                test_parse_get_root(http_arena));
-        run("  test \nGET /api/v1/health path\n ... ok",              test_parse_get_path(http_arena));
-        run("  test \nPOST with body\n ... ok",                       test_parse_post_with_body(http_arena));
-        run("  test \nPUT request\n ... ok",                          test_parse_put(http_arena));
-        run("  test \nDELETE request\n ... ok",                       test_parse_delete(http_arena));
-        run("  test \nMultiple request headers\n ... ok",             test_parse_multiple_headers(http_arena));
+        failed = failed + http_case("  test \nGET / parses correctly\n ... ok",                test_parse_get_root(http_arena));
+        failed = failed + http_case("  test \nGET /api/v1/health path\n ... ok",              test_parse_get_path(http_arena));
+        failed = failed + http_case("  test \nPOST with body\n ... ok",                       test_parse_post_with_body(http_arena));
+        failed = failed + http_case("  test \nPUT request\n ... ok",                          test_parse_put(http_arena));
+        failed = failed + http_case("  test \nDELETE request\n ... ok",                       test_parse_delete(http_arena));
+        failed = failed + http_case("  test \nMultiple request headers\n ... ok",             test_parse_multiple_headers(http_arena));
 
         // Parser — rejections
-        run("  test \nReject empty input\n ... ok",                   test_parse_reject_empty(http_arena));
-        run("  test \nReject too-short request\n ... ok",             test_parse_reject_too_short(http_arena));
-        run("  test \nReject missing header delimiter\n ... ok",      test_parse_reject_missing_delimiter(http_arena));
-        run("  test \nReject non-HTTP version string\n ... ok",       test_parse_reject_bad_version(http_arena));
-        run("  test \nReject malformed header line\n ... ok",         test_parse_reject_malformed_header(http_arena));
+        failed = failed + http_case("  test \nReject empty input\n ... ok",                   test_parse_reject_empty(http_arena));
+        failed = failed + http_case("  test \nReject too-short request\n ... ok",             test_parse_reject_too_short(http_arena));
+        failed = failed + http_case("  test \nReject missing header delimiter\n ... ok",      test_parse_reject_missing_delimiter(http_arena));
+        failed = failed + http_case("  test \nReject non-HTTP version string\n ... ok",       test_parse_reject_bad_version(http_arena));
+        failed = failed + http_case("  test \nReject malformed header line\n ... ok",         test_parse_reject_malformed_header(http_arena));
 
         // Response constructors
-        run("  test \nhttp_response_ok fields\n ... ok",              test_response_ok(http_arena));
-        run("  test \nhttp_response_created fields\n ... ok",         test_response_created(http_arena));
-        run("  test \nhttp_response_not_found fields\n ... ok",       test_response_not_found(http_arena));
-        run("  test \nhttp_response_bad_request fields\n ... ok",     test_response_bad_request(http_arena));
+        failed = failed + http_case("  test \nhttp_response_ok fields\n ... ok",              test_response_ok(http_arena));
+        failed = failed + http_case("  test \nhttp_response_created fields\n ... ok",         test_response_created(http_arena));
+        failed = failed + http_case("  test \nhttp_response_not_found fields\n ... ok",       test_response_not_found(http_arena));
+        failed = failed + http_case("  test \nhttp_response_bad_request fields\n ... ok",     test_response_bad_request(http_arena));
 
         // Formatter
-        run("  test \nFormat 200 OK wire format\n ... ok",            test_format_200_ok(http_arena));
-        run("  test \nFormat 404 Not Found wire format\n ... ok",     test_format_404(http_arena));
-        run("  test \nContent-Length accuracy\n ... ok",              test_format_content_length_accuracy(http_arena));
-        run("  test \nJSON response body formatting\n ... ok",        test_format_json_body(http_arena));
-        run("  test \n204 No Content empty body\n ... ok",            test_format_empty_body(http_arena));
+        failed = failed + http_case("  test \nFormat 200 OK wire format\n ... ok",            test_format_200_ok(http_arena));
+        failed = failed + http_case("  test \nFormat 404 Not Found wire format\n ... ok",     test_format_404(http_arena));
+        failed = failed + http_case("  test \nContent-Length accuracy\n ... ok",              test_format_content_length_accuracy(http_arena));
+        failed = failed + http_case("  test \nJSON response body formatting\n ... ok",        test_format_json_body(http_arena));
+        failed = failed + http_case("  test \n204 No Content empty body\n ... ok",            test_format_empty_body(http_arena));
 
         // Round-trip
-        run("  test \nPOST /echo round-trip\n ... ok",               test_roundtrip_post(http_arena));
+        failed = failed + http_case("  test \nPOST /echo round-trip\n ... ok",               test_roundtrip_post(http_arena));
 
         if failed == 0 {
             http_test_print("All std::http tests passed!");
-            0
+            exit_code = 0;
         } else {
             http_test_print("[http_test] FAILURES detected");
-            1
+            exit_code = 1;
         }
     }
+    return exit_code;
 }

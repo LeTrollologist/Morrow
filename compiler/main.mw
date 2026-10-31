@@ -89,6 +89,7 @@ fn main() -> i64 yields [FS, Process, Diagnostics, IO] {
                 strcmp(p1, "build" as *const u8) == 0 ||
                 strcmp(p1, "run" as *const u8) == 0 ||
                 strcmp(p1, "test" as *const u8) == 0 ||
+                strcmp(p1, "bench" as *const u8) == 0 ||
                 strcmp(p1, "fmt" as *const u8) == 0 ||
                 strcmp(p1, "lsp" as *const u8) == 0 ||
                 strcmp(p1, "new" as *const u8) == 0 ||

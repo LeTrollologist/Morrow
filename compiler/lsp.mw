@@ -31,7 +31,10 @@ extern "C" {
 // ─── sentinel returned by lsp_handle_request for notifications / exit ────────
 // An empty string means "send no response"; a specific sentinel means "exit".
 // We use a non-JSON prefix so it can never collide with a real response.
-fn lsp_exit_sentinel() -> String { "__LSP_EXIT__" }
+fn lsp_exit_sentinel() -> String {
+    return "__LSP_EXIT__";
+}
+
 
 // ─── low-level I/O helpers ───────────────────────────────────────────────────
 
@@ -180,8 +183,14 @@ pub fn lsp_make_publish_diagnostics(
         let start   = json_create_object(arena);
         let end_pos = json_create_object(arena);
 
-        let line0 = if line > 0 { line - 1 } else { 0 };
-        let col0  = if col  > 0 { col  - 1 } else { 0 };
+        let mut line0 = 0;
+        if line > 0 {
+            line0 = line - 1;
+        }
+        let mut col0 = 0;
+        if col > 0 {
+            col0 = col - 1;
+        }
         json_set_field(start,   "line",      json_create_int(arena, line0),      arena);
         json_set_field(start,   "character", json_create_int(arena, col0),       arena);
         json_set_field(end_pos, "line",      json_create_int(arena, line0),      arena);
@@ -415,7 +424,7 @@ pub fn lsp_handle_request(req_json_str: String, arena: *mut u8) -> String yields
 
 // ─── JSON-RPC stdio server ────────────────────────────────────────────────────
 
-pub fn lsp_run_stdio(arena: *mut u8) -> i64 {
+pub fn lsp_run_stdio(arena: *mut u8) -> i64 yields [FS, Diagnostics] {
     // STD_INPUT_HANDLE = -10, STD_OUTPUT_HANDLE = -11
     let h_in  = unsafe { GetStdHandle(0 - 10) };
     let h_out = unsafe { GetStdHandle(0 - 11) };

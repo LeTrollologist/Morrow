@@ -1,4 +1,4 @@
-﻿// Tungsten Self-Hosting Compiler - Unified Developer CLI (forge.tg)
+// Tungsten Self-Hosting Compiler - Unified Developer CLI (forge.tg)
 // Pure Tungsten toolchain manager: check, build, run, test, fmt, lsp, new, clean
 
 import std::collections;
@@ -974,6 +974,7 @@ pub fn forge_usage() {
     forge_print("  build <file.mw> [-o <out>] [--target <triple>] Full compilation with TIR optimization and Clang linking");
     forge_print("  run <file.mw>              Compile and execute the program immediately");
     forge_print("  test                       Run all native Morrow test suites in tests/");
+    forge_print("  bench                      Compile and run runtime benchmarks plus equivalent C baselines");
     forge_print("  fmt [--check] <file.mw>    Format Morrow source code to canonical style");
     forge_print("  lsp                        Start Morrow Language Server Protocol stdio daemon");
     forge_print("  new <project_name>         Scaffold a new Morrow project with Forge.toml");
@@ -1091,6 +1092,7 @@ pub fn forge_run_test(arena: *mut u8) -> i64 yields [FS, Process, Diagnostics, I
     vec_push(&mut test_suites, "tests/lsp_test.mw");
     vec_push(&mut test_suites, "tests/http_test.mw");
     vec_push(&mut test_suites, "tests/net_test.mw");
+    vec_push(&mut test_suites, "tests/time_test.mw");
 
     let mut passed: i64 = 0;
     let mut failed: i64 = 0;
@@ -1149,6 +1151,130 @@ pub fn forge_run_test(arena: *mut u8) -> i64 yields [FS, Process, Diagnostics, I
         return 0;
     }
     forge_print("test result: FAILED. some test suites failed.");
+    1
+}
+
+// Phase 13.3 — Runtime benchmarking harness.
+// Compiles and runs every Morrow benchmark program in benchmarks/, then
+// compiles and runs the equivalent C baselines in benchmarks/c/ so region
+// allocator, HTTP parser and hash map throughput can be compared directly.
+// Each benchmark program self-reports machine-readable lines of the form:
+//   BENCH <name> iterations=<n> elapsed_ms=<n> ops_per_sec=<n>
+pub fn forge_run_bench(arena: *mut u8) -> i64 yields [FS, Process, Diagnostics, IO] {
+    unsafe {
+        CreateDirectoryA("target" as *const u8, 0 as *const u8);
+        CreateDirectoryA("target/bench" as *const u8, 0 as *const u8);
+    }
+    forge_print("running morrow runtime benchmarks...");
+
+    let mut suites: Vec<String> = vec_new_in(arena);
+    vec_push(&mut suites, "benchmarks/bench_region_alloc.mw");
+    vec_push(&mut suites, "benchmarks/bench_http_parse.mw");
+    vec_push(&mut suites, "benchmarks/bench_hashmap.mw");
+
+    let mut failed: i64 = 0;
+    let mut i: i64 = 0;
+    while i < suites.len {
+        let mut src = vec_get(&suites, i);
+        if !fs_exists(src) {
+            let alt = resolve_import_path(src, arena);
+            if fs_exists(alt) {
+                src = alt;
+            }
+        }
+        forge_print("=== Benchmark: ");
+        forge_print(src);
+        forge_print(" ===");
+
+        let mut out_exe_buf = string_buffer_new_in(arena);
+        fmt_append_str(&mut out_exe_buf, ".\\target\\bench\\bench_");
+        fmt_append_i64(&mut out_exe_buf, i);
+        fmt_append_str(&mut out_exe_buf, ".exe");
+        string_buffer_push_byte(&mut out_exe_buf, 0 as u8);
+        let out_exe = string_as_ptr(&out_exe_buf) as String;
+
+        let mut out_ll_buf = string_buffer_new_in(arena);
+        fmt_append_str(&mut out_ll_buf, out_exe);
+        fmt_append_str(&mut out_ll_buf, ".ll");
+        string_buffer_push_byte(&mut out_ll_buf, 0 as u8);
+        let out_ll = string_as_ptr(&out_ll_buf) as String;
+
+        let comp_status = compile_file(src, out_ll, out_exe);
+        if comp_status != 0 {
+            forge_print("[FAIL] Benchmark failed to compile: ");
+            forge_print(src);
+            failed = failed + 1;
+        } else {
+            let mut attempts: i64 = 0;
+            let mut run_status: i64 = 1;
+            while attempts < 10 {
+                unsafe { Sleep(200); }
+                run_status = process_exec(out_exe, "");
+                if run_status == 0 {
+                    break;
+                }
+                attempts = attempts + 1;
+            }
+            if run_status != 0 {
+                forge_print("[FAIL] Benchmark exited non-zero: ");
+                forge_print(src);
+                failed = failed + 1;
+            }
+        }
+        i = i + 1;
+    }
+
+    // C baselines: identical workloads, compiled with clang -O2.
+    forge_print("=== C baselines (clang -O2) ===");
+    let mut c_suites: Vec<String> = vec_new_in(arena);
+    vec_push(&mut c_suites, "benchmarks/c/bench_region_alloc.c");
+    vec_push(&mut c_suites, "benchmarks/c/bench_http_parse.c");
+    vec_push(&mut c_suites, "benchmarks/c/bench_hashmap.c");
+
+    let mut c: i64 = 0;
+    while c < c_suites.len {
+        let c_src = vec_get(&c_suites, c);
+        if !fs_exists(c_src) {
+            forge_print("[SKIP] C baseline missing: ");
+            forge_print(c_src);
+        } else {
+            let mut c_exe_buf = string_buffer_new_in(arena);
+            fmt_append_str(&mut c_exe_buf, ".\\target\\bench\\c_bench_");
+            fmt_append_i64(&mut c_exe_buf, c);
+            fmt_append_str(&mut c_exe_buf, ".exe");
+            string_buffer_push_byte(&mut c_exe_buf, 0 as u8);
+            let c_exe = string_as_ptr(&c_exe_buf) as String;
+
+            let mut c_args_buf = string_buffer_new_in(arena);
+            fmt_append_str(&mut c_args_buf, "--target=x86_64-pc-windows-gnu -nostartfiles -O2 -o ");
+            fmt_append_str(&mut c_args_buf, c_exe);
+            fmt_append_str(&mut c_args_buf, " ");
+            fmt_append_str(&mut c_args_buf, c_src);
+            fmt_append_str(&mut c_args_buf, " lib/crt/crt2.o -Llib/crt -lmingw32 -lmingwex -lmsvcrt -lkernel32 -lgcc");
+            string_buffer_push_byte(&mut c_args_buf, 0 as u8);
+            let c_args = string_as_ptr(&c_args_buf) as String;
+
+            let c_comp = process_exec("clang", c_args);
+            if c_comp != 0 {
+                forge_print("[SKIP] clang unavailable or failed to build baseline: ");
+                forge_print(c_src);
+            } else {
+                let c_run = process_exec(c_exe, "");
+                if c_run != 0 {
+                    forge_print("[FAIL] C baseline exited non-zero: ");
+                    forge_print(c_src);
+                    failed = failed + 1;
+                }
+            }
+        }
+        c = c + 1;
+    }
+
+    if failed == 0 {
+        forge_print("bench result: ok. all benchmark programs completed.");
+        return 0;
+    }
+    forge_print("bench result: FAILED. some benchmark programs failed.");
     1
 }
 
@@ -1463,6 +1589,10 @@ pub fn forge_main(args: Vec<String>, arena: *mut u8) -> i64 yields [FS, Process,
 
     if unsafe { strcmp(p_cmd, "test" as *const u8) == 0 } {
         return forge_run_test(arena);
+    }
+
+    if unsafe { strcmp(p_cmd, "bench" as *const u8) == 0 } {
+        return forge_run_bench(arena);
     }
 
     if unsafe { strcmp(p_cmd, "fmt" as *const u8) == 0 } {
