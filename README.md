@@ -214,6 +214,9 @@ Morrow/
 │   └── player.mw          # Game demo with effects, refinements, and regions
 ├── docs/
 │   └── SYNTAX.md          # Comprehensive Language & Syntax Specification
+├── LICENSE                # Dual license: MIT OR Apache-2.0 (SPDX)
+├── LICENSE-MIT            # MIT license text
+├── LICENSE-APACHE         # Apache-2.0 license reference
 └── archive/               # Historical Stage-0 Artifacts
     └── stage0-rust/       # Archived legacy Rust bootstrap compiler crates
 ```
