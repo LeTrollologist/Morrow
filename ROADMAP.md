@@ -433,9 +433,10 @@
    - **`benchmarks/c/*.c`**: header-free C baselines for the same workloads (allocator, HTTP parser, open-addressing hash table) so Morrow can be compared to hand-written C on the same host. The region-allocator baseline uses a `volatile` sink so `-O2` cannot elide the allocation loops.
    - Results are emitted as machine-readable `BENCH <name> iterations=<n> elapsed_ms=<n> ops_per_sec=<n>` lines; `forge bench` fails the run if any benchmark or baseline exits non-zero.
    - 100% pass rate across all **21 native test suites** (`mwc.exe test`).
-   - 3-stage self-hosting bootstrap fixed-point parity re-verified: `SHA256(stage6.ll) == SHA256(stage7.ll) == SHA256(stage8.ll) == A0DCABE4ECC305B2A592D3C90F11440E428A71F748AF6293F2B2A7E245C70C3E`.
+   - 3-stage self-hosting bootstrap fixed-point parity re-verified against the released binaries: `SHA256(stage2.ll) == SHA256(stage3.ll) == E910E4F9C57C93EA83D629720920FDC6559237502D3CEDC73B8E58FB0A81DF63`.
 
 ### Phase 13.4: Compiler Robustness Follow-ups
 - The lexer now skips a UTF-8 byte-order mark (`EF BB BF`) instead of emitting three "Unexpected character" errors — a BOM in `compiler/forge.mw` had silently blocked the self-hosting rebuild.
 - Runtime diagnostics (`morrow_report_error`) now print `[ERROR] <message> (line <n>, col <n>)` through `printf` instead of a location-free `puts`, so parse and type errors are actionable.
+- `forge version` reports `forge 2.0.0 (morrow standalone 2026)`, matching the tagged release instead of the stale `0.2.0` build number.
 - Open: named diagnostic severities/diagnostic ranges for the LSP, `mwc bench --json` output, and a CI job that stores benchmark deltas.

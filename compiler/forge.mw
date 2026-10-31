@@ -1619,7 +1619,7 @@ pub fn forge_main(args: Vec<String>, arena: *mut u8) -> i64 yields [FS, Process,
     }
 
     if unsafe { strcmp(p_cmd, "version" as *const u8) == 0 || strcmp(p_cmd, "--version" as *const u8) == 0 || strcmp(p_cmd, "-V" as *const u8) == 0 } {
-        forge_print("forge 0.2.0 (morrow standalone 2026)");
+        forge_print("forge 2.0.0 (morrow standalone 2026)");
         return 0;
     }
 

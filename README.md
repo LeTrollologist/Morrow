@@ -327,23 +327,23 @@ claims can be checked against hand-written C on the same machine:
 running morrow runtime benchmarks...
 === Benchmark: benchmarks/bench_region_alloc.mw ===
 === Morrow Benchmark: Region Allocator vs malloc ===
-BENCH morrow_region_bump iterations=1000000 elapsed_ms=20 ops_per_sec=50000000
-BENCH morrow_malloc_free iterations=1000000 elapsed_ms=29 ops_per_sec=34482758
+BENCH morrow_region_bump iterations=1000000 elapsed_ms=14 ops_per_sec=71428571
+BENCH morrow_malloc_free iterations=1000000 elapsed_ms=27 ops_per_sec=37037037
 === Benchmark: benchmarks/bench_http_parse.mw ===
 === Morrow Benchmark: std::http Parser Throughput ===
-BENCH morrow_http_parse iterations=200000 elapsed_ms=179 ops_per_sec=1117318
+BENCH morrow_http_parse iterations=200000 elapsed_ms=177 ops_per_sec=1129943
 === Benchmark: benchmarks/bench_hashmap.mw ===
 === Morrow Benchmark: HashMap Insert/Lookup Density ===
-BENCH morrow_hashmap_insert iterations=200000 elapsed_ms=45 ops_per_sec=4444444
-BENCH morrow_hashmap_lookup iterations=200000 elapsed_ms=26 ops_per_sec=7692307
+BENCH morrow_hashmap_insert iterations=200000 elapsed_ms=43 ops_per_sec=4651162
+BENCH morrow_hashmap_lookup iterations=200000 elapsed_ms=28 ops_per_sec=7142857
 === C baselines (clang -O2) ===
 === C Baseline: malloc/free vs bump allocator ===
-BENCH c_malloc_free iterations=1000000 elapsed_ms=26 ops_per_sec=38461538
-BENCH c_bump_alloc iterations=1000000 elapsed_ms=15 ops_per_sec=66666666
+BENCH c_malloc_free iterations=1000000 elapsed_ms=27 ops_per_sec=37037037
+BENCH c_bump_alloc iterations=1000000 elapsed_ms=10 ops_per_sec=100000000
 === C Baseline: HTTP/1.1 request parser ===
-BENCH c_http_parse iterations=200000 elapsed_ms=6 ops_per_sec=33333333
+BENCH c_http_parse iterations=200000 elapsed_ms=7 ops_per_sec=28571428
 === C Baseline: open-addressing hash table ===
-BENCH c_hashmap_insert iterations=200000 elapsed_ms=26 ops_per_sec=7692307
+BENCH c_hashmap_insert iterations=200000 elapsed_ms=19 ops_per_sec=10526315
 BENCH c_hashmap_lookup iterations=200000 elapsed_ms=9 ops_per_sec=22222222
 bench result: ok. all benchmark programs completed.
 ```
