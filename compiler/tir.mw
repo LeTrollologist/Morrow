@@ -520,7 +520,7 @@ pub fn lower_ast_expr_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, expr
                     break;
                 }
             }
-            cur = lower_ast_stmt_to_tir(f, cur, s, 0 - 1, false, arena);
+            cur = lower_ast_stmt_to_tir(f, cur, s, 0 - 1, 0 - 1, false, arena);
             bi = bi + 1;
         }
 
@@ -551,7 +551,7 @@ pub fn lower_ast_expr_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, expr
                     break;
                 }
             }
-            rcur = lower_ast_stmt_to_tir(f, rcur, rs, 0 - 1, false, arena);
+            rcur = lower_ast_stmt_to_tir(f, rcur, rs, 0 - 1, 0 - 1, false, arena);
             rbi = rbi + 1;
         }
         if expr.sym != 0 {
@@ -568,7 +568,7 @@ pub fn lower_ast_expr_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, expr
     alloc_tir_op_int(arena, 0)
 }
 
-pub fn lower_ast_stmt_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, stmt: *mut AstStmt, loop_exit_id: i64, is_tail: bool, arena: *mut u8) -> *mut TirBlock {
+pub fn lower_ast_stmt_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, stmt: *mut AstStmt, loop_exit_id: i64, loop_head_id: i64, is_tail: bool, arena: *mut u8) -> *mut TirBlock {
     if stmt == (0 as *mut AstStmt) {
         return cur_block;
     }
@@ -661,7 +661,7 @@ pub fn lower_ast_stmt_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, stmt
                     return dead_block;
                 }
             }
-            cur = lower_ast_stmt_to_tir(f, cur, bs, loop_exit_id, is_inner_tail, arena);
+            cur = lower_ast_stmt_to_tir(f, cur, bs, loop_exit_id, loop_head_id, is_inner_tail, arena);
             bi = bi + 1;
         }
         if stmt.sym != 0 {
@@ -683,6 +683,15 @@ pub fn lower_ast_stmt_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, stmt
         return cur_block;
     }
 
+    if kind == stmt_continue() {
+        if loop_head_id >= 0 {
+            tir_block_set_branch(cur_block, loop_head_id);
+            let dead_continue = tir_fn_add_block(f, arena);
+            return dead_continue;
+        }
+        return cur_block;
+    }
+
     if kind == stmt_if() {
         let cond = lower_ast_expr_to_tir(f, cur_block, stmt.expr, arena);
         let then_block = tir_fn_add_block(f, arena);
@@ -698,7 +707,7 @@ pub fn lower_ast_stmt_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, stmt
         while i < then_len {
             let s = vec_get(&stmt.then_stmts, i);
             let is_inner_tail = is_tail && (i == then_len - 1);
-            cur_then = lower_ast_stmt_to_tir(f, cur_then, s, loop_exit_id, is_inner_tail, arena);
+            cur_then = lower_ast_stmt_to_tir(f, cur_then, s, loop_exit_id, loop_head_id, is_inner_tail, arena);
             i = i + 1;
         }
         if cur_then.sym == tir_term_none() {
@@ -712,7 +721,7 @@ pub fn lower_ast_stmt_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, stmt
         while j < else_len {
             let s = vec_get(&stmt.else_stmts, j);
             let is_inner_tail = is_tail && (j == else_len - 1);
-            cur_else = lower_ast_stmt_to_tir(f, cur_else, s, loop_exit_id, is_inner_tail, arena);
+            cur_else = lower_ast_stmt_to_tir(f, cur_else, s, loop_exit_id, loop_head_id, is_inner_tail, arena);
             j = j + 1;
         }
         if cur_else.sym == tir_term_none() {
@@ -737,7 +746,7 @@ pub fn lower_ast_stmt_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, stmt
         let mut i: i64 = 0;
         while i < body_len {
             let s = vec_get(&stmt.then_stmts, i);
-            cur_body = lower_ast_stmt_to_tir(f, cur_body, s, exit_block.kind, false, arena);
+            cur_body = lower_ast_stmt_to_tir(f, cur_body, s, exit_block.kind, cond_block.kind, false, arena);
             i = i + 1;
         }
         if cur_body.sym == tir_term_none() {
@@ -762,7 +771,7 @@ pub fn lower_ast_stmt_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, stmt
         let b_len = stmt.then_stmts.len;
         while bi < b_len {
             let s = vec_get(&stmt.then_stmts, bi);
-            cur = lower_ast_stmt_to_tir(f, cur, s, loop_exit_id, is_tail && (bi == b_len - 1), arena);
+            cur = lower_ast_stmt_to_tir(f, cur, s, loop_exit_id, loop_head_id, is_tail && (bi == b_len - 1), arena);
             bi = bi + 1;
         }
 
@@ -785,7 +794,7 @@ pub fn lower_ast_fn_to_tir(ast_fn: *mut AstFn, interner: &Interner, arena: *mut 
     while i < body_len {
         let stmt = vec_get(&ast_fn.body, i);
         let is_tail = (i == body_len - 1);
-        cur_b = lower_ast_stmt_to_tir(tir_f, cur_b, stmt, 0 - 1, is_tail, arena);
+        cur_b = lower_ast_stmt_to_tir(tir_f, cur_b, stmt, 0 - 1, 0 - 1, is_tail, arena);
         i = i + 1;
     }
 

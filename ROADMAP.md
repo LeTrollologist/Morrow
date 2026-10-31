@@ -461,3 +461,21 @@
 - The module loader no longer skips `std/fs.mw` and `std/process.mw` (a stage-0 leftover), so their functions are typechecked, emitted, and callable. `std::fs` gained `morrow_fs_file_size` / `morrow_fs_delete_file` runtime helpers.
 - `hashmap_new_in` now takes an explicit capacity: `hashmap_new_in(arena, initial_cap)`.
 - Fallout fixed across the tree: 13 compiler/stdlib call sites, 2 examples (`hashmap_insert` arity, missing `puts` declaration), and the negative corpus.
+
+### Phase 14: Syntax Surface Completion ✅ (v2.1.0)
+- Lexer: block comments (`/* … */`, newline-aware), hexadecimal literals (`0xFF`), underscore digit separators (`100_000`), and the `null` keyword (lowered to the zero pointer).
+- `continue`: lexer keyword + AST statement + **TIR lowering**. The AST-only implementation was a silent no-op in the real pipeline — `lower_ast_stmt_to_tir` now threads a `loop_head_id` through every recursive call so `continue` branches to the loop condition. Caught by the new suite, not by inspection.
+- `println("prefix {} suffix", value)` substitutes **one** placeholder with a string or integer argument (printf sequence; the split halves are registered during string collection).
+- New suite `tests/syntax_features_test.mw` (22nd) covers all five features; the `block_comment` and `hex_literal` negative cases were retired.
+- Still missing from the syntax surface: float literals, `if`-expressions, closures, `enum`/`match`.
+
+### Phase 14.1: Argument Type Checking ⛔ blocked on inference
+- Attempted: compare `int`/`string`/`bool` kinds between argument and parameter in typeck. Result: **152 false positives** across the compiler and stdlib, because `tc_expr` types most expressions as `i64` (generic parameters resolve to int, several literal paths lose their string type).
+- Reverted. This needs real inference/unification first; arity and callee existence remain enforced (Phase 13.6).
+
+### Phase 14.2: CI Wiring ✅
+- `.github/workflows/ci.yml` (windows-latest): `forge version`, `forge test` (22 positive + 13 compile-fail), build every example, run `forge bench`, and verify the 3-stage bootstrap fixed point.
+
+### Phase 14.3: Open items
+- **Built-in effect handlers** for `Process`/`FS`/`IO`: `perform Process.spawn(...)` still faults (only the codegen-thunked `process_exec`/`fs_*` wrappers work), so `command_status` is unusable.
+- **Region escape analysis**: still unenforced; escaping region references compile and fail later.

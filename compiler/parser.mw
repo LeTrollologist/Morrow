@@ -170,6 +170,12 @@ fn parse_primary_expr(p: &mut Parser) -> *mut AstExpr yields [Diagnostics] {
         return alloc_expr_int(p.arena, 0);
     }
 
+    if kind == tok_kw_null() {
+        // `null` is the null pointer constant; pointers are i64 in generated code.
+        advance(p);
+        return alloc_expr_int(p.arena, 0);
+    }
+
 
     if kind == tok_kw_unsafe() {
         advance(p);
@@ -612,6 +618,12 @@ pub fn parse_stmt(p: &mut Parser) -> *mut AstStmt yields [Diagnostics] {
         advance(p); // consume break
         expect(p, tok_semicolon(), "Expected ';' after break");
         return alloc_stmt_break(p.arena);
+    }
+
+    if kind == tok_kw_continue() {
+        advance(p); // consume continue
+        expect(p, tok_semicolon(), "Expected ';' after continue");
+        return alloc_stmt_continue(p.arena);
     }
 
     if kind == tok_kw_region() {

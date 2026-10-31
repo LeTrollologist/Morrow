@@ -1,0 +1,40 @@
+// Syntax feature suite: block comments, hex/underscore literals, null, continue,
+// and println with a single {} placeholder.
+import std::test;
+
+fn count_with_continue() -> i64 {
+    let mut i: i64 = 0;
+    let mut sum: i64 = 0;
+    while i < 6 {
+        i = i + 1;
+        if i == 3 {
+            continue;
+        }
+        sum = sum + i;
+    }
+    sum
+}
+
+fn main() -> i64 {
+    test_print("=== Running Syntax Features Test Suite ===");
+
+    /* block comments
+       may span several lines */
+    assert_eq(1, 1, "block comment parsed");
+
+    assert_eq(0xFF, 255, "hex literal 0xFF");
+    assert_eq(0x10, 16, "hex literal 0x10");
+    assert_eq(100_000, 100000, "underscore digit separator");
+    assert_eq(1_000_000, 1000000, "multiple underscore separators");
+
+    let p: *mut u8 = null;
+    assert_eq(p as i64, 0, "null is the zero pointer constant");
+
+    assert_eq(count_with_continue(), 18, "continue skips the rest of an iteration");
+
+    println("println placeholder value = {}", 42);
+    println("println placeholder string = {}", "ok");
+
+    test_print("All syntax feature tests passed!");
+    0
+}

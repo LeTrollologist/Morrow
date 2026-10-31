@@ -19,6 +19,20 @@ fn is_digit(c: i64) -> bool {
     c >= 48 && c <= 57
 }
 
+fn is_hex_digit(c: i64) -> bool {
+    is_digit(c) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102)
+}
+
+fn hex_value(c: i64) -> i64 {
+    if c >= 97 {
+        c - 87
+    } else if c >= 65 {
+        c - 55
+    } else {
+        c - 48
+    }
+}
+
 fn is_alpha(c: i64) -> bool {
     (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95
 }
@@ -65,15 +79,69 @@ pub fn tokenize(src: String, interner: &mut Interner, arena: *mut u8) -> Vec<*mu
                 idx = idx + 1;
                 col = col + 1;
             }
+        } else if c == 47 && idx + 1 < len && unsafe { ptr[idx + 1] } as i64 == 42 {
+            // Block comment: skip until the closing */ (newlines keep line counting honest)
+            idx = idx + 2;
+            col = col + 2;
+            let mut closed = false;
+            while idx < len && !closed {
+                let cc = unsafe { ptr[idx] } as i64;
+                if cc == 42 && idx + 1 < len && unsafe { ptr[idx + 1] } as i64 == 47 {
+                    idx = idx + 2;
+                    col = col + 2;
+                    closed = true;
+                } else if cc == 10 {
+                    idx = idx + 1;
+                    line = line + 1;
+                    col = 1;
+                } else {
+                    idx = idx + 1;
+                    col = col + 1;
+                }
+            }
         } else if is_digit(c) {
-            // Integer literal
+            // Integer literal: decimal or hexadecimal (0x…), with optional '_' separators
             start_col = col;
             let mut val: i64 = 0;
-            while idx < len && is_digit(unsafe { ptr[idx] } as i64) {
-                let digit = unsafe { ptr[idx] } as i64 - 48;
-                val = val * 10 + digit;
-                idx = idx + 1;
-                col = col + 1;
+            let mut is_hex = false;
+            if c == 48 && idx + 1 < len {
+                let nxt = unsafe { ptr[idx + 1] } as i64;
+                if nxt == 120 || nxt == 88 {
+                    is_hex = true;
+                    idx = idx + 2;
+                    col = col + 2;
+                }
+            }
+            if is_hex {
+                let mut scanning = true;
+                while idx < len && scanning {
+                    let hc = unsafe { ptr[idx] } as i64;
+                    if is_hex_digit(hc) {
+                        val = val * 16 + hex_value(hc);
+                        idx = idx + 1;
+                        col = col + 1;
+                    } else if hc == 95 {
+                        idx = idx + 1;
+                        col = col + 1;
+                    } else {
+                        scanning = false;
+                    }
+                }
+            } else {
+                let mut scanning = true;
+                while idx < len && scanning {
+                    let dc = unsafe { ptr[idx] } as i64;
+                    if is_digit(dc) {
+                        val = val * 10 + (dc - 48);
+                        idx = idx + 1;
+                        col = col + 1;
+                    } else if dc == 95 {
+                        idx = idx + 1;
+                        col = col + 1;
+                    } else {
+                        scanning = false;
+                    }
+                }
             }
             let tok = alloc_token(arena, tok_int(), 0, val, "", line, start_col);
             vec_push(&mut tokens, tok);
@@ -142,6 +210,10 @@ pub fn tokenize(src: String, interner: &mut Interner, arena: *mut u8) -> Vec<*mu
                 kind = tok_kw_with();
             } else if unsafe { strcmp(s as *const u8, "resume" as *const u8) == 0 } {
                 kind = tok_kw_resume();
+            } else if unsafe { strcmp(s as *const u8, "continue" as *const u8) == 0 } {
+                kind = tok_kw_continue();
+            } else if unsafe { strcmp(s as *const u8, "null" as *const u8) == 0 } {
+                kind = tok_kw_null();
             }
 
             let sym = interner_intern(interner, s);

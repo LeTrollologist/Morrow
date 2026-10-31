@@ -17,9 +17,12 @@
 
 ### Comments
 ```morrow
-// Single-line comment to end of line (the only comment form)
+// Single-line comment to end of line
+
+/* multi-line block comment
+   (newlines are counted, so diagnostics keep correct line numbers) */
 ```
-Block comments (`/* ... */`) are **not** implemented and are a parse error.
+Both forms are supported.
 
 ### Identifiers
 Start with an ASCII letter or `_`, followed by letters, digits or `_`:
@@ -32,22 +35,22 @@ let _scratch = "temp";
 ### Literals
 | Literal | Supported | Notes |
 |---|:---:|---|
-| Decimal integer `42` | ✅ | Only decimal; **no** `0xFF`, **no** `100_000` separators |
+| Decimal integer `42` | ✅ | Underscore separators allowed: `100_000` |
+| Hexadecimal `0xFF`, `0x10` | ✅ | `0x` / `0X` prefix |
 | Negative integer `-1` | ✅ | Unary minus on a literal |
 | Boolean `true` / `false` | ✅ | |
 | String `"text"` | ✅ | See escapes below |
+| `null` | ✅ | The null pointer constant (`0`); usable where a pointer type is expected |
 | Float `3.14` | ❌ | `.` is field access; parse error |
-| `null` | ❌ | Parsed as an identifier, then fails to link (`@null` undefined) |
 
 String escapes accepted by the lexer: `\n`, `\r`, `\t`, `\0`, `\\`, `\"`.
-Strings are NUL-terminated in generated code; the explicit `\0` used in older
-examples is redundant but harmless.
+Strings are NUL-terminated in generated code.
 
 ### Keywords recognised by the lexer
 ```text
 fn      let     mut     var     if      else    while   loop    break
-return  struct  type    effect  perform handle  with    resume  region
-extern  unsafe  import  pub     as      true    false
+continue return struct  type    effect  perform handle  with    resume
+region  extern  unsafe  import  pub     as      true    false   null
 ```
 Contextual words handled by the parser but **not** lexed as keywords:
 `yields`, `linear`, `affine`, `const`.
@@ -55,7 +58,7 @@ Intrinsics (never declared, resolved by the code generator):
 `println`, `consume`, `drop`.
 
 Words that appear in older drafts but are **not** supported at all:
-`for`, `in`, `match`, `enum`, `nursery`, `null`.
+`for`, `in`, `match`, `enum`, `nursery`.
 
 ---
 
@@ -406,11 +409,10 @@ loop {
 }
 ```
 Supported: `let`, `var`, `let mut`, assignment, `if`/`else if`/`else`, `while`,
-`loop`, `break`, `return`, nested blocks.
+`loop`, `break`, `continue`, `return`, nested blocks.
 
 Not supported: `if` **as an expression** (`let x = if c { 1 } else { 2 };` — parse
-error), `continue` (parsed as an identifier), closures (`let f = |x| ...`), `for`,
-`in`, `match`, block comments.
+error), closures (`let f = |x| ...`), `for`, `in`, `match`.
 
 ---
 
@@ -637,14 +639,15 @@ time_ops_per_sec(iterations: i64, elapsed_ms: i64) -> i64
 ```
 
 ### Printing
-`println` is a codegen intrinsic with exactly two shapes:
+`println` is a codegen intrinsic supporting three shapes:
 ```morrow
-println("a string literal");   // puts(literal)
-println(some_integer);         // printf("%lld\n", value)
+println("a string literal");        // puts(literal)
+println(some_integer);              // printf("%lld\n", value)
+println("count = {}", some_value);  // one {} placeholder (string or integer)
 ```
-There is **no** `{}` interpolation and no multi-argument printing. A call like
-`println("value {}", 42)` prints only the literal text (including the braces); in
-v2.0.0 it printed a pointer instead, which is fixed in v2.0.1.
+Only a **single** `{}` placeholder is substituted, and only when the first argument
+is a string literal; further arguments are ignored. Use one value per call for
+anything more elaborate.
 
 
 ---
@@ -722,15 +725,13 @@ Parsed as errors (do not appear in the language today):
 
 | Construct | Status / symptom |
 |---|---|
-| `/* block comments */` | `Unexpected character in input` |
-| `0xFF`, `100_000`, `3.14` | parse error (`Expected ';'`) |
-| `null` | parsed as an identifier → link error `@null` |
+| `3.14` (float literal) | parse error (`Expected field name after '.'`) |
 | `enum` / `match` | `Unexpected token at top level` |
 | `for x in ...` | parse error |
 | `nursery` / `n.spawn` | parse error |
 | `if` as an expression (`let x = if c {1} else {2};`) | `Expected expression` |
 | closures (`let f = \|x\| ...`) | parse error |
-| `continue` | treated as an identifier → `Undefined variable identifier` |
+| `continue` (outside a loop) | silently ignored (no enclosing loop to jump to) |
 | handler shorthand `op(args) => resume(...)` | parse error; use `fn op(k, args) { resume(k, v); }` |
 
 Implemented but weaker than older drafts claimed:
@@ -741,8 +742,10 @@ Implemented but weaker than older drafts claimed:
 - **Escape analysis**: not enforced (escaping region references compile).
 - **`println`**: one value per call, no `{}` interpolation.
 - **Call signatures**: callee existence and argument **count** are enforced
-  (v2.0.2); argument *types* are not compared, so a `String` passed where an `i64`
-  is declared still compiles.
+  (v2.0.2); argument *types* are not compared, because `tc_expr` currently infers
+  `i64` for most expressions — a kind comparison produced 152 false positives across
+  the compiler/stdlib during development, so type checking needs real inference
+  first.
 - **`forge check`**: runs the full typechecker (including callee existence/arity)
   but does not link, so a missing C symbol is only caught by `forge build`.
 - **`forge fmt --check`**: the formatter is idempotent, but the repository's own
@@ -781,7 +784,7 @@ Every claim above was checked against the released compiler with a probe suite:
 4. **Tooling** — `forge resolve` on a two-level dependency graph (lockfile captured
    verbatim above), `--target` builds checked by magic bytes, and every shipped
    example built with the released binary.
-5. **Release gates** — 21/21 native suites, 15 compile-fail suites
+5. **Release gates** — 22/22 native suites, 13 compile-fail suites
    (`tests/negative/*.mw`, asserted by `forge test`), benchmark suite, and the
    3-stage self-hosting fixed point.
 

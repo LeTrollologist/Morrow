@@ -1,4 +1,0 @@
-// NEGATIVE TEST: hexadecimal integer literals are not supported.
-fn main() -> i64 {
-    0xFF
-}

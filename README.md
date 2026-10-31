@@ -11,7 +11,7 @@
 <!-- Tier 1: Project Metadata & Quality Assurance Badges -->
 <p align="center">
   <a href="https://github.com/LeTrollologist/Morrow/releases">
-    <img src="https://img.shields.io/badge/Release-v2.0.2_Standalone-6366F1?style=for-the-badge&logo=github&logoColor=white&labelColor=0f172a" alt="Release" />
+    <img src="https://img.shields.io/badge/Release-v2.1.0_Standalone-6366F1?style=for-the-badge&logo=github&logoColor=white&labelColor=0f172a" alt="Release" />
   </a>
   <a href="compiler/">
     <img src="https://img.shields.io/badge/Compiler-Pure_Morrow-8B5CF6?style=for-the-badge&logo=llvm&logoColor=white&labelColor=0f172a" alt="Compiler" />
@@ -99,11 +99,11 @@ tested breakdown lives in [`docs/SYNTAX.md` §14](docs/SYNTAX.md#14-not-implemen
 | Refinements | ⚠️ literal casts + divisor-span checks only (no variable proofs, no narrowing) |
 | Generics + turbofish (`identity::<i64>(42)`, `Pair::<i64> { … }`) | ✅ implemented |
 | Region escape analysis | ❌ not enforced |
-| `enum` / `match`, `for`, `nursery`/fibers, closures, `if`-expressions, `continue` | ❌ not implemented (parse errors) |
-| Float / hex / underscore literals, `null`, `/* */` comments | ❌ not implemented |
+| `enum` / `match`, `for`, `nursery`/fibers, closures, `if`-expressions | ❌ not implemented (parse errors) |
+| Float literals | ❌ not implemented |
 | Debug info (PDB), LTO, section GC | ❌ not implemented (stage-0 Rust only) |
-| `println` | one value per call: string literal or integer; **no `{}` interpolation** |
-| Call signatures | callee existence + argument **count** enforced (v2.0.2); argument *types* not compared |
+| `println` | one value per call: literal, integer, or a single `{}` placeholder |
+| Call signatures | callee existence + argument **count** enforced; argument *types* not compared (inference returns `i64` for most expressions) |
 | `std::process` | `process_exec` works; `command_new`/`command_arg` link, `command_status` faults (no default `Process` effect handler) |
 
 Toolchain prerequisite: **`clang` on `PATH`** (the compiler emits LLVM IR and
@@ -254,8 +254,8 @@ Morrow/
 All developer workflows are executed natively through [`bin/forge.exe`](bin/forge.exe) and [`bin/mwc.exe`](bin/mwc.exe) without any Cargo or Rust dependency.
 
 ### 1. Run Native Test Suites (`forge test`)
-Run all 21 pure Morrow test suites compiled and executed on the fly, followed by
-the compile-fail corpus in `tests/negative/` (15 programs that must be rejected
+Run all 22 pure Morrow test suites compiled and executed on the fly, followed by
+the compile-fail corpus in `tests/negative/` (13 programs that must be rejected
 with a specific diagnostic):
 ```powershell
 .\bin\forge.exe test

@@ -67,6 +67,8 @@ pub fn tok_kw_perform() -> i64 { 56 }
 pub fn tok_kw_handle() -> i64 { 57 }
 pub fn tok_kw_with() -> i64 { 58 }
 pub fn tok_kw_resume() -> i64 { 59 }
+pub fn tok_kw_continue() -> i64 { 60 }
+pub fn tok_kw_null() -> i64 { 61 }
 
 pub struct Token {
     kind: i64,
@@ -121,6 +123,7 @@ pub fn stmt_index_assign() -> i64 { 8 }
 pub fn stmt_block() -> i64 { 9 }
 pub fn stmt_break() -> i64 { 10 }
 pub fn stmt_handle() -> i64 { 11 }
+pub fn stmt_continue() -> i64 { 12 }
 
 pub struct AstHandlerArm {
     op_sym: i64,
@@ -700,6 +703,26 @@ pub fn alloc_stmt_break(arena: *mut u8) -> *mut AstStmt {
     let null_expr = 0 as *mut AstExpr;
     unsafe {
         p.kind = stmt_break();
+        p.sym = 0;
+        p.expr = null_expr;
+        p.then_stmts = empty_then;
+        p.else_stmts = empty_else;
+        p.left = null_expr;
+        p.right = null_expr;
+        p.handler = 0 as *mut AstHandler;
+    }
+    p
+}
+
+pub fn alloc_stmt_continue(arena: *mut u8) -> *mut AstStmt {
+    let p = unsafe {
+        morrow_region_alloc(arena, 128, 8) as *mut AstStmt
+    };
+    let empty_then: Vec<*mut AstStmt> = vec_new_in(arena);
+    let empty_else: Vec<*mut AstStmt> = vec_new_in(arena);
+    let null_expr = 0 as *mut AstExpr;
+    unsafe {
+        p.kind = stmt_continue();
         p.sym = 0;
         p.expr = null_expr;
         p.then_stmts = empty_then;

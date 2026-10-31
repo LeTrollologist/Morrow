@@ -10,6 +10,7 @@ extern "C" {
     fn strlen(s: *const u8) -> usize;
     fn strcmp(s1: *const u8, s2: *const u8) -> i32;
     fn strncmp(s1: *const u8, s2: *const u8, n: usize) -> i32;
+    fn strstr(haystack: *const u8, needle: *const u8) -> *const u8;
 }
 
 pub struct Codegen {
@@ -24,6 +25,7 @@ pub struct Codegen {
     terminated: bool,
     handlers: Vec<*mut AstHandler>,
     target_triple: String,
+    cur_loop_head: i64,
 }
 
 fn emit_i64_helper(cg: &mut Codegen, n: i64) {
@@ -127,6 +129,7 @@ pub fn codegen_new_target_in(interner: &mut Interner, arena: *mut u8, target_tri
         terminated: false,
         handlers: handlers_vec,
         target_triple: target_triple,
+        cur_loop_head: 0,
     }
 }
 
@@ -274,6 +277,8 @@ fn get_field_offset(cg: &mut Codegen, sym: i64) -> i64 {
 
     if unsafe { strcmp(p, "handlers" as *const u8) == 0 } { return 9; }
 
+    if unsafe { strcmp(p, "cur_loop_head" as *const u8) == 0 } { return 11; }
+
     0
 }
 
@@ -327,6 +332,42 @@ fn collect_strings_expr(cg: &mut Codegen, e: *mut AstExpr) {
         while ri < e.stmts.len {
             collect_strings_stmt(cg, vec_get(&e.stmts, ri));
             ri = ri + 1;
+        }
+    }
+    // println("prefix {} suffix", value) is lowered to a printf sequence; the
+    // split halves must exist in the constant table, so register them here (the
+    // emitter recomputes the same split and looks them up by content).
+    if e.kind == expr_call() && e.args.len > 1 {
+        let interner_ref = cg.cg_interner as &Interner;
+        let callee = interner_lookup(interner_ref, e.sym);
+        if unsafe { strcmp(callee as *const u8, "println" as *const u8) } == 0 {
+            let first = vec_get(&e.args, 0);
+            if first != (0 as *mut AstExpr) && first.kind == expr_str() {
+                let lit = first.str_val as *const u8;
+                let hit = unsafe { strstr(lit, "{}" as *const u8) };
+                if (hit as usize) != 0 {
+                    let lit_len = unsafe { strlen(lit) } as i64;
+                    let pos = (hit as usize) - (lit as usize);
+                    // prefix half
+                    let mut pre = string_buffer_new_in(cg.cg_arena);
+                    string_buffer_push_str(&mut pre, lit, pos as i64);
+                    string_buffer_push_byte(&mut pre, 0 as u8);
+                    let pre_s = string_as_ptr(&pre) as String;
+                    let pre_id = cg.strings.len;
+                    vec_push(&mut cg.strings, pre_s);
+                    first.int_val = pre_id;
+                    // suffix half
+                    let mut suf = string_buffer_new_in(cg.cg_arena);
+                    let suf_len = lit_len - pos as i64 - 2;
+                    if suf_len > 0 {
+                        let suf_ptr = (lit as usize + pos + 2) as *const u8;
+                        string_buffer_push_str(&mut suf, suf_ptr, suf_len);
+                    }
+                    string_buffer_push_byte(&mut suf, 0 as u8);
+                    let suf_s = string_as_ptr(&suf) as String;
+                    vec_push(&mut cg.strings, suf_s);
+                }
+            }
         }
     }
     if e.kind == expr_str() {
@@ -1709,7 +1750,9 @@ pub fn emit_stmt(cg: &mut Codegen, stmt_ptr: *mut AstStmt, is_main: bool, is_tai
         let body_lbl = alloc_label(cg);
         let exit_lbl = alloc_label(cg);
         let prev_exit = cg.cur_loop_exit;
+        let prev_head = cg.cur_loop_head;
         cg.cur_loop_exit = exit_lbl;
+        cg.cur_loop_head = cond_lbl;
 
         emit_str(cg, "    br label %lbl_");
         emit_i64(cg, cond_lbl);
@@ -1757,6 +1800,17 @@ pub fn emit_stmt(cg: &mut Codegen, stmt_ptr: *mut AstStmt, is_main: bool, is_tai
         emit_str(cg, ":\n");
         cg.terminated = false;
         cg.cur_loop_exit = prev_exit;
+        cg.cur_loop_head = prev_head;
+        return;
+    }
+
+    if stmt_ptr.kind == stmt_continue() {
+        if cg.cur_loop_head > 0 {
+            emit_str(cg, "    br label %lbl_");
+            emit_i64(cg, cg.cur_loop_head);
+            emit_str(cg, "\n");
+            cg.terminated = true;
+        }
         return;
     }
 }
@@ -2452,17 +2506,81 @@ fn emit_tir_inst(cg: &mut Codegen, inst: *mut TirInst) {
             if inst.args.len > 0 {
                 let first_arg = vec_get(&inst.args, 0);
                 if first_arg.kind == tir_op_str() {
-                    let sid = get_str_id(cg, first_arg.str_val);
-                    let pr = alloc_reg(cg);
-                    emit_str(cg, "    %t");
-                    emit_i64(cg, pr);
-                    emit_str(cg, " = call i32 @puts(ptr @str_");
-                    emit_i64(cg, sid);
-                    emit_str(cg, ")\n");
-                    let fr = alloc_reg(cg);
-                    emit_str(cg, "    %t");
-                    emit_i64(cg, fr);
-                    emit_str(cg, " = call i32 @fflush(ptr null)\n");
+                    let lit_ptr = first_arg.str_val as *const u8;
+                    let ph = unsafe { strstr(lit_ptr, "{}" as *const u8) };
+                    if inst.args.len > 1 && (ph as usize) != 0 {
+                        // println("a{}b", x) -> printf("%s", "a"); print(x); printf("%s", "b"); newline
+                        let lit_len = unsafe { strlen(lit_ptr) } as i64;
+                        let pos = (ph as usize) - (lit_ptr as usize);
+
+                        let mut pre = string_buffer_new_in(cg.cg_arena);
+                        string_buffer_push_str(&mut pre, lit_ptr, pos as i64);
+                        string_buffer_push_byte(&mut pre, 0 as u8);
+                        let pre_s = string_as_ptr(&pre) as String;
+                        let pre_id = get_str_id(cg, pre_s);
+                        let r1 = alloc_reg(cg);
+                        emit_str(cg, "    %t");
+                        emit_i64(cg, r1);
+                        emit_str(cg, " = call i32 (ptr, ...) @printf(ptr @fmt_str, ptr @str_");
+                        emit_i64(cg, pre_id);
+                        emit_str(cg, ")\n");
+
+                        let val_arg = vec_get(&inst.args, 1);
+                        if val_arg.kind == tir_op_str() {
+                            let vid = get_str_id(cg, val_arg.str_val);
+                            let r2 = alloc_reg(cg);
+                            emit_str(cg, "    %t");
+                            emit_i64(cg, r2);
+                            emit_str(cg, " = call i32 (ptr, ...) @printf(ptr @fmt_str, ptr @str_");
+                            emit_i64(cg, vid);
+                            emit_str(cg, ")\n");
+                        } else {
+                            let vr = emit_tir_op(cg, val_arg);
+                            let r3 = alloc_reg(cg);
+                            emit_str(cg, "    %t");
+                            emit_i64(cg, r3);
+                            emit_str(cg, " = call i32 (ptr, ...) @printf(ptr @fmt_i64_plain, i64 %t");
+                            emit_i64(cg, vr);
+                            emit_str(cg, ")\n");
+                        }
+
+                        let mut suf = string_buffer_new_in(cg.cg_arena);
+                        let suf_len = lit_len - pos as i64 - 2;
+                        if suf_len > 0 {
+                            let suf_ptr = (lit_ptr as usize + pos + 2) as *const u8;
+                            string_buffer_push_str(&mut suf, suf_ptr, suf_len);
+                        }
+                        string_buffer_push_byte(&mut suf, 0 as u8);
+                        let suf_s = string_as_ptr(&suf) as String;
+                        let suf_id = get_str_id(cg, suf_s);
+                        let r4 = alloc_reg(cg);
+                        emit_str(cg, "    %t");
+                        emit_i64(cg, r4);
+                        emit_str(cg, " = call i32 (ptr, ...) @printf(ptr @fmt_str, ptr @str_");
+                        emit_i64(cg, suf_id);
+                        emit_str(cg, ")\n");
+
+                        let r5 = alloc_reg(cg);
+                        emit_str(cg, "    %t");
+                        emit_i64(cg, r5);
+                        emit_str(cg, " = call i32 @puts(ptr @str_empty)\n");
+                        let fr = alloc_reg(cg);
+                        emit_str(cg, "    %t");
+                        emit_i64(cg, fr);
+                        emit_str(cg, " = call i32 @fflush(ptr null)\n");
+                    } else {
+                        let sid = get_str_id(cg, first_arg.str_val);
+                        let pr = alloc_reg(cg);
+                        emit_str(cg, "    %t");
+                        emit_i64(cg, pr);
+                        emit_str(cg, " = call i32 @puts(ptr @str_");
+                        emit_i64(cg, sid);
+                        emit_str(cg, ")\n");
+                        let fr = alloc_reg(cg);
+                        emit_str(cg, "    %t");
+                        emit_i64(cg, fr);
+                        emit_str(cg, " = call i32 @fflush(ptr null)\n");
+                    }
                 } else {
                     let arg_reg = emit_tir_op(cg, first_arg);
                     emit_str(cg, "    call void @morrow_println_i64(i64 %t");
@@ -3849,6 +3967,8 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
 
     // Constants & Strings
     emit_str(&mut cg, "@fmt_int = internal constant [6 x i8] c\"%lld\\0A\\00\"\n");
+    emit_str(&mut cg, "@fmt_str = internal constant [3 x i8] c\"%s\\00\"\n");
+    emit_str(&mut cg, "@fmt_i64_plain = internal constant [5 x i8] c\"%lld\\00\"\n");
     emit_str(&mut cg, "@fmt_diag_err = internal constant [34 x i8] c\"[ERROR] %s (line %lld, col %lld)\\0A\\00\"\n");
     emit_str(&mut cg, "@str_mode_rb = internal constant [3 x i8] c\"rb\\00\"\n");
     emit_str(&mut cg, "@str_mode_wb = internal constant [3 x i8] c\"wb\\00\"\n");

@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  toolchain:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain info
+        shell: pwsh
+        run: |
+          clang --version
+          .\bin\forge.exe version
+
+      - name: Native suites (21 positive + 13 compile-fail)
+        shell: pwsh
+        run: .\bin\forge.exe test
+
+      - name: Build every shipped example
+        shell: pwsh
+        run: |
+          $failed = @()
+          Get-ChildItem examples -Filter *.mw | ForEach-Object {
+            $out = "target/ci_$($_.BaseName).exe"
+            .\bin\forge.exe build $_.FullName -o $out | Out-Null
+            if ($LASTEXITCODE -ne 0) { $failed += $_.Name }
+          }
+          if ($failed.Count -gt 0) {
+            Write-Host "Examples that failed to build: $($failed -join ', ')"
+            exit 1
+          }
+          Write-Host "All examples built."
+
+      - name: Runtime benchmarks (Morrow + C baselines)
+        shell: pwsh
+        run: .\bin\forge.exe bench
+
+      - name: Self-hosting fixed point
+        shell: pwsh
+        run: |
+          .\bin\mwc.exe compiler\main.mw -o target/stage1.exe
+          .\target\stage1.exe compiler\main.mw -o target/stage2.exe
+          .\target\stage2.exe compiler\main.mw -o target/stage3.exe
+          $h2 = (Get-FileHash target/stage2.exe.ll -Algorithm SHA256).Hash
+          $h3 = (Get-FileHash target/stage3.exe.ll -Algorithm SHA256).Hash
+          Write-Host "stage2.ll = $h2"
+          Write-Host "stage3.ll = $h3"
+          if ($h2 -ne $h3) { Write-Error "bootstrap fixed point diverged"; exit 1 }
