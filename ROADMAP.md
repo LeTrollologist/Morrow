@@ -526,6 +526,49 @@ same feature set, and the table below is the authoritative comparison. Every
 - **Struct-field and indirect region escapes**: see Phase 14.3; needs escape flags on `TcType` that propagate through field stores, or a TIR dataflow pass.
 - **Region-expression typing**: `tc_expr` needs mutable `vars` (or a type-environment handle) before region expressions can be typed and checked.
 
+
+#### Default-handler design (anchors verified in v2.2.0)
+
+The two blockers are known exactly; neither needs new runtime machinery:
+
+1. **Typecheck** — `tc_is_effect_covered` (`compiler/typeck.mw`, used at the
+   `Unhandled effect in function call` diagnostic) must return `true` for the
+   built-in effect names (`Process`, `FS`, `IO`, and probably `Time`), i.e. treat
+   them as permanently handled. Everything else keeps the lexical rule.
+2. **Lowering** — `compiler/tir.mw:484` turns `perform` into
+   `tir_inst_effect_perform`. When the effect is built-in **and** no user handler
+   encloses the `perform` lexically, lower it to a `tir_inst_call` on the existing
+   thunk instead; the continuation/`setjmp` path in `compiler/codegen.mw:3256`
+   stays for user handlers (so `morrow_effect_find_handler` returning null can no
+   longer happen for built-ins).
+
+Op → thunk translation (the thunks already exist and are already intercepted in
+`emit_expr` / `emit_tir_op`):
+
+| Effect op | Thunk |
+|---|---|
+| `Process.spawn(cmd, args)` | `process_exec(cmd, args)` → `@morrow_process_exec` |
+| `FS.read_file(path)` | `fs_read_to_string_in(path, arena)` → `@morrow_fs_read_file_in` |
+| `FS.write_file(path, content)` | `fs_write_string(path, content)` → `@morrow_fs_write_file` |
+| `FS.file_exists(path)` | `fs_exists(path)` → `@morrow_fs_file_exists` |
+| `FS.file_size(path)` | `fs_size(path)` → `@morrow_fs_file_size` |
+| `FS.delete_file(path)` | `fs_delete(path)` → `@morrow_fs_delete_file` |
+| `IO.print(msg)` | `puts(msg)` |
+
+Risks to handle in the same change: return-kind mismatches (`String` vs
+`*mut u8`, `bool` vs `i1`) must match the thunk's emitted type or codegen will
+produce invalid IR; `FS.read_file` needs an arena argument it does not have in the
+effect signature (either extend the op or allocate in the caller's region — decide
+explicitly); and `IO.read_line` / `Random.*` / `Database.*` have **no** thunk, so
+those ops must stay "Unhandled effect" rather than failing at runtime.
+
+Acceptance test for the change: a suite that calls `command_status` (which performs
+`Process.spawn`) with no handler in scope and asserts the exit code, plus a
+regression run of the 15 compile-fail suites to prove `unhandled_effect.mw` still
+errors for a *non*-built-in effect.
+
+
+
 ### Phase 14.5: Phase 14.1 blocked item — what real inference would take
 Recorded so the next attempt starts from evidence instead of a reverted patch:
 1. `TcType` needs a `fresh` flag / unification variables; `tc_expr` must stop returning a shared `i64` type for unresolved expressions (it currently allocates `ty_int()` at ~40 sites).
