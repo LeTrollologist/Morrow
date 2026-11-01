@@ -26,7 +26,7 @@
     <img src="https://img.shields.io/badge/Tests-23%2F23_Passing-22C55E?style=for-the-badge&logo=checkmarx&logoColor=white&labelColor=0f172a" alt="Tests" />
   </a>
   <a href="LICENSE">
-    <img src="https://img.shields.io/badge/License-MIT_%2F_Apache--2.0-F59E0B?style=for-the-badge&logo=open-source-initiative&logoColor=white&labelColor=0f172a" alt="License" />
+    <img src="https://img.shields.io/badge/License-Morrow_Triumvirate_License-F59E0B?style=for-the-badge&logo=open-source-initiative&logoColor=white&labelColor=0f172a" alt="License" />
   </a>
 </p>
 
@@ -240,9 +240,10 @@ Morrow/
 │   └── player.mw          # Game demo with effects, refinements, and regions
 ├── docs/
 │   └── SYNTAX.md          # Comprehensive Language & Syntax Specification
-├── LICENSE                # Dual license: MIT OR Apache-2.0 (SPDX)
-├── LICENSE-MIT            # MIT license text
-├── LICENSE-APACHE         # Apache-2.0 license reference
+├── LICENSE.md             # Morrow Triumvirate License
+├── MORROW-USE-LICENSE.md  # Morrow's Use License text
+├── MORROW-CONTRIBUTOR-LICENSE-AGREEMENT.md         # Morrow's Contributor License
+├── MORROW-FORK-AND-REDISTRIBUTION-AGREEMENT.md         # Morrow's Fork and Redistribution Agreement License
 └── archive/               # Historical Stage-0 Artifacts
     └── stage0-rust/       # Archived legacy Rust bootstrap compiler crates
 ```
