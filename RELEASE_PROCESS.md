@@ -95,3 +95,11 @@ dist/v2.3.1/
 re-runs `forge test`, the example builds, `forge bench`, the docs/version gate and
 the bootstrap fixed point on every push. A release is only made locally, after
 those gates pass in the pipeline itself.
+
+**Status (2026-11-01, v2.3.1).** GitHub Actions is currently not executing this
+workflow: every job since 2026-10-31 completes in ~2 s with no steps and the
+annotation *"The job was not started because your account is locked due to a
+billing issue."* (`gh api repos/LeTrollologist/Morrow/check-runs/<id>/annotations`).
+The workflow file itself is valid and the same steps pass locally. Until the
+account lock is cleared, the **local pipeline is the only enforced gate** — treat a
+red/absent CI run as "not run", never as "passed".
