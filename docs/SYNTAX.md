@@ -1,8 +1,8 @@
-# Morrow Language & Syntax Reference (v2.3.2)
+# Morrow Language & Syntax Reference (v2.3.3)
 
 > This document describes **what the compiler actually accepts and generates**, not
 > an aspirational design. Every construct below was compiled (and where relevant
-> executed) against `forge 2.3.2 (morrow standalone 2026)`; constructs that are
+> executed) against `forge 2.3.3 (morrow standalone 2026)`; constructs that are
 > specified elsewhere but *not* implemented are collected in
 > [§14 Not Implemented / Known Limitations](#14-not-implemented--known-limitations).
 >
