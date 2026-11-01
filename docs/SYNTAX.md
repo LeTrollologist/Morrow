@@ -809,7 +809,7 @@ Every claim above was checked against the released compiler with a probe suite:
 4. **Tooling** — `forge resolve` on a two-level dependency graph (lockfile captured
    verbatim above), `--target` builds checked by magic bytes, and every shipped
    example built with the released binary.
-5. **Release gates** — 22/22 native suites, 13 compile-fail suites
+5. **Release gates** — 23/23 native suites, 15 compile-fail suites
    (`tests/negative/*.mw`, asserted by `forge test`), benchmark suite, and the
    3-stage self-hosting fixed point.
 

@@ -1,9 +1,10 @@
 # Morrow Local Release & Toolchain Automation
+# Stages: preflight -> version -> build -> test -> bench -> package -> verify -> publish
 TAG ?= v2.3.0
 
-.PHONY: release check build test bench package verify dry-run clean
+.PHONY: release check version build test bench package verify dry-run clean
 
-# Full release pipeline: preflight -> build -> test -> bench -> package -> verify -> publish
+# Full release pipeline (bumps versions, rebuilds, verifies, publishes)
 release:
 	python scripts/pipeline.py $(TAG)
 
@@ -11,7 +12,11 @@ release:
 check:
 	python scripts/pipeline.py $(TAG) --no-publish
 
-# Compile self-hosting fixed-point bootstrap
+# Bump every version declaration to $(TAG) without building
+version:
+	python scripts/pipeline.py $(TAG) --from version --skip build --skip test --skip bench --skip package --skip verify --skip publish
+
+# Compile the self-hosting fixed point (requires declarations to already match $(TAG))
 build:
 	python scripts/pipeline.py $(TAG) --from build --skip test --skip bench --skip package --skip verify --skip publish
 
@@ -23,9 +28,9 @@ test:
 bench:
 	python scripts/pipeline.py $(TAG) --from bench --skip package --skip verify --skip publish
 
-# Create distribution zip and copy binaries into dist/
+# Create distribution zip, assets and release notes in dist/$(TAG)/
 package:
-	python scripts/pipeline.py $(TAG) --from package --skip publish
+	python scripts/pipeline.py $(TAG) --from package --skip verify --skip publish
 
 # Verify asset checksums and archive integrity
 verify:

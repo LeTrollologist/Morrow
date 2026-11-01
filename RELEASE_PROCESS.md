@@ -1,68 +1,97 @@
 # Morrow Release Process & Pipeline Specification
 
-This document defines the standardized local build, verification, packaging, and release pipeline for the Morrow programming language toolchain.
+This document defines the standardized local build, verification, packaging, and
+release pipeline for the Morrow toolchain (`scripts/pipeline.py`). It is the
+authoritative description of how a release is made; if the script and this
+document disagree, the script is wrong.
 
 ---
 
-## 1. Pipeline Overview
-
-The Morrow release pipeline (`scripts/pipeline.py`) replaces external CI/CD dependencies with a deterministic, local 7-stage workflow:
+## 1. Pipeline overview
 
 | Stage | Command / Action | Description |
 |---|---|---|
-| **1. `preflight`** | `clang --version`, `gh auth status` | Validates host toolchain requirements, git clean working state, and GitHub CLI authorization. |
-| **2. `build`** | 3-stage self-hosting fixed-point loop | Compiles `mwc -> stage1 -> stage2 -> stage3` and requires 100% bitwise parity of `SHA256(stage2.ll) == SHA256(stage3.ll)`. Updates `bin/mwc.exe` and `bin/forge.exe`. |
-| **3. `test`** | `forge test` + example compilation | Runs all 23 native test suites + 15 compile-fail suites, and compiles all 22 examples under `examples/*.mw`. |
-| **4. `bench`** | `forge bench` | Executes memory region allocation, HTTP parser, and HashMap benchmarks along with `-O2` C baselines. |
-| **5. `package`** | Asset creation in `dist/v{VER}/` | Packages `Morrow-v{VER}-win64.zip` and copies standalone CLI binaries (`forge.exe`, `mwc.exe`). |
-| **6. `verify`** | Checksums and zip testing | Generates `SHA256SUMS.txt` and tests zip header / CRC-32 integrity. |
-| **7. `publish`** | `git push` + `gh release create` | Fast-forwards `main`, tags `v{VER}`, and publishes GitHub release with release notes and distribution assets. |
+| **1. `preflight`** | `clang --version`, `gh auth status`, `git status` | Validates host requirements: clang on `PATH`, `bin/forge.exe` present, `gh` installed and authenticated. A dirty tree is reported here and enforced later, at publish time. |
+| **2. `version`** | rewrites declarations | Sets the release version in every place it is declared: `compiler/forge.mw` (`forge X.Y.Z ...`), `docs/SYNTAX.md` (header + "verified against" line), `README.md` (release badge), `Makefile` (`TAG ?=`), `ROADMAP.md` (status note). Fails if any declaration still carries a different version afterwards. Line endings are preserved. |
+| **3. `build`** | `mwc -> stage1 -> stage2 -> stage3` | 3-stage self-hosting bootstrap; requires `SHA256(stage2.exe.ll) == SHA256(stage3.exe.ll)`. Copies stage 3 over `bin/forge.exe` and `bin/mwc.exe`, then **asserts the rebuilt binary reports the release version and that `docs/SYNTAX.md` agrees** (the same rule the CI gate enforces). |
+| **4. `test`** | `forge test` + example builds | Runs all positive and compile-fail suites, writes the full log to `target/pipeline-test.log`, and **requires the `test result: ok. N positive suites, M compile-fail suites passed.` line**. Then compiles every `examples/*.mw`. |
+| **5. `bench`** | `forge bench` | Runs the Morrow benchmarks and their `-O2` C baselines. |
+| **6. `package`** | assets in `dist/v{VER}/` | Copies `forge.exe`, `mwc.exe`, builds `Morrow-v{VER}-win64.zip`, and writes `RELEASE_NOTES.md` (see §4). |
+| **7. `verify`** | checksums + integrity | Requires the four expected assets to exist, writes `SHA256SUMS.txt` covering every asset, and runs a CRC check over the archive. |
+| **8. `publish`** | `git` + `gh` | Commits pipeline-managed changes, tags `HEAD`, pushes branch and tag, then creates the GitHub release — or updates it in place if that tag already has one. |
 
 ---
 
-## 2. CLI Usage
+## 2. CLI usage
 
-### Full Automated Release
 ```bash
-python scripts/pipeline.py v2.3.0
-# Or using make:
-make release TAG=v2.3.0
+python scripts/pipeline.py v2.3.1                 # full release
+python scripts/pipeline.py v2.3.1 --dry-run       # preview, no side effects
+python scripts/pipeline.py v2.3.1 --no-publish    # everything except push + gh release
+python scripts/pipeline.py v2.3.1 --from package  # resume from a stage
+python scripts/pipeline.py v2.3.1 --skip bench    # skip one stage
+python scripts/pipeline.py v2.3.1 --draft         # publish as a draft release
+python scripts/pipeline.py v2.3.1 --no-bump       # declarations must already match
+python scripts/pipeline.py v2.3.1 --force         # adopt dirty files, move an existing tag
 ```
 
-### Dry Run (Preview Only)
-```bash
-python scripts/pipeline.py v2.3.0 --dry-run
-# Or using make:
-make dry-run TAG=v2.3.0
-```
+Equivalent `make` targets (they pass `TAG`):
 
-### Local Check (No Push / No GitHub Release)
 ```bash
-python scripts/pipeline.py v2.3.0 --no-publish
-# Or using make:
-make check TAG=v2.3.0
-```
-
-### Resume from a Specific Stage
-```bash
-python scripts/pipeline.py v2.3.0 --from package
-```
-
-### Publish as Draft
-```bash
-python scripts/pipeline.py v2.3.0 --draft
+make release TAG=v2.3.1      # full pipeline
+make check   TAG=v2.3.1      # build + test + bench + package + verify, no publish
+make build | test | bench | package | verify | dry-run
 ```
 
 ---
 
-## 3. Distribution Layout
+## 3. Publish semantics
 
-Release artifacts are written to `dist/v{VER}/`:
+1. **Dirty trees.** The publish stage owns exactly the files it writes: version
+   declarations, `bin/*.exe`, `release-notes/`, `dist/`. If only those changed, it
+   commits them as `chore(release): vX.Y.Z`. Any other uncommitted file aborts the
+   release unless `--force` is passed.
+2. **Tags.** The annotated tag `vX.Y.Z` is created at `HEAD`. If it exists, it must
+   already point at `HEAD`; moving it requires `--force`.
+3. **Idempotency.** Re-running the publish stage on an existing release updates its
+   title, body and assets (`gh release edit` + `gh release upload --clobber`)
+   instead of failing on `gh release create`.
+
+---
+
+## 4. Release notes
+
+Authored notes live in `release-notes/vX.Y.Z.md` (tracked in git). The package
+stage copies them to `dist/vX.Y.Z/RELEASE_NOTES.md`, and the publish stage uses
+that file as the release body and title (first markdown heading).
+
+If the file is missing, the pipeline generates a *factual skeleton* — fixed-point
+hash, test summary, asset list, and an explicit note that authored notes are
+missing. It never invents feature claims.
+
+---
+
+## 5. Distribution layout
+
 ```
-dist/v2.3.0/
-├── Morrow-v2.3.0-win64.zip    # Full distribution archive
-├── forge.exe                  # Standalone unified CLI
-├── mwc.exe                    # Standalone compiler driver
-├── SHA256SUMS.txt             # Checksums for all released assets
-└── RELEASE_NOTES.md           # Generated release documentation
+dist/v2.3.1/
+├── Morrow-v2.3.1-win64.zip    # bin, std, compiler, lib (incl. CRT), examples,
+│                              # tests (incl. tests/negative), benchmarks + c,
+│                              # docs, scripts, release-notes, .github,
+│                              # README, ROADMAP, RELEASE_PROCESS, Makefile, LICENSE*
+├── forge.exe                  # standalone unified CLI
+├── mwc.exe                    # standalone compiler driver
+├── RELEASE_NOTES.md           # release body (also checksummed)
+└── SHA256SUMS.txt             # checksums for every asset above
 ```
+
+`dist/` is git-ignored; it is produced fresh by the package stage on every run.
+
+---
+
+## 6. Relationship to CI
+
+`.github/workflows/ci.yml` is the safety net, not the release mechanism. It
+re-runs `forge test`, the example builds, `forge bench`, the docs/version gate and
+the bootstrap fixed point on every push. A release is only made locally, after
+those gates pass in the pipeline itself.

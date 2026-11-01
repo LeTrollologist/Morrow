@@ -1154,6 +1154,7 @@ pub fn forge_run_test(arena: *mut u8) -> i64 yields [FS, Process, Diagnostics, I
     // ---- Compile-fail suites -------------------------------------------------
     // Each file must be rejected, and the last diagnostic must contain the
     // expected substring. This is what keeps the documented limitations honest.
+    let positive_passed: i64 = passed;
     forge_print("running morrow negative (compile-fail) suites...");
     let mut neg_files: Vec<String> = vec_new_in(arena);
     let mut neg_expect: Vec<String> = vec_new_in(arena);
@@ -1230,7 +1231,14 @@ pub fn forge_run_test(arena: *mut u8) -> i64 yields [FS, Process, Diagnostics, I
     }
 
     if failed == 0 {
-        forge_print("test result: ok. all test suites passed!");
+        let mut summary_buf = string_buffer_new_in(arena);
+        fmt_append_str(&mut summary_buf, "test result: ok. ");
+        fmt_append_i64(&mut summary_buf, positive_passed);
+        fmt_append_str(&mut summary_buf, " positive suites, ");
+        fmt_append_i64(&mut summary_buf, passed - positive_passed);
+        fmt_append_str(&mut summary_buf, " compile-fail suites passed.");
+        string_buffer_push_byte(&mut summary_buf, 0 as u8);
+        forge_print(string_as_ptr(&summary_buf) as String);
         return 0;
     }
     forge_print("test result: FAILED. some test suites failed.");

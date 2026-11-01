@@ -6,12 +6,13 @@ Standardized build, verify, package, and release orchestrator for Morrow.
 
 Stages:
   1. preflight: check toolchain requirements (clang, git, gh) and git hygiene.
-  2. build:     execute 3-stage self-hosting bootstrap and verify LLVM IR fixed-point parity.
-  3. test:      run all positive and compile-fail test suites, plus build all shipped examples.
-  4. bench:     run runtime benchmarks and C baselines.
-  5. package:   generate canonical distribution archives and binaries in dist/v{VER}/.
-  6. verify:    compute SHA256SUMS.txt, test zip integrity, and lint asset names.
-  7. publish:   push branch/tag and create GitHub release via `gh release create`.
+  2. version:   bump the release version everywhere it is declared (compiler, docs, README, Makefile).
+  3. build:     execute 3-stage self-hosting bootstrap and verify LLVM IR fixed-point parity.
+  4. test:      run all positive and compile-fail test suites, plus build all shipped examples.
+  5. bench:     run runtime benchmarks and C baselines.
+  6. package:   generate canonical distribution archives, assets and release notes in dist/v{VER}/.
+  7. verify:    compute SHA256SUMS.txt, test zip integrity, and cross-check docs/version agreement.
+  8. publish:   push branch/tag and create (or update) the GitHub release via `gh`.
 
 Usage:
   python scripts/pipeline.py v2.3.0                 # full release pipeline
@@ -20,6 +21,8 @@ Usage:
   python scripts/pipeline.py v2.3.0 --skip bench    # skip a specific stage
   python scripts/pipeline.py v2.3.0 --no-publish    # test and package locally without remote upload
   python scripts/pipeline.py v2.3.0 --draft         # publish as draft release
+  python scripts/pipeline.py v2.3.0 --no-bump       # keep declared versions (they must already match)
+  python scripts/pipeline.py v2.3.0 --force         # publish a dirty tree / move an existing tag
 """
 
 import argparse
@@ -33,7 +36,17 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-STAGES = ["preflight", "build", "test", "bench", "package", "verify", "publish"]
+STAGES = ["preflight", "version", "build", "test", "bench", "package", "verify", "publish"]
+
+# Files whose declared version must follow the release tag.
+VERSION_DECLARATIONS = [
+    ("compiler/forge.mw", r"forge \d+\.\d+\.\d+ \(morrow standalone 2026\)"),
+    ("docs/SYNTAX.md", r"# Morrow Language & Syntax Reference \(v\d+\.\d+\.\d+\)"),
+    ("docs/SYNTAX.md", r"`forge \d+\.\d+\.\d+ \(morrow standalone 2026\)`"),
+    ("README.md", r"Release-v\d+\.\d+\.\d+_Standalone"),
+    ("Makefile", r"TAG \?= v\d+\.\d+\.\d+"),
+    ("ROADMAP.md", r"\*\*Status note \(v\d+\.\d+\.\d+\)\.\*\*"),
+]
 
 
 def log(msg: str, header: bool = False):
@@ -64,7 +77,8 @@ def compute_sha256(path: Path) -> str:
 
 
 class ReleasePipeline:
-    def __init__(self, tag: str, dry_run: bool = False, no_publish: bool = False, draft: bool = False):
+    def __init__(self, tag: str, dry_run: bool = False, no_publish: bool = False,
+                 draft: bool = False, no_bump: bool = False, force: bool = False):
         if not tag.startswith("v"):
             tag = f"v{tag}"
         self.tag = tag
@@ -72,8 +86,13 @@ class ReleasePipeline:
         self.dry_run = dry_run
         self.no_publish = no_publish
         self.draft = draft
+        self.no_bump = no_bump
+        self.force = force
         self.dist_dir = ROOT / "dist" / self.tag
         self.parity_hash = None
+        self.suite_summary = None
+        self.example_count = 0
+        self.notes_path = ROOT / "release-notes" / f"{self.tag}.md"
 
     def stage_preflight(self):
         log("STAGE 1: Preflight checks", header=True)
@@ -110,8 +129,84 @@ class ReleasePipeline:
 
         log("Preflight passed.")
 
+    @staticmethod
+    def _read_preserving(path: Path) -> str:
+        # newline="" keeps the file's existing CRLF/LF endings intact so a version
+        # bump does not rewrite every line of a document.
+        with open(path, encoding="utf-8", newline="") as f:
+            return f.read()
+
+    @staticmethod
+    def _write_preserving(path: Path, text: str):
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            f.write(text)
+
+    def _bump_declarations(self):
+        """Rewrite every version declaration to self.ver; return the list of edits."""
+        changed = []
+        for rel, pattern in VERSION_DECLARATIONS:
+            path = ROOT / rel
+            if not path.exists():
+                continue
+            text = self._read_preserving(path)
+            new_text, n = re.subn(
+                pattern,
+                lambda m: m.group(0).replace(
+                    re.search(r"\d+\.\d+\.\d+", m.group(0)).group(0), self.ver),
+                text,
+            )
+            if n and new_text != text:
+                self._write_preserving(path, new_text)
+                changed.append(f"{rel} ({n} site{'s' if n > 1 else ''})")
+        return changed
+
+    def _read_declared_versions(self):
+        found = {}
+        for rel, pattern in VERSION_DECLARATIONS:
+            path = ROOT / rel
+            if not path.exists():
+                continue
+            for m in re.finditer(pattern, self._read_preserving(path)):
+                found.setdefault(rel, set()).add(
+                    re.search(r"\d+\.\d+\.\d+", m.group(0)).group(0))
+        return found
+
+    def stage_version(self):
+        log("STAGE 2: Version bump & declaration consistency", header=True)
+        if self.dry_run:
+            log(f"[DRY-RUN] Would rewrite version declarations to {self.ver}.")
+            return
+
+        if self.no_bump:
+            log("--no-bump requested; declarations are left untouched.")
+        else:
+            changed = self._bump_declarations()
+            if changed:
+                for item in changed:
+                    log(f"  bumped {item}")
+            else:
+                log(f"Declarations already declare {self.ver}.")
+
+        declared = self._read_declared_versions()
+        stale = {
+            rel: sorted(v - {self.ver}) for rel, v in declared.items() if v - {self.ver}
+        }
+        if stale:
+            detail = "; ".join(f"{rel}: {', '.join(vs)}" for rel, vs in stale.items())
+            raise RuntimeError(
+                f"Version declarations do not match {self.tag} ({detail}). "
+                f"Re-run without --no-bump or fix them by hand."
+            )
+        missing = [rel for rel, _ in VERSION_DECLARATIONS
+                   if not (ROOT / rel).exists() or rel not in declared]
+        if missing:
+            raise RuntimeError(
+                f"Missing version declarations in: {', '.join(sorted(set(missing)))}"
+            )
+        log(f"All {len(declared)} declared versions are {self.ver}.")
+
     def stage_build(self):
-        log("STAGE 2: Self-hosting 3-Stage Bootstrap & Parity Verification", header=True)
+        log("STAGE 3: Self-hosting 3-Stage Bootstrap & Parity Verification", header=True)
         if self.dry_run:
             log("[DRY-RUN] Would execute 3-stage bootstrap fixed-point loop.")
             return
@@ -154,29 +249,61 @@ class ReleasePipeline:
         shutil.copy2(stage3, ROOT / "bin" / "forge.exe")
         log("Updated bin/mwc.exe and bin/forge.exe with verified stage 3 binary.")
 
+        # The freshly built binary must actually report the release version, and the
+        # docs header must agree with it (same rule the CI gate enforces).
+        res = run(f'"{ROOT / "bin" / "forge.exe"}" version', capture_output=True)
+        reported = res.stdout.strip()
+        log(f"Rebuilt toolchain reports: {reported}")
+        if self.ver not in reported:
+            raise RuntimeError(
+                f"Rebuilt toolchain reports '{reported}' but the release tag is {self.tag}; "
+                f"the version stage did not take effect."
+            )
+        header = (ROOT / "docs" / "SYNTAX.md").read_text(encoding="utf-8").splitlines()[0]
+        if f"v{self.ver}" not in header:
+            raise RuntimeError(
+                f"docs/SYNTAX.md header does not declare v{self.ver}: {header}"
+            )
+        log(f"Toolchain and docs/SYNTAX.md agree on v{self.ver}.")
+
     def stage_test(self):
-        log("STAGE 3: Running Test Suites & Example Builds", header=True)
+        log("STAGE 4: Running Test Suites & Example Builds", header=True)
         if self.dry_run:
             log("[DRY-RUN] Would run forge test and build examples.")
             return
 
         forge_bin = ROOT / "bin" / "forge.exe"
         log("Running native and compile-fail test suites...")
-        run(f'"{forge_bin}" test')
+        res = run(f'"{forge_bin}" test', check=False, capture_output=True)
+        combined = (res.stdout or "") + (res.stderr or "")
+        log_file = ROOT / "target" / "pipeline-test.log"
+        log_file.write_text(combined, encoding="utf-8")
+        if res.returncode != 0:
+            tail = "\n".join(combined.splitlines()[-40:])
+            raise RuntimeError(
+                f"forge test failed (exit {res.returncode}); last 40 lines of "
+                f"{log_file}:\n{tail}"
+            )
+        summary = [l for l in combined.splitlines() if "test result:" in l]
+        if not summary or "ok." not in summary[-1]:
+            raise RuntimeError(f"forge test printed no successful summary (see {log_file})")
+        self.suite_summary = summary[-1].strip()
+        log(f"forge test: {self.suite_summary}")
 
         log("Building all shipped examples...")
         failed = []
-        for example in (ROOT / "examples").glob("*.mw"):
+        examples = sorted((ROOT / "examples").glob("*.mw"))
+        for example in examples:
             out_exe = ROOT / "target" / f"release_test_{example.stem}.exe"
             res = run(f'"{forge_bin}" build "{example}" -o "{out_exe}"', check=False, capture_output=True)
             if res.returncode != 0:
                 failed.append(example.name)
         if failed:
             raise RuntimeError(f"Examples failed to build: {', '.join(failed)}")
-        log("All 22 examples built successfully.")
+        log(f"All {len(examples)} examples built successfully.")
 
     def stage_bench(self):
-        log("STAGE 4: Runtime Benchmarking", header=True)
+        log("STAGE 5: Runtime Benchmarking", header=True)
         if self.dry_run:
             log("[DRY-RUN] Would run forge bench.")
             return
@@ -186,7 +313,7 @@ class ReleasePipeline:
         log("Benchmarks completed successfully.")
 
     def stage_package(self):
-        log("STAGE 5: Packaging Release Assets", header=True)
+        log("STAGE 6: Packaging Release Assets", header=True)
         if self.dry_run:
             log(f"[DRY-RUN] Would package release artifacts in {self.dist_dir}")
             return
@@ -204,8 +331,10 @@ class ReleasePipeline:
         zip_path = self.dist_dir / zip_name
         log(f"Creating distribution archive: {zip_name}...")
 
-        include_dirs = ["bin", "std", "compiler", "lib", "examples", "tests", "benchmarks", "docs"]
-        include_files = ["README.md", "ROADMAP.md", "LICENSE", "LICENSE-MIT", "LICENSE-APACHE"]
+        include_dirs = ["bin", "std", "compiler", "lib", "examples", "tests", "benchmarks",
+                        "docs", "scripts", "release-notes", ".github"]
+        include_files = ["README.md", "ROADMAP.md", "RELEASE_PROCESS.md", "Makefile",
+                         "LICENSE", "LICENSE-MIT", "LICENSE-APACHE"]
 
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
             for fname in include_files:
@@ -226,15 +355,51 @@ class ReleasePipeline:
         zip_size_mb = zip_path.stat().st_size / (1024 * 1024)
         log(f"Packaged {zip_name} ({zip_size_mb:.2f} MB)")
 
+        # 3. Release notes: authored notes win, otherwise a factual skeleton.
+        notes_file = self.dist_dir / "RELEASE_NOTES.md"
+        if self.notes_path.exists():
+            shutil.copy2(self.notes_path, notes_file)
+            log(f"Release notes taken from {self.notes_path.relative_to(ROOT)}")
+        else:
+            log(f"No release-notes/{self.tag}.md found; writing a generated skeleton.")
+            notes_file.write_text(self._generated_notes(), encoding="utf-8")
+
+    def _generated_notes(self) -> str:
+        parity = self.parity_hash or "(build stage skipped in this run)"
+        suites = self.suite_summary or "(test stage skipped in this run)"
+        return f"""# Morrow {self.tag}
+
+Built with the local release pipeline (`scripts/pipeline.py`, see `RELEASE_PROCESS.md`).
+
+## Verification recorded by the pipeline
+
+| Gate | Result |
+|---|---|
+| Self-hosting fixed point | `SHA256(stage2.exe.ll) == SHA256(stage3.exe.ll)` = `{parity}` |
+| Test suites | {suites} |
+| Distribution | `Morrow-{self.tag}-win64.zip`, `forge.exe`, `mwc.exe`, `SHA256SUMS.txt` |
+
+> This skeleton was generated because `release-notes/{self.tag}.md` is missing.
+> Commit authored notes for that tag to replace it.
+"""
+
     def stage_verify(self):
-        log("STAGE 6: Verification & Checksum Generation", header=True)
+        log("STAGE 7: Verification & Checksum Generation", header=True)
         if self.dry_run:
             log("[DRY-RUN] Would verify and hash release assets.")
             return
 
-        assets = list(self.dist_dir.glob("*"))
-        if not assets:
-            raise FileNotFoundError(f"No release assets found in {self.dist_dir}")
+        required = [f"Morrow-{self.tag}-win64.zip", "forge.exe", "mwc.exe", "RELEASE_NOTES.md"]
+        missing = [name for name in required if not (self.dist_dir / name).exists()]
+        if missing:
+            raise FileNotFoundError(
+                f"Missing release assets in {self.dist_dir}: {', '.join(missing)}"
+            )
+
+        # Anything that is uploaded gets a checksum; the notes are the release body
+        # (uploaded as an asset too, so they are hashed as well).
+        assets = [p for p in sorted(self.dist_dir.glob("*"))
+                  if p.is_file() and p.name != "SHA256SUMS.txt"]
 
         checksum_file = self.dist_dir / "SHA256SUMS.txt"
         lines = []
@@ -257,61 +422,115 @@ class ReleasePipeline:
                     raise RuntimeError(f"Corrupted file in {z.name}: {bad_file}")
             log(f"Verified archive integrity: {z.name}")
 
+    def _release_title(self) -> str:
+        if self.notes_path.exists():
+            for line in self.notes_path.read_text(encoding="utf-8").splitlines():
+                stripped = line.strip()
+                if stripped.startswith("#"):
+                    return stripped.lstrip("#").strip()
+        return f"Morrow {self.tag}"
+
+    def _split_dirty(self, porcelain: str):
+        """Split `git status --porcelain` entries into pipeline-managed and not."""
+        managed, unmanaged = [], []
+        owned_files = {rel for rel, _ in VERSION_DECLARATIONS}
+        owned_prefixes = ("bin/", "release-notes/", "dist/")
+        for line in porcelain.splitlines():
+            if not line.strip():
+                continue
+            path = line[3:].strip().strip('"')
+            if " -> " in path:
+                path = path.split(" -> ", 1)[1].strip().strip('"')
+            path = path.replace("\\", "/")
+            if path in owned_files or path.startswith(owned_prefixes):
+                managed.append(path)
+            else:
+                unmanaged.append(path)
+        return managed, unmanaged
+
     def stage_publish(self):
-        log("STAGE 7: Publish Release", header=True)
+        log("STAGE 8: Publish Release", header=True)
         if self.dry_run:
-            log("[DRY-RUN] Would tag and create GitHub release.")
+            log("[DRY-RUN] Would tag and create/update the GitHub release.")
             return
 
         if self.no_publish:
             log("--no-publish requested; skipping git push and GitHub release.")
             return
 
-        # 1. Git tag
-        log(f"Ensuring git tag {self.tag}...")
-        res = run(f"git rev-parse {self.tag}", check=False, capture_output=True)
-        if res.returncode != 0:
-            run(f'git tag -a {self.tag} -m "Morrow {self.tag}: Built-in default effect handlers"')
-            log(f"Created annotated tag {self.tag}")
+        # 0. The tag must describe the tree that produced the artifacts. Version
+        #    bumps and rebuilt binaries are this pipeline's own output, so they are
+        #    committed here; anything else must be a deliberate --force.
+        dirty = run("git status --porcelain", capture_output=True).stdout.strip()
+        if dirty:
+            managed, unmanaged = self._split_dirty(dirty)
+            if unmanaged and not self.force:
+                listing = "\n".join(unmanaged)
+                raise RuntimeError(
+                    "Uncommitted changes that the pipeline does not own; commit them "
+                    "first or pass --force:\n" + listing
+                )
+            add_arg = "-A" if (self.force and unmanaged) else " ".join(
+                f'"{p}"' for p in managed
+            )
+            if add_arg.strip():
+                run(f"git add {add_arg}")
+                run(f'git commit -m "chore(release): {self.tag}" -m '
+                    f'"Version declarations bumped and toolchain binaries rebuilt by '
+                    f'scripts/pipeline.py. Fixed point: {self.parity_hash or "n/a"}."')
+                log(f"Committed {len(managed)} pipeline-managed change(s).")
         else:
-            log(f"Tag {self.tag} already exists locally.")
+            log("Working tree clean.")
 
-        # 2. Push branch & tag
-        branch_res = run("git branch --show-current", capture_output=True)
-        current_branch = branch_res.stdout.strip()
-        log(f"Pushing {current_branch} to origin/main and tag {self.tag}...")
-        run(f"git push origin {current_branch}:main")
-        run(f"git push origin {self.tag}")
+        # 1. Tag HEAD (create, or move when --force).
+        head = run("git rev-parse HEAD", capture_output=True).stdout.strip()
+        res = run(f"git rev-parse -q --verify refs/tags/{self.tag}", check=False, capture_output=True)
+        if res.returncode != 0:
+            run(f'git tag -a {self.tag} -m "Morrow {self.tag}"')
+            log(f"Created annotated tag {self.tag} at {head[:8]}")
+        else:
+            tag_sha = run(f"git rev-list -n 1 {self.tag}", capture_output=True).stdout.strip()
+            if tag_sha != head:
+                if not self.force:
+                    raise RuntimeError(
+                        f"Tag {self.tag} points at {tag_sha[:8]} but HEAD is {head[:8]}; "
+                        f"pass --force to move it"
+                    )
+                run(f'git tag -f -a {self.tag} -m "Morrow {self.tag}"')
+                log(f"Moved tag {self.tag} to {head[:8]}")
+            else:
+                log(f"Tag {self.tag} already points at HEAD")
 
-        # 3. Release notes
+        # 2. Push branch and tag.
+        branch = run("git branch --show-current", capture_output=True).stdout.strip() or "main"
+        log(f"Pushing {branch} and {self.tag} to origin...")
+        run(f"git push origin {branch}")
+        run(f"git push origin {self.tag} --force")
+
+        # 3. Release body comes from the packaged notes (authored or generated).
         notes_file = self.dist_dir / "RELEASE_NOTES.md"
-        with open(notes_file, "w", encoding="utf-8") as f:
-            f.write(f"""# Morrow {self.tag} — Built-in Default Effect Handlers
+        if not notes_file.exists():
+            raise FileNotFoundError(
+                f"{notes_file} is missing; run the package stage before publishing"
+            )
+        title = self._release_title()
+        assets = [str(p) for p in sorted(self.dist_dir.glob("*")) if p.is_file()]
+        assets_arg = " ".join(f'"{a}"' for a in assets)
+        draft_flag = " --draft" if self.draft else ""
 
-Built-in default effect handlers for `Process`, `FS`, and `IO` have landed, enabling seamless execution of system operations (`command_status`, `fs_exists`, `fs_size`, `IO.print`) without requiring enclosing handler blocks.
-
-### Key Highlights
-- **Default Handlers (Phase 14.4)**: Operations on built-in effects lower directly to runtime thunks (`@morrow_process_exec`, `@morrow_fs_*`, `puts`) when unhandled lexically.
-- **Handler Precedence**: User-defined handlers retain full precedence and delimited continuation semantics (`resume`).
-- **Safety Boundary**: Non-default effects (`Db`, `State`, etc.) and unimplemented ops (`IO.read_line`) remain strictly checked and statically rejected at compile time when unhandled.
-- **Bootstrap Fixed-Point Parity**: 3-stage self-hosting closure verified bit-for-bit identical across LLVM IR outputs.
-- **Test Coverage**: 23 positive native suites + 15 compile-fail regression suites (100% pass rate).
-
-### Distribution Assets
-- `Morrow-{self.tag}-win64.zip`: Full standalone distribution (compiler, stdlib, runtime CRT objects, documentation, examples).
-- `forge.exe`: Standalone unified CLI.
-- `mwc.exe`: Standalone compiler driver.
-- `SHA256SUMS.txt`: Cryptographic SHA-256 verification hashes for all release assets.
-""")
-
-        # 4. GitHub Release
-        assets_to_upload = [str(p) for p in self.dist_dir.glob("*") if p.name != "RELEASE_NOTES.md"]
-        assets_arg = " ".join([f'"{a}"' for a in assets_to_upload])
-        draft_flag = "--draft" if self.draft else ""
-        cmd = f'gh release create {self.tag} {assets_arg} --title "Morrow {self.tag} — Built-in Effect Handlers & Concurrency" --notes-file "{notes_file}" {draft_flag}'
-        log(f"Executing: {cmd}")
-        run(cmd)
-        log(f"GitHub release {self.tag} created successfully!")
+        # 4. Create the release, or update it in place when it already exists.
+        res = run(f"gh release view {self.tag}", check=False, capture_output=True)
+        if res.returncode != 0:
+            cmd = (f'gh release create {self.tag} {assets_arg} --title "{title}" '
+                   f'--notes-file "{notes_file}"{draft_flag}')
+            log(f"Executing: {cmd}")
+            run(cmd)
+            log(f"GitHub release {self.tag} created ({len(assets)} assets).")
+        else:
+            log(f"Release {self.tag} already exists; updating metadata and assets.")
+            run(f'gh release edit {self.tag} --title "{title}" --notes-file "{notes_file}"')
+            run(f"gh release upload {self.tag} {assets_arg} --clobber")
+            log(f"GitHub release {self.tag} updated ({len(assets)} assets).")
 
 
 def main():
@@ -322,10 +541,13 @@ def main():
     parser.add_argument("--skip", action="append", choices=STAGES, default=[], help="Skip specified stage (can be repeated)")
     parser.add_argument("--no-publish", action="store_true", help="Run all stages except git push and GitHub release")
     parser.add_argument("--draft", action="store_true", help="Create GitHub release as a draft")
+    parser.add_argument("--no-bump", action="store_true", help="Do not rewrite version declarations (must already be correct)")
+    parser.add_argument("--force", action="store_true", help="Allow publishing a dirty tree / moving an existing tag")
 
     args = parser.parse_args()
 
-    pipeline = ReleasePipeline(tag=args.tag, dry_run=args.dry_run, no_publish=args.no_publish, draft=args.draft)
+    pipeline = ReleasePipeline(tag=args.tag, dry_run=args.dry_run, no_publish=args.no_publish,
+                               draft=args.draft, no_bump=args.no_bump, force=args.force)
 
     start_idx = STAGES.index(args.from_stage)
     active_stages = STAGES[start_idx:]

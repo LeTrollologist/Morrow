@@ -513,7 +513,7 @@ same feature set, and the table below is the authoritative comparison. Every
 - Reverted. This needs real inference/unification first; arity and callee existence remain enforced (Phase 13.6).
 
 ### Phase 14.2: CI Wiring ✅
-- `.github/workflows/ci.yml` (windows-latest): `forge version`, `forge test` (22 positive + 15 compile-fail), build every example, run `forge bench`, and verify the 3-stage bootstrap fixed point.
+- `.github/workflows/ci.yml` (windows-latest): `forge version`, `forge test` (23 positive + 15 compile-fail), build every example, run `forge bench`, and verify the 3-stage bootstrap fixed point.
 
 ### Phase 14.3: Region escape analysis — partial ✅ (v2.2.0)
 - Region-scoped values are now tagged from **allocation**, not from type kind: a value is tagged inside a `region` block when it is a pointer/reference **or** the result of an allocator whose callee name ends in `_in` / `morrow_region_alloc`. Previously `let v = vec_new_in(r); return v;` was invisible to the checker because `Vec` is not a pointer kind.
