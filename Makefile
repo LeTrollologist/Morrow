@@ -1,6 +1,6 @@
 # Morrow Local Release & Toolchain Automation
 # Stages: preflight -> version -> build -> test -> bench -> package -> verify -> publish
-TAG ?= v2.3.3
+TAG ?= v2.3.4
 
 .PHONY: release check version build test bench package verify dry-run clean
 
