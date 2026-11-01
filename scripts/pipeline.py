@@ -312,6 +312,20 @@ class ReleasePipeline:
         run(f'"{forge_bin}" bench')
         log("Benchmarks completed successfully.")
 
+    PRUNE_DIRS = {"target", "dist", "__pycache__", ".git", "node_modules", ".vs", "obj"}
+    PRUNE_SUFFIXES = (".ll", ".obj", ".o", ".pdb", ".pyc", ".rlib", ".rmeta", ".lib", ".exp")
+
+    def _distribution_files(self, root_dir: Path):
+        """Files worth shipping: no nested build trees, no intermediates."""
+        for root, dirs, files in os.walk(root_dir):
+            dirs[:] = [d for d in sorted(dirs) if d not in self.PRUNE_DIRS]
+            for name in sorted(files):
+                if name.lower().endswith(self.PRUNE_SUFFIXES):
+                    continue
+                if name.lower().endswith(".exe") and Path(root) != ROOT / "bin":
+                    continue
+                yield Path(root) / name
+
     def stage_package(self):
         log("STAGE 6: Packaging Release Assets", header=True)
         if self.dry_run:
@@ -343,14 +357,11 @@ class ReleasePipeline:
                     zf.write(fpath, arcname=f"Morrow/{fname}")
             for dname in include_dirs:
                 dpath = ROOT / dname
-                if dpath.exists():
-                    for root, _, files in os.walk(dpath):
-                        for file in files:
-                            if file.endswith((".ll", ".obj", ".o", ".pdb")):
-                                continue
-                            full_path = Path(root) / file
-                            rel_path = full_path.relative_to(ROOT)
-                            zf.write(full_path, arcname=f"Morrow/{rel_path}")
+                if not dpath.exists():
+                    continue
+                for full_path in self._distribution_files(dpath):
+                    rel_path = full_path.relative_to(ROOT)
+                    zf.write(full_path, arcname=f"Morrow/{rel_path.as_posix()}")
 
         zip_size_mb = zip_path.stat().st_size / (1024 * 1024)
         log(f"Packaged {zip_name} ({zip_size_mb:.2f} MB)")
