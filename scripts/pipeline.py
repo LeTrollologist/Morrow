@@ -31,6 +31,7 @@ convenience for forked copies and are out of scope here.
 
 import argparse
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -139,6 +140,41 @@ class ReleasePipeline:
         log(f"Remote: origin = {self.remote}")
 
         log("Preflight passed.")
+
+    def _state_path(self) -> Path:
+        return ROOT / "target" / "pipeline-state.json"
+
+    def _save_state(self, **facts):
+        """Persist build/test facts so a resumed run (`--from package`) can report them."""
+        path = self._state_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = self._load_state()
+        data["tag"] = self.tag
+        data.update({k: v for k, v in facts.items() if v is not None})
+        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+    def _load_state(self):
+        path = self._state_path()
+        if not path.exists():
+            return {}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return data if data.get("tag") == self.tag else {}
+
+    def _recover_facts(self):
+        """Restore parity/test facts recorded by earlier stages of the same release."""
+        state = self._load_state()
+        if not self.parity_hash:
+            self.parity_hash = state.get("parity")
+        if not self.suite_summary:
+            self.suite_summary = state.get("suites")
+        if not self.example_count:
+            self.example_count = state.get("examples") or 0
+        if self.parity_hash or self.suite_summary:
+            log(f"Recovered recorded facts: fixed point {self.parity_hash or 'n/a'}, "
+                f"tests {self.suite_summary or 'n/a'}")
 
     @staticmethod
     def _read_preserving(path: Path) -> str:
@@ -253,6 +289,7 @@ class ReleasePipeline:
             raise RuntimeError(f"Bootstrap fixed point diverged! {h2} != {h3}")
 
         self.parity_hash = h2
+        self._save_state(parity=h2, version=self.ver)
         log("Bootstrap fixed-point closure verified (100% bitwise parity)!")
 
         # Update bin/
@@ -311,6 +348,8 @@ class ReleasePipeline:
                 failed.append(example.name)
         if failed:
             raise RuntimeError(f"Examples failed to build: {', '.join(failed)}")
+        self.example_count = len(examples)
+        self._save_state(suites=self.suite_summary, examples=self.example_count)
         log(f"All {len(examples)} examples built successfully.")
 
     def stage_bench(self):
@@ -346,6 +385,8 @@ class ReleasePipeline:
         if self.dist_dir.exists():
             shutil.rmtree(self.dist_dir)
         self.dist_dir.mkdir(parents=True, exist_ok=True)
+
+        self._recover_facts()
 
         # 1. Standalone CLI binaries
         shutil.copy2(ROOT / "bin" / "forge.exe", self.dist_dir / "forge.exe")
@@ -479,8 +520,10 @@ Built with the local release pipeline (`scripts/pipeline.py`, see `RELEASE_PROCE
             return
 
         if self.no_publish:
-            log("--no-publish requested; skipping git push and GitHub release.")
+            log("--no-publish requested; skipping git tag/push.")
             return
+
+        self._recover_facts()
 
         # 0. The tag must describe the tree that produced the artifacts. Version
         #    bumps and rebuilt binaries are this pipeline's own output, so they are
