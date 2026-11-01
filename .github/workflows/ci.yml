@@ -18,7 +18,7 @@ jobs:
           clang --version
           .\bin\forge.exe version
 
-      - name: Native suites (22 positive + 15 compile-fail)
+      - name: Native suites (23 positive + 15 compile-fail)
         shell: pwsh
         run: .\bin\forge.exe test
 

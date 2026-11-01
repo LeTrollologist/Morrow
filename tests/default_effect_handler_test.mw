@@ -1,0 +1,60 @@
+// tests/default_effect_handler_test.mw
+// Acceptance test for Phase 14.4: Built-in / Default Effect Handlers
+// Verifies that default effect handlers for Process, FS, and IO execute
+// correctly when no user handler encloses the call, and that user-defined
+// handlers continue to take precedence when provided.
+
+import std::test;
+import std::process;
+import std::fs;
+import std::effects;
+
+fn test_command_status_default(): i64 {
+    let mut cmd = command_new("cmd.exe");
+    command_arg(&mut cmd, "/c exit 0");
+    let code = command_status(&cmd);
+    code
+}
+
+fn test_fs_default(): i64 {
+    let exists = fs_exists("tests/default_effect_handler_test.mw");
+    if !exists {
+        return 0 - 1;
+    }
+    let sz = fs_size("tests/default_effect_handler_test.mw");
+    if sz <= 0 {
+        return 0 - 2;
+    }
+    0
+}
+
+fn test_user_handler_precedence(): i64 {
+    let res = handle {
+        let mut cmd = command_new("should_not_run");
+        command_arg(&mut cmd, "args");
+        perform Process.spawn(cmd.program, cmd.args)
+    } with Process {
+        fn spawn(k, cmd: String, args: String) {
+            resume(k, 42);
+        }
+    };
+    res
+}
+
+fn main() -> i64 {
+    test_print("=== Running Default Effect Handler Test Suite ===");
+
+    let code = test_command_status_default();
+    assert_eq(code, 0, "command_status executes via default Process handler and returns 0");
+
+    let fs_res = test_fs_default();
+    assert_eq(fs_res, 0, "fs_exists and fs_size execute via default FS handler");
+
+    perform IO.print("  test default IO.print effect ... ok");
+
+    let user_res = test_user_handler_precedence();
+    assert_eq(user_res, 42, "user-defined handler takes precedence over default handler");
+
+    test_print("All default effect handler tests passed!");
+    0
+}

@@ -279,20 +279,26 @@ fn p_set_term(b: *mut TirBlock, term_kind: i64, target: i64, else_target: i64, c
 // TIR Function & Module
 // -----------------------------------------------------------------------------
 pub struct TirFunction {
-    kind: i64,                // 0: Entry block ID (default 0)
-    sym: i64,                 // 1: Function symbol (name_sym)
-    int_val: i64,             // 2: Return type symbol
-    str_val: String,          // 3: Unused
-    op: i64,                  // 4: Next SSA virtual register ID
-    left: *mut AstFn,         // 5: Originating AST function
-    right: *mut u8,           // 6: Arena pointer
-    args: Vec<*mut TirBlock>, // 7: Vector of basic blocks
-    interner: *const Interner,// 8: Interner pointer
+    kind: i64,                       // 0: Entry block ID (default 0)
+    sym: i64,                        // 1: Function symbol (name_sym)
+    int_val: i64,                    // 2: Return type symbol
+    str_val: String,                 // 3: Unused
+    op: i64,                         // 4: Next SSA virtual register ID
+    left: *mut AstFn,                // 5: Originating AST function
+    handled_effects: *mut Vec<i64>,  // 6: Stack of active handled effect symbols
+    args: Vec<*mut TirBlock>,        // 7: Vector of basic blocks
+    interner: *const Interner,       // 8: Interner pointer
 }
 
 pub fn alloc_tir_function(arena: *mut u8, name_sym: i64, ret_ty_sym: i64, origin_fn: *mut AstFn, interner: &Interner) -> *mut TirFunction {
     let p = unsafe { morrow_region_alloc(arena, 144, 8) as *mut TirFunction };
     let empty_blocks: Vec<*mut TirBlock> = vec_new_in(arena);
+    let handled_vec = unsafe { morrow_region_alloc(arena, 32, 8) as *mut Vec<i64> };
+    let empty_handled: Vec<i64> = vec_new_in(arena);
+    handled_vec.data = empty_handled.data;
+    handled_vec.len = empty_handled.len;
+    handled_vec.cap = empty_handled.cap;
+    handled_vec.arena = empty_handled.arena;
     unsafe {
         p.kind = 0;
         p.sym = name_sym;
@@ -300,11 +306,26 @@ pub fn alloc_tir_function(arena: *mut u8, name_sym: i64, ret_ty_sym: i64, origin
         p.str_val = "";
         p.op = 1; // next_reg starts at 1
         p.left = origin_fn;
-        p.right = arena;
+        p.handled_effects = handled_vec;
         p.args = empty_blocks;
         p.interner = interner as *const Interner;
     }
     p
+}
+
+fn tir_is_effect_lexically_handled(f: *mut TirFunction, eff_sym: i64) -> bool {
+    if f == (0 as *mut TirFunction) || f.handled_effects == (0 as *mut Vec<i64>) {
+        return false;
+    }
+    let hv = unsafe { f.handled_effects as &Vec<i64> };
+    let mut i: i64 = 0;
+    while i < hv.len {
+        if vec_get(hv, i) == eff_sym {
+            return true;
+        }
+        i = i + 1;
+    }
+    false
 }
 
 fn determine_index_stride(left: *mut AstExpr, interner: &Interner) -> i64 {
@@ -481,6 +502,76 @@ pub fn lower_ast_expr_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, expr
             i = i + 1;
         }
         let reg = tir_fn_alloc_reg(f);
+
+        if !tir_is_effect_lexically_handled(f, expr.sym) && f.interner != (0 as *const Interner) {
+            let interner_ref = unsafe { f.interner as &Interner };
+            let eff_name = interner_lookup(interner_ref, expr.sym);
+            let op_name = interner_lookup(interner_ref, expr.op);
+            let peff = eff_name as *const u8;
+            let pop = op_name as *const u8;
+
+            let interner_mut = unsafe { (f.interner as *mut Interner) as &mut Interner };
+
+            // Process.spawn(cmd, args) -> process_exec(cmd, args)
+            if unsafe { strcmp(peff, "Process" as *const u8) == 0 && strcmp(pop, "spawn" as *const u8) == 0 } {
+                let fn_sym = interner_intern(interner_mut, "process_exec");
+                let call_inst = alloc_tir_inst_call(arena, reg, fn_sym, tir_args);
+                tir_block_push_inst(cur_block, call_inst);
+                return alloc_tir_op_reg(arena, reg);
+            }
+
+            // FS effects
+            if unsafe { strcmp(peff, "FS" as *const u8) == 0 } {
+                if unsafe { strcmp(pop, "read_file" as *const u8) == 0 } {
+                    if tir_args.len == 1 {
+                        vec_push(&mut tir_args, alloc_tir_op_int(arena, 0));
+                    }
+                    let fn_sym = interner_intern(interner_mut, "fs_read_to_string_in");
+                    let call_inst = alloc_tir_inst_call(arena, reg, fn_sym, tir_args);
+                    tir_block_push_inst(cur_block, call_inst);
+                    return alloc_tir_op_reg(arena, reg);
+                }
+                if unsafe { strcmp(pop, "read_file_in" as *const u8) == 0 } {
+                    let fn_sym = interner_intern(interner_mut, "fs_read_to_string_in");
+                    let call_inst = alloc_tir_inst_call(arena, reg, fn_sym, tir_args);
+                    tir_block_push_inst(cur_block, call_inst);
+                    return alloc_tir_op_reg(arena, reg);
+                }
+                if unsafe { strcmp(pop, "write_file" as *const u8) == 0 } {
+                    let fn_sym = interner_intern(interner_mut, "fs_write_string");
+                    let call_inst = alloc_tir_inst_call(arena, reg, fn_sym, tir_args);
+                    tir_block_push_inst(cur_block, call_inst);
+                    return alloc_tir_op_reg(arena, reg);
+                }
+                if unsafe { strcmp(pop, "file_exists" as *const u8) == 0 } {
+                    let fn_sym = interner_intern(interner_mut, "fs_exists");
+                    let call_inst = alloc_tir_inst_call(arena, reg, fn_sym, tir_args);
+                    tir_block_push_inst(cur_block, call_inst);
+                    return alloc_tir_op_reg(arena, reg);
+                }
+                if unsafe { strcmp(pop, "file_size" as *const u8) == 0 } {
+                    let fn_sym = interner_intern(interner_mut, "fs_size");
+                    let call_inst = alloc_tir_inst_call(arena, reg, fn_sym, tir_args);
+                    tir_block_push_inst(cur_block, call_inst);
+                    return alloc_tir_op_reg(arena, reg);
+                }
+                if unsafe { strcmp(pop, "delete_file" as *const u8) == 0 } {
+                    let fn_sym = interner_intern(interner_mut, "fs_delete");
+                    let call_inst = alloc_tir_inst_call(arena, reg, fn_sym, tir_args);
+                    tir_block_push_inst(cur_block, call_inst);
+                    return alloc_tir_op_reg(arena, reg);
+                }
+            }
+
+            // IO.print(msg) -> puts(msg)
+            if unsafe { strcmp(peff, "IO" as *const u8) == 0 && strcmp(pop, "print" as *const u8) == 0 } {
+                let fn_sym = interner_intern(interner_mut, "puts");
+                let call_inst = alloc_tir_inst_call(arena, reg, fn_sym, tir_args);
+                tir_block_push_inst(cur_block, call_inst);
+                return alloc_tir_op_reg(arena, reg);
+            }
+        }
+
         let inst = alloc_tir_inst(arena, tir_inst_effect_perform(), reg, expr.op, 0 as *mut TirOperand, 0 as *mut TirOperand);
         inst.int_val = expr.sym;
         inst.args = tir_args;
@@ -508,6 +599,11 @@ pub fn lower_ast_expr_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, expr
         push_inst.int_val = expr.sym;
         tir_block_push_inst(cur_block, push_inst);
 
+        if f.handled_effects != (0 as *mut Vec<i64>) {
+            let hv = unsafe { f.handled_effects as &mut Vec<i64> };
+            vec_push(hv, expr.sym);
+        }
+
         let mut cur = cur_block;
         let mut bi: i64 = 0;
         let b_len = expr.stmts.len;
@@ -522,6 +618,13 @@ pub fn lower_ast_expr_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, expr
             }
             cur = lower_ast_stmt_to_tir(f, cur, s, 0 - 1, 0 - 1, false, arena);
             bi = bi + 1;
+        }
+
+        if f.handled_effects != (0 as *mut Vec<i64>) {
+            let hv = unsafe { f.handled_effects as &mut Vec<i64> };
+            if hv.len > 0 {
+                hv.len = hv.len - 1;
+            }
         }
 
         let pop_inst = alloc_tir_inst(arena, tir_inst_handler_pop(), reg, h_id, body_val, 0 as *mut TirOperand);
@@ -766,6 +869,11 @@ pub fn lower_ast_stmt_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, stmt
         push_inst.int_val = stmt.sym;
         tir_block_push_inst(cur_block, push_inst);
 
+        if f.handled_effects != (0 as *mut Vec<i64>) {
+            let hv = unsafe { f.handled_effects as &mut Vec<i64> };
+            vec_push(hv, stmt.sym);
+        }
+
         let mut cur = cur_block;
         let mut bi: i64 = 0;
         let b_len = stmt.then_stmts.len;
@@ -773,6 +881,13 @@ pub fn lower_ast_stmt_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, stmt
             let s = vec_get(&stmt.then_stmts, bi);
             cur = lower_ast_stmt_to_tir(f, cur, s, loop_exit_id, loop_head_id, is_tail && (bi == b_len - 1), arena);
             bi = bi + 1;
+        }
+
+        if f.handled_effects != (0 as *mut Vec<i64>) {
+            let hv = unsafe { f.handled_effects as &mut Vec<i64> };
+            if hv.len > 0 {
+                hv.len = hv.len - 1;
+            }
         }
 
         let pop_inst = alloc_tir_inst(arena, tir_inst_handler_pop(), 0, h_id, 0 as *mut TirOperand, 0 as *mut TirOperand);

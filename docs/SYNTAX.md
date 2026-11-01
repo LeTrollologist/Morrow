@@ -1,8 +1,8 @@
-# Morrow Language & Syntax Reference (v2.2.0)
+# Morrow Language & Syntax Reference (v2.3.0)
 
 > This document describes **what the compiler actually accepts and generates**, not
 > an aspirational design. Every construct below was compiled (and where relevant
-> executed) against `forge 2.2.0 (morrow standalone 2026)`; constructs that are
+> executed) against `forge 2.3.0 (morrow standalone 2026)`; constructs that are
 > specified elsewhere but *not* implemented are collected in
 > [§14 Not Implemented / Known Limitations](#14-not-implemented--known-limitations).
 >
@@ -626,11 +626,10 @@ command_new(program) -> Command
 command_arg(&mut Command, arg) 
 command_status(&Command) -> i64 yields [Process]
 ```
-Caveat (v2.0.1): `std::fs` (`fs_read*`, `fs_write_string`, `fs_exists`,
-`fs_size`, `fs_delete`) and `process_exec` are backed by codegen runtime thunks and
-work. `command_new` / `command_arg` / `command_status` are **not** emitted into the
-object file, so programs using them fail at link with
-`undefined value '@command_arg'`; use `process_exec(cmd, args)` instead.
+Status (v2.3.0): `std::fs` (`fs_read*`, `fs_write_string`, `fs_exists`,
+`fs_size`, `fs_delete`), `process_exec`, and `command_new` / `command_arg` /
+`command_status` are fully backed by built-in default effect handlers and runtime
+thunks, working seamlessly without an enclosing handler.
 
 ### `std.sqlite` / `std.sql` / `std.sql_builder`
 ```morrow
@@ -781,12 +780,10 @@ Implemented but weaker than older drafts claimed:
   tree reports every file as unformatted. Format before enforcing it in CI.
 - **Debug information / LTO**: no CodeView/PDB emission, no LTO or
   function-section GC (older roadmap entries marked these done — they are not).
-- **`std::process`**: `process_exec` is lowered to a runtime thunk and works.
-  `command_new` / `command_arg` now link and run (the module loader used to skip
-  `std/process.mw`), but `command_status` crashes at runtime because the `Process`
-  **effect has no working default handler** — `perform Process.spawn(...)` faults.
-  Use `process_exec` until effect handlers for the built-in effects are wired up.
-  (`std::fs` read/write/exists/size/delete are all backed by thunks and work.)
+- **`std::process`**: `process_exec` and `command_new` / `command_arg` /
+  `command_status` are all backed by default effect handlers (v2.3.0) and work
+  natively without an enclosing handler. User-defined handlers take precedence
+  when provided.
 
 Toolchain requirements:
 

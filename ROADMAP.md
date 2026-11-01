@@ -2,7 +2,7 @@
 
 > **Vision:** A systems-level programming language that provides the fearless concurrency and zero-cost abstractions of Rust, while eliminating explicit lifetime annotations through **Region-Based Memory Management**, eliminating the async/await function coloring divide through **Algebraic Effects**, and eliminating runtime bounds panics through **Refinement Types**.
 
-> **Status note (v2.2.0).** Milestones **v0.1–v0.10** describe the archived
+> **Status note (v2.3.0).** Milestones **v0.1–v0.10** describe the archived
 > **Stage-0 Rust** implementation under `archive/stage0-rust/` (crates
 > `tungsten-*`). The shipping **Pure Morrow** compiler (`compiler/*.mw`, binaries
 > in `bin/`) implements a subset of that surface. Features present in the
@@ -40,11 +40,11 @@ same feature set, and the table below is the authoritative comparison. Every
 | Formatter | `forge fmt` (stage-0) | Implemented, idempotent (`tests/formatter_tests.mw`); repo sources are not yet canonical |
 | Cross-compilation | Windows + Linux | Implemented: `x86_64-pc-windows-gnu`, `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `wasm32-unknown-unknown` (artifact magic verified) |
 | `enum` / `match`, floats, closures, `if`-expressions | Absent | **Absent** |
-| Built-in effect handlers (`Process`/`FS`/`IO`) | Native in stage-0 runtime | **Partial**: `process_exec`/`fs_*` work via codegen thunks; `perform Process.spawn(...)` faults and `command_status` is unusable |
+| Built-in effect handlers (`Process`/`FS`/`IO`) | Native in stage-0 runtime | **Implemented**: default handlers for `Process`, `FS`, and `IO.print` lower directly to runtime thunks when unhandled; user handlers take precedence when provided (v2.3.0) |
 
 ### How "current" status is verified
 
-- 22 native suites (`forge test`), including region, refinement, generics, effects,
+- 23 native suites (`forge test`), including region, refinement, generics, effects,
   linear resources, LSP, HTTP, net and syntax-feature coverage.
 - 15 compile-fail suites (`tests/negative/`), which assert that documented
   limitations are still rejected with the documented diagnostic.
@@ -521,13 +521,17 @@ same feature set, and the table below is the authoritative comparison. Every
 - Deliberately **not** enforced (documented in SYNTAX §4 with the matrix): struct-field stores, region-expression values (region expressions are not typed by `tc_expr`, which takes `&HashMap` for `vars` and therefore cannot recurse into `tc_stmt`), and indirect escapes through calls.
 - Tagging is gated on `region_depth > 0`, so arena handles passed as parameters (`fn f(arena: *mut u8) -> Vec<i64>`) — the idiom the compiler itself uses everywhere — remain legal and no false positives appeared in the self-hosted build.
 
-### Phase 14.4: Open items
-- **Built-in effect handlers** for `Process`/`FS`/`IO`: `perform Process.spawn(...)` still faults (only the codegen-thunked `process_exec`/`fs_*` wrappers work), so `command_status` is unusable.
-- **Struct-field and indirect region escapes**: see Phase 14.3; needs escape flags on `TcType` that propagate through field stores, or a TIR dataflow pass.
-- **Region-expression typing**: `tc_expr` needs mutable `vars` (or a type-environment handle) before region expressions can be typed and checked.
+### Phase 14.4: Built-in Effect Handlers ✅ (v2.3.0)
+- **Built-in effect handlers** for `Process`, `FS`, and `IO`:
+  - `compiler/typeck.mw`: `tc_is_effect_covered` treats built-in effect names (`Process`, `FS`, `IO`, `Time`) as permanently covered. `IO.read_line` requires an explicit yields contract or user handler.
+  - `compiler/tir.mw`: `lower_ast_expr_to_tir` lowers `perform` on built-in effects directly to `tir_inst_call` on existing runtime thunks (`@morrow_process_exec`, `@morrow_fs_*`, `puts`) when no user handler encloses the `perform` lexically. When user handlers are present, delimited continuation unwinding is preserved and takes precedence.
+  - Acceptance tests in `tests/default_effect_handler_test.mw` verify `command_status`, `fs_exists`, `fs_size`, `perform IO.print`, and user handler precedence. All 23 positive test suites and 15 compile-fail suites pass.
+- **Open items**:
+  - **Struct-field and indirect region escapes**: see Phase 14.3; needs escape flags on `TcType` that propagate through field stores, or a TIR dataflow pass.
+  - **Region-expression typing**: `tc_expr` needs mutable `vars` (or a type-environment handle) before region expressions can be typed and checked.
 
 
-#### Default-handler design (anchors verified in v2.2.0)
+#### Default-handler design (implemented in v2.3.0)
 
 The two blockers are known exactly; neither needs new runtime machinery:
 

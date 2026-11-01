@@ -11,7 +11,7 @@
 <!-- Tier 1: Project Metadata & Quality Assurance Badges -->
 <p align="center">
   <a href="https://github.com/LeTrollologist/Morrow/releases">
-    <img src="https://img.shields.io/badge/Release-v2.2.0_Standalone-6366F1?style=for-the-badge&logo=github&logoColor=white&labelColor=0f172a" alt="Release" />
+    <img src="https://img.shields.io/badge/Release-v2.3.0_Standalone-6366F1?style=for-the-badge&logo=github&logoColor=white&labelColor=0f172a" alt="Release" />
   </a>
   <a href="compiler/">
     <img src="https://img.shields.io/badge/Compiler-Pure_Morrow-8B5CF6?style=for-the-badge&logo=llvm&logoColor=white&labelColor=0f172a" alt="Compiler" />
@@ -23,7 +23,7 @@
     <img src="https://img.shields.io/badge/Parity-Bitwise_Identical-06B6D4?style=for-the-badge&logo=target&logoColor=white&labelColor=0f172a" alt="Parity" />
   </a>
   <a href="tests/">
-    <img src="https://img.shields.io/badge/Tests-21%2F21_Passing-22C55E?style=for-the-badge&logo=checkmarx&logoColor=white&labelColor=0f172a" alt="Tests" />
+    <img src="https://img.shields.io/badge/Tests-23%2F23_Passing-22C55E?style=for-the-badge&logo=checkmarx&logoColor=white&labelColor=0f172a" alt="Tests" />
   </a>
   <a href="LICENSE">
     <img src="https://img.shields.io/badge/License-MIT_%2F_Apache--2.0-F59E0B?style=for-the-badge&logo=open-source-initiative&logoColor=white&labelColor=0f172a" alt="License" />
@@ -104,7 +104,7 @@ tested breakdown lives in [`docs/SYNTAX.md` §14](docs/SYNTAX.md#14-not-implemen
 | Debug info (PDB), LTO, section GC | ❌ not implemented (stage-0 Rust only) |
 | `println` | one value per call: literal, integer, or a single `{}` placeholder |
 | Call signatures | callee existence + argument **count** enforced; argument *types* not compared (inference returns `i64` for most expressions) |
-| `std::process` | `process_exec` works; `command_new`/`command_arg` link, `command_status` faults (no default `Process` effect handler) |
+| `std::process` | `process_exec` and `command_status` both work natively via default `Process` effect handler |
 
 Toolchain prerequisite: **`clang` on `PATH`** (the compiler emits LLVM IR and
 shells out to clang to link; Windows linking also uses the MinGW CRT in `lib/crt`).

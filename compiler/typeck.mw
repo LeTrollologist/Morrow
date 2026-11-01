@@ -199,6 +199,20 @@ pub fn tc_is_linear_struct(tc: &TypeChecker, struct_defs: &HashMap, sym: i64) ->
 }
 
 pub fn tc_is_effect_covered(tc: &TypeChecker, eff_sym: i64) -> bool {
+    // 0. Built-in default effects (Process, FS, IO, Time) are permanently covered
+    if tc.interner != (0 as *mut Interner) {
+        let interner_ref = tc.interner as &Interner;
+        let s = interner_lookup(interner_ref, eff_sym);
+        let p = s as *const u8;
+        if unsafe {
+            strcmp(p, "Process" as *const u8) == 0 ||
+            strcmp(p, "FS" as *const u8) == 0 ||
+            strcmp(p, "IO" as *const u8) == 0 ||
+            strcmp(p, "Time" as *const u8) == 0
+        } {
+            return true;
+        }
+    }
     // 1. Check active handled_effects stack
     if tc.handled_effects != (0 as *mut Vec<i64>) {
         let handled_ref = unsafe { tc.handled_effects as &Vec<i64> };
@@ -700,7 +714,43 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &HashMap, fn_defs: &HashMap, ext_defs
         }
 
         // Enforce Static Invariant 1:
-        if !tc_is_effect_covered(tc, eff_sym) {
+        let mut op_covered = tc_is_effect_covered(tc, eff_sym);
+        if op_covered && tc.interner != (0 as *mut Interner) {
+            let interner_ref = tc.interner as &Interner;
+            let eff_name = interner_lookup(interner_ref, eff_sym);
+            let op_name = interner_lookup(interner_ref, op_sym);
+            let peff = eff_name as *const u8;
+            let pop = op_name as *const u8;
+            if unsafe { strcmp(peff, "IO" as *const u8) == 0 && strcmp(pop, "read_line" as *const u8) == 0 } {
+                let mut lex_covered = false;
+                if tc.handled_effects != (0 as *mut Vec<i64>) {
+                    let handled_ref = unsafe { tc.handled_effects as &Vec<i64> };
+                    let mut hi: i64 = 0;
+                    while hi < handled_ref.len {
+                        if vec_get(handled_ref, hi) == eff_sym {
+                            lex_covered = true;
+                            break;
+                        }
+                        hi = hi + 1;
+                    }
+                }
+                if !lex_covered && tc.active_yields != (0 as *mut Vec<i64>) {
+                    let yields_ref = unsafe { tc.active_yields as &Vec<i64> };
+                    let mut yi: i64 = 0;
+                    while yi < yields_ref.len {
+                        if vec_get(yields_ref, yi) == eff_sym {
+                            lex_covered = true;
+                            break;
+                        }
+                        yi = yi + 1;
+                    }
+                }
+                if !lex_covered {
+                    op_covered = false;
+                }
+            }
+        }
+        if !op_covered {
             report_err("Unhandled perform effect; must be declared in yields contract or handled", 1, 1);
             tc.pos = tc.pos + 1;
         }
