@@ -1,6 +1,6 @@
 # Morrow Use License
 
-**Version 1.0**  
+**Version 2**  
 **Effective for Morrow v2.4.1 and later**  
 Copyright (c) 2026 Micheal Myers
 
@@ -63,7 +63,7 @@ You may:
 
 You are not required to publish your Programs' source code merely because you used Morrow to create them.
 
-This permission does not extend to distributing Morrow itself, its compiler, or project-owned components as part of your Programs.
+This permission does not extend to distributing Morrow itself, its compiler, or project-owned components as part of your Programs. However, if the Morrow compiler automatically embeds necessary portions of the Morrow runtime or standard library into your compiled Program executable, you are permitted to distribute those specific embedded components as part of your Program.
 
 ## 6. Services and Internal Use
 
