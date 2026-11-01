@@ -300,11 +300,59 @@ pub fn tc_resolve_type(tc: &mut TypeChecker, types: &HashMap, struct_defs: &Hash
 // -----------------------------------------------------------------------------
 // Type Checking Expressions
 // -----------------------------------------------------------------------------
-pub fn tc_expr(tc: &mut TypeChecker, vars: &HashMap, fn_defs: &HashMap, ext_defs: &HashMap, types: &HashMap, struct_defs: &HashMap, expr: *mut AstExpr) -> *mut TcType yields [Diagnostics] {
+pub fn tc_expr(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_defs: &HashMap, types: &HashMap, struct_defs: &HashMap, ret_ty: *mut TcType, expr: *mut AstExpr) -> *mut TcType yields [Diagnostics] {
     if expr == (0 as *mut AstExpr) {
         return alloc_tc_type(tc.arena, ty_unit(), 0);
     }
     let kind = expr.kind;
+
+    // Region expression: `region name { stmts }` used as a value. The body is typed
+    // exactly like a region block statement (depth +1, this expression's symbol), and
+    // the value is the type of a trailing expression statement, tagged as
+    // region-scoped so that returning it or storing it in an outer value is caught.
+    if kind == expr_region() {
+        let r_sym = expr.sym;
+        if r_sym != 0 {
+            // Bind the region name inside its own body, exactly like the statement
+            // form does, so `vec_new_in(r)` in the tail resolves.
+            let rs_name = interner_lookup(tc.interner as &Interner, r_sym);
+            let reg_ty = alloc_tc_type(tc.arena, ty_ptr(), 0);
+            hashmap_insert(vars, rs_name, reg_ty as i64);
+        }
+        let body_len = expr.stmts.len;
+        let mut val_ty = alloc_tc_type(tc.arena, ty_unit(), 0);
+        let mut rbi: i64 = 0;
+        while rbi < body_len {
+            let rs = vec_get(&expr.stmts, rbi);
+            if rbi == body_len - 1 {
+                if rs.kind == stmt_expr() {
+                    let tail_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, rs.expr);
+                    // Copy before tagging: the source type may be a live variable's
+                    // record, and tagging it in place would mark an outer variable as
+                    // region-scoped for the rest of the function.
+                    let tagged = alloc_tc_type(tc.arena, tail_ty.kind, tail_ty.sym);
+                    if tail_ty != (0 as *mut TcType) {
+                        if tc_is_refined(tail_ty) {
+                            tagged.int_val = tail_ty.int_val;
+                            tagged.op = tail_ty.op;
+                            tagged.is_refined = 1;
+                        }
+                        if tail_ty.kind == ty_ptr() || tail_ty.kind == ty_ref() {
+                            tagged.right = r_sym as *mut TcType;
+                        }
+                        if tc_is_region_alloc_call(tc, rs.expr) {
+                            tagged.right = r_sym as *mut TcType;
+                        }
+                    }
+                    val_ty = tagged;
+                    break;
+                }
+            }
+            tc_stmt(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, 1, r_sym, rs);
+            rbi = rbi + 1;
+        }
+        return val_ty;
+    }
 
     if kind == expr_int() {
         let val = expr.int_val;
@@ -357,7 +405,7 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &HashMap, fn_defs: &HashMap, ext_defs
     }
 
     if kind == expr_unary() {
-        let inner_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, expr.left);
+        let inner_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, expr.left);
         let op = expr.op;
         if op == tok_bang() {
             return alloc_tc_type(tc.arena, ty_bool(), 0);
@@ -377,8 +425,8 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &HashMap, fn_defs: &HashMap, ext_defs
     }
 
     if kind == expr_binop() {
-        let l_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, expr.left);
-        let r_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, expr.right);
+        let l_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, expr.left);
+        let r_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, expr.right);
         let op = expr.op;
 
         // Comparison operators return bool
@@ -539,7 +587,7 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &HashMap, fn_defs: &HashMap, ext_defs
         let mut i: i64 = 0;
         while i < args_len {
             let arg_expr = vec_get(&expr.args, i);
-            let arg_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, arg_expr);
+            let arg_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, arg_expr);
 
             // Linear consumption: passing a linear resource variable to a function consumes it
             if arg_expr != (0 as *mut AstExpr) && arg_expr.kind == expr_var() {
@@ -603,7 +651,7 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &HashMap, fn_defs: &HashMap, ext_defs
     }
 
     if kind == expr_field() {
-        let base_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, expr.left);
+        let base_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, expr.left);
         let field_sym = expr.sym;
         if base_ty != (0 as *mut TcType) && base_ty.sym != 0 {
             let interner_ref = tc.interner as &Interner;
@@ -626,8 +674,8 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &HashMap, fn_defs: &HashMap, ext_defs
     }
 
     if kind == expr_index() {
-        let base_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, expr.left);
-        let idx_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, expr.right);
+        let base_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, expr.left);
+        let idx_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, expr.right);
         if base_ty != (0 as *mut TcType) {
             if base_ty.kind == ty_byte() {
                 expr.op = 1;
@@ -642,7 +690,7 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &HashMap, fn_defs: &HashMap, ext_defs
     }
 
     if kind == expr_cast() {
-        let inner_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, expr.left);
+        let inner_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, expr.left);
         let target_sym = expr.sym;
         let target_ty = tc_resolve_type(tc, types, struct_defs, target_sym);
         if target_ty != (0 as *mut TcType) {
@@ -666,7 +714,7 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &HashMap, fn_defs: &HashMap, ext_defs
         let mut i: i64 = 0;
         while i < args_len {
             let arg_expr = vec_get(&expr.args, i);
-            tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, arg_expr);
+            tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, arg_expr);
             i = i + 1;
         }
         return alloc_tc_type(tc.arena, ty_struct(), struct_sym);
@@ -708,7 +756,7 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &HashMap, fn_defs: &HashMap, ext_defs
             let mut ai: i64 = 0;
             while ai < expr.args.len {
                 let arg_node = vec_get(&expr.args, ai);
-                let _arg_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, arg_node);
+                let _arg_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, arg_node);
                 ai = ai + 1;
             }
         }
@@ -759,8 +807,8 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &HashMap, fn_defs: &HashMap, ext_defs
     }
 
     if kind == expr_resume() {
-        let k_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, expr.left);
-        let val_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, expr.right);
+        let k_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, expr.left);
+        let val_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, expr.right);
         if k_ty.kind != ty_continuation() {
             report_err("First argument to resume must be a continuation", 1, 1);
             tc.pos = tc.pos + 1;
@@ -880,7 +928,7 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &HashMap, fn_defs: &HashMap, ext_defs
             let s = vec_get(&expr.stmts, bi);
             if bi == expr.stmts.len - 1 {
                 if s.kind == stmt_expr() {
-                    body_ty = tc_expr(tc, &body_vars, fn_defs, ext_defs, types, struct_defs, s.expr);
+                    body_ty = tc_expr(tc, &mut body_vars, fn_defs, ext_defs, types, struct_defs, ret_ty, s.expr);
                 } else {
                     tc_stmt(tc, &mut body_vars, fn_defs, ext_defs, types, struct_defs, body_ty, 0, 0, s);
                 }
@@ -1015,10 +1063,15 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
         let sym = stmt.sym;
         let interner_ref = tc.interner as &Interner;
         let s = interner_lookup(interner_ref, sym);
-        let expr_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, stmt.expr);
+        let expr_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, stmt.expr);
 
         let var_ty = alloc_tc_type(tc.arena, expr_ty.kind, expr_ty.sym);
         if expr_ty != (0 as *mut TcType) {
+            // Carry an inherited region tag (e.g. the value of a region expression)
+            // onto the binding, so it cannot escape later.
+            if expr_ty.right != (0 as *mut TcType) {
+                var_ty.right = expr_ty.right;
+            }
             if tc_is_refined(expr_ty) {
                 var_ty.int_val = expr_ty.int_val;
                 var_ty.op = expr_ty.op;
@@ -1067,7 +1120,7 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
         }
 
         let var_ty = var_ty_val as *mut TcType;
-        let expr_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, stmt.expr);
+        let expr_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, stmt.expr);
 
         // Refinement Constraint Check: Verify RHS is within LHS intervals
         if var_ty != (0 as *mut TcType) {
@@ -1086,17 +1139,17 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
             }
         }
 
-        // Region escape check: reject assigning a region-scoped pointer to an outer variable.
-        // A region-scoped value has right != null; an outer variable has right == null.
-        if region_depth > 0 {
-            if expr_ty != (0 as *mut TcType) {
-                if expr_ty.right != (0 as *mut TcType) {
-                    if var_ty != (0 as *mut TcType) {
-                        if var_ty.right == (0 as *mut TcType) {
-                            report_err("Region Escape Violation: region-scoped value assigned to outer-scope variable", 1, 1);
-                            tc.pos = tc.pos + 1;
-                            return false;
-                        }
+        // Region escape check: reject assigning a region-scoped value to an outer
+        // variable. A region-scoped value has right != null; an outer variable has
+        // right == null. Not gated on region_depth: a value tagged by a region
+        // *expression* is still region-scoped after the region has closed.
+        if expr_ty != (0 as *mut TcType) {
+            if expr_ty.right != (0 as *mut TcType) {
+                if var_ty != (0 as *mut TcType) {
+                    if var_ty.right == (0 as *mut TcType) {
+                        report_err("Region Escape Violation: region-scoped value assigned to outer-scope variable", 1, 1);
+                        tc.pos = tc.pos + 1;
+                        return false;
                     }
                 }
             }
@@ -1106,8 +1159,47 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
     }
 
     if kind == stmt_field_assign() {
-        let base_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, stmt.left);
-        tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, stmt.expr);
+        let base_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, stmt.left);
+        let rhs_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, stmt.expr);
+
+        // Region escape check for stores: writing a region-scoped value into a field of
+        // a value that lives outside the region is the same leak as returning it. The
+        // holder is the root of the field chain (`a.b.c = x` checks `a`).
+        let mut rhs_scoped = false;
+        if rhs_ty != (0 as *mut TcType) {
+            if rhs_ty.right != (0 as *mut TcType) {
+                rhs_scoped = true;
+            }
+            if region_depth > 0 {
+                if rhs_ty.kind == ty_ptr() || rhs_ty.kind == ty_ref() {
+                    rhs_scoped = true;
+                }
+            }
+        }
+        if region_depth > 0 && tc_is_region_alloc_call(tc, stmt.expr) {
+            rhs_scoped = true;
+        }
+        if rhs_scoped {
+            let mut root = stmt.left;
+            let mut hops: i64 = 0;
+            while root != (0 as *mut AstExpr) && root.kind == expr_field() && hops < 16 {
+                root = root.left;
+                hops = hops + 1;
+            }
+            let holder_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, root);
+            let mut holder_scoped = false;
+            if holder_ty != (0 as *mut TcType) {
+                if holder_ty.right != (0 as *mut TcType) {
+                    holder_scoped = true;
+                }
+            }
+            if !holder_scoped {
+                report_err("Region Escape Violation: region-scoped value stored in field of outer-scope value", 1, 1);
+                tc.pos = tc.pos + 1;
+                return false;
+            }
+        }
+
         if base_ty != (0 as *mut TcType) && base_ty.sym != 0 {
             let interner_ref = tc.interner as &Interner;
             let s = interner_lookup(interner_ref, base_ty.sym);
@@ -1129,9 +1221,9 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
     }
 
     if kind == stmt_index_assign() {
-        let base_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, stmt.left);
-        tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, stmt.right);
-        tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, stmt.expr);
+        let base_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, stmt.left);
+        tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, stmt.right);
+        tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, stmt.expr);
         if base_ty != (0 as *mut TcType) {
             if base_ty.kind == ty_byte() {
                 stmt.sym = 1;
@@ -1147,7 +1239,7 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
         let ret_expr = stmt.expr;
         let mut actual_ty = 0 as *mut TcType;
         if ret_expr != (0 as *mut AstExpr) {
-            actual_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_expr);
+            actual_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, ret_expr);
 
             // Check if returning a linear resource
             if ret_expr.kind == expr_var() {
@@ -1203,15 +1295,15 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
                     }
                 }
             }
-            // Region escape check: reject returning a region-scoped pointer.
-            // actual_ty.right != null means it was tagged inside a region block.
-            if region_depth > 0 {
-                if actual_ty != (0 as *mut TcType) {
-                    if actual_ty.right != (0 as *mut TcType) {
-                        report_err("Region Escape Violation: region-scoped value returned from function", 1, 1);
-                        tc.pos = tc.pos + 1;
-                        return false;
-                    }
+            // Region escape check: reject returning a region-scoped value.
+            // actual_ty.right != null means it was tagged inside a region block or by
+            // a region expression. Not gated on region_depth, because a value returned
+            // from a region *expression* is checked at the `return` outside that region.
+            if actual_ty != (0 as *mut TcType) {
+                if actual_ty.right != (0 as *mut TcType) {
+                    report_err("Region Escape Violation: region-scoped value returned from function", 1, 1);
+                    tc.pos = tc.pos + 1;
+                    return false;
                 }
             }
         }
@@ -1219,12 +1311,12 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
     }
 
     if kind == stmt_expr() {
-        tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, stmt.expr);
+        tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, stmt.expr);
         return true;
     }
 
     if kind == stmt_if() {
-        tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, stmt.expr);
+        tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, stmt.expr);
 
         // Path-sensitive interval narrowing for then-branch
         let mut modified_syms: Vec<i64> = vec_new_in(tc.arena);
@@ -1391,7 +1483,7 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
     }
 
     if kind == stmt_while() {
-        tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, stmt.expr);
+        tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, stmt.expr);
 
         let mut pre_l_len: i64 = 0;
         if tc.linear_names != (0 as *mut Vec<String>) {
@@ -1505,7 +1597,7 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
     if kind == stmt_handle() {
         if stmt.handler != (0 as *mut AstHandler) {
             let handle_expr = alloc_expr_handle(tc.arena, stmt.sym, stmt.then_stmts, stmt.handler);
-            tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, handle_expr);
+            tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, handle_expr);
         }
         return true;
     }

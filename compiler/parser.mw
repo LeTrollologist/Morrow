@@ -698,12 +698,21 @@ pub fn parse_struct(p: &mut Parser, is_linear: i64) -> *mut AstStruct yields [Di
     expect(p, tok_lbrace(), "Expected '{' to start struct body");
     let mut fields: Vec<*mut AstField> = vec_new_in(p.arena);
     while !check(p, tok_rbrace()) && !check(p, tok_eof()) {
+        let field_start = p.pos;
         let f_name = expect(p, tok_ident(), "Expected field name");
         expect(p, tok_colon(), "Expected ':' after field name");
         let f_ty = parse_type(p);
         let field_node = alloc_field(p.arena, f_name.sym, f_ty);
         vec_push(&mut fields, field_node);
         if check(p, tok_comma()) {
+            advance(p);
+        }
+        // Guarantee progress: a malformed field (e.g. `p: i64;`) makes every
+        // expect() fail without consuming, which used to spin here and emit an
+        // unbounded stream of identical diagnostics. Consume one token and stop
+        // after the first stall so the parser always terminates.
+        if p.pos == field_start {
+            report_err("Malformed struct field; expected `name: type,`", current_tok(p).line, current_tok(p).col);
             advance(p);
         }
     }

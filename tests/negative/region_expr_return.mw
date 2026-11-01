@@ -1,0 +1,15 @@
+// NEGATIVE TEST: the value produced by a region expression must not escape the
+// region that produced it. `region r { ... }` used as a value tags its result, so
+// returning it later is the same leak as returning from inside the block.
+import std::collections;
+
+fn make() -> i64 {
+    let v = region r {
+        vec_new_in(r)
+    };
+    return v;
+}
+
+fn main() -> i64 {
+    0
+}

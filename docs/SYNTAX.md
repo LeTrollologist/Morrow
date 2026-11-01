@@ -222,42 +222,48 @@ two — the compiler now enforces both.
 
 ### Escape analysis: what is and is not rejected
 
-The typechecker tags **region-scoped values** and rejects escapes on two boundaries.
-A value is region-scoped when, *inside* a `region` block, it is
+The typechecker tags **region-scoped values** and rejects escapes on three
+boundaries. A value is region-scoped when
 
-1. a pointer or reference type (`*T`, `*mut T`, `&T`, `&mut T`), or
-2. the result of a region allocator call — a callee whose name ends in `_in`
-   (`vec_new_in`, `string_buffer_new_in`, `hashmap_new_in`, …) or
-   `morrow_region_alloc(...)`.
+1. inside a `region` block it is a pointer or reference type (`*T`, `*mut T`, `&T`,
+   `&mut T`), or
+2. inside a `region` block it is the result of a region allocator call — a callee
+   whose name ends in `_in` (`vec_new_in`, `string_buffer_new_in`,
+   `hashmap_new_in`, …) or `morrow_region_alloc(...)`, or
+3. it is the value of a **region expression** (`let v = region r { … };`) and that
+   tail value is a pointer/reference or an allocator result.
 
 | Pattern | Status |
 |---|---|
 | `region r { let p = morrow_region_alloc(r, …); return p; }` | **Rejected** — `Region Escape Violation: region-scoped value returned from function` |
 | `region r { let v = vec_new_in(r); return v; }` | **Rejected** — same diagnostic (allocator-result tagging) |
+| `let v = region r { vec_new_in(r) }; return v;` | **Rejected** — same diagnostic; the region expression's value keeps its tag after the region closes |
 | `let mut out: i64 = 0; region r { let v = vec_new_in(r); out = v; }` | **Rejected** — `Region Escape Violation: region-scoped value assigned to outer-scope variable` |
+| `let v = region r { … }; out = v;` (outer-scope assignment) | **Rejected** — same diagnostic |
+| `region r { let p = morrow_region_alloc(r, 8, 8); outer.field = p; }` | **Rejected** — `Region Escape Violation: region-scoped value stored in field of outer-scope value` |
+| `region r { let p = …; out.p = p; }` where `out` is itself region-scoped | Accepted — the holder lives in the same region |
 | `region r { let p = morrow_region_alloc(r, 8, 8) as *mut i64; *p = 1; }` (used, not returned) | Accepted |
 | `region r { let inner: i64 = 99; val = inner; }` (scalar out of the region) | Accepted — scalars carry no tag |
-| Struct-field store: `region r { let p = morrow_region_alloc(r, 8, 8); outer.field = p; }` | **Not detected** (gap R4) |
-| Region-expression value: `let v = region r { vec_new_in(r) };` | **Not detected** (gap R5) — region expressions are not typed by `tc_expr` |
-| Indirect escape: `region r { let v = vec_new_in(r); take(&v); }` where `take` stores/returns it | **Not detected** — no interprocedural analysis |
+| `let n = region r { let v = vec_new_in(r); vec_len(&v) }; n` (scalar value) | Accepted — only pointer/allocator values are tagged |
+| Indirect escape: `region r { let v = vec_new_in(r); take(&v); }` where `take` stores or returns it | **Not detected** — no interprocedural analysis |
+| Indexed store: `region r { let p = …; outer_vec[0] = p; }` | **Not detected** — the store check covers field assignment only |
 
-Two consequences worth stating plainly:
+Consequences worth stating plainly:
 
 - The rule is **conservative on allocation, not on flow**: a region-allocated value
-  stored in an untagged local inside the region is not tracked any further.
-- Because the check is limited to `return` and direct assignment, a program that
-  passes the checker can still dangle. Escape analysis is enforced for the two
-  common paths and documented as partial everywhere else (see §14 and
-  `ROADMAP.md`), rather than being advertised as complete.
+  copied into a value the checker cannot see into (through a call, or into an index)
+  is not tracked any further.
+- The escape checks are **not gated on being inside the region**. Because tags
+  survive a region expression, a value produced by `region r { … }` is still checked
+  when it is returned or assigned later, outside the block.
+- Tagging itself is gated on being inside a region, so arena handles passed **as
+  parameters** (`fn f(arena: *mut u8) -> Vec<i64> { vec_new_in(arena) }`) are
+  unaffected — that idiom stays legal, as the compiler itself relies on it.
 
-These four detected/rejected patterns are pinned by
-`tests/negative/region_return.mw`, `tests/negative/region_outer_assign.mw`, and the
-accepting cases in `tests/region_escape_test.mw`; the compile-fail harness asserts
-the diagnostic text, so a regression fails CI.
-
-Note that the tagging is gated on being inside a `region` block, so arena handles
-passed **as parameters** (`fn f(arena: *mut u8) -> Vec<i64> { vec_new_in(arena) }`)
-are unaffected — that idiom stays legal, as the compiler itself relies on it.
+Every row above is pinned by a test: `tests/negative/region_return.mw`,
+`region_outer_assign.mw`, `region_expr_return.mw`, `region_field_store.mw`, and the
+accepting cases in `tests/region_escape_test.mw`. The compile-fail harness asserts
+the diagnostic text, so a regression fails the suite.
 
 ---
 
@@ -762,10 +768,11 @@ Implemented but weaker than older drafts claimed:
 - **Refinements**: literal casts and divisor-span checks only; no narrowing, no
   variable-range proofs.
 - **Affine resources**: no auto-drop; consumption must happen on every path.
-- **Escape analysis**: **partial** (v2.2.0). Region-allocated values (pointers,
-  references and `*_in` allocator results) are rejected on `return` and on
-  assignment to an outer-scope variable; struct-field stores, region-expression
-  values and indirect escapes are still not detected. The full detection matrix is
+- **Escape analysis**: **partial** (v2.4.0). Region-allocated values (pointers,
+  references, `*_in` allocator results and the values of region expressions) are
+  rejected on `return`, on assignment to an outer-scope variable, and on
+  struct-field stores into an outer-scope value. Indirect escapes through calls and
+  indexed stores are still not detected. The full detection matrix is
   in [§4](#escape-analysis-what-is-and-is-not-rejected).
 - **`println`**: one value per call, no `{}` interpolation.
 - **Call signatures**: callee existence and argument **count** are enforced
@@ -809,7 +816,7 @@ Every claim above was checked against the released compiler with a probe suite:
 4. **Tooling** — `forge resolve` on a two-level dependency graph (lockfile captured
    verbatim above), `--target` builds checked by magic bytes, and every shipped
    example built with the released binary.
-5. **Release gates** — 23/23 native suites, 15 compile-fail suites
+5. **Release gates** — 23/23 native suites, 17 compile-fail suites
    (`tests/negative/*.mw`, asserted by `forge test`), benchmark suite, and the
    3-stage self-hosting fixed point.
 

@@ -54,6 +54,21 @@ fn test_region_vec_confined(): i64 {
 
 
 // -----------------------------------------------------------------------
+// Test 4: A region expression whose value is a scalar stays confined.
+// `region r { ... }` used as a value tags pointer/allocator results only, so
+// returning a computed scalar is still legal.
+// -----------------------------------------------------------------------
+fn test_region_expr_confined(): i64 {
+    let n = region r {
+        let mut v = vec_new_in(r);
+        vec_push(&mut v, 4);
+        vec_len(&v)
+    };
+    n
+}
+
+
+// -----------------------------------------------------------------------
 // Main test runner ? returns 0 on full pass (exit code convention)
 // -----------------------------------------------------------------------
 pub fn main(): i64 {
@@ -85,6 +100,16 @@ pub fn main(): i64 {
     } else {
         failed = failed + 1;
         puts("  test region vec confined ... FAIL");
+    }
+
+
+    let r4 = test_region_expr_confined();
+    if r4 == 1 {
+        passed = passed + 1;
+        puts("  test region expr confined ... ok");
+    } else {
+        failed = failed + 1;
+        puts("  test region expr confined ... FAIL");
     }
 
 

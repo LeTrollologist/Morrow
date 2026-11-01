@@ -1181,6 +1181,10 @@ pub fn forge_run_test(arena: *mut u8) -> i64 yields [FS, Process, Diagnostics, I
     vec_push(&mut neg_expect, "Region Escape Violation");
     vec_push(&mut neg_files, "tests/negative/region_outer_assign.mw");
     vec_push(&mut neg_expect, "Region Escape Violation");
+    vec_push(&mut neg_files, "tests/negative/region_expr_return.mw");
+    vec_push(&mut neg_expect, "Region Escape Violation");
+    vec_push(&mut neg_files, "tests/negative/region_field_store.mw");
+    vec_push(&mut neg_expect, "Region Escape Violation");
     vec_push(&mut neg_files, "tests/negative/float_literal.mw");
     vec_push(&mut neg_expect, "Expected field name");
     vec_push(&mut neg_files, "tests/negative/if_expression.mw");
