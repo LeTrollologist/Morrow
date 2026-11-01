@@ -65,6 +65,12 @@ make build | test | bench | package | verify | dry-run
    Attaching the `dist/` assets to a release page is a **separate, optional**
    convenience. If a maintainer or a fork wants that, they upload
    `dist/vX.Y.Z/*` themselves; the pipeline neither needs nor performs it.
+5. **No host CLI on `main`.** `main` never invokes `gh`, `glab`, `hub` or any other
+   forge client — not for auth, not for release creation, not for uploads. This is
+   checked mechanically: the preflight stage scans `scripts/pipeline.py`,
+   `Makefile` and `.github/workflows/ci.yml` for host-CLI invocations and aborts the
+   release if one appears, naming the file and line. A fork is free to use whatever
+   client it likes; the main branch does not.
 
 ---
 
@@ -107,10 +113,10 @@ release mechanism. It re-runs `forge test`, the example builds, `forge bench`, t
 docs/version gate and the bootstrap fixed point on push. Releases are made locally
 by this pipeline, which enforces the same gates before it tags anything.
 
-Host CLIs (`gh`, or any forge-specific client) are **not** part of the release
-path. They are contributor conveniences — useful when working from a fork, opening
-pull requests, or manually attaching assets — and this project deliberately keeps
-them out of `scripts/pipeline.py` so a release needs nothing but `clang` and `git`.
+Host CLIs (`gh`, `glab`, `hub`, …) are **never** used by `main`. They exist as a
+convenience for people working from a fork — opening pull requests, or manually
+attaching assets to their own release page. `scripts/pipeline.py` is git-only, and
+preflight fails if a host-CLI invocation ever creeps into the release path.
 
 **Status (2026-11-01, v2.3.1).** GitHub Actions is currently not executing this
 workflow: every job since 2026-10-31 completes in ~2 s with no steps, and the

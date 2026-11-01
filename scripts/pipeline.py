@@ -99,6 +99,30 @@ class ReleasePipeline:
         self.example_count = 0
         self.notes_path = ROOT / "release-notes" / f"{self.tag}.md"
 
+    # The release path on `main` is git and clang, nothing else. A host CLI used to
+    # live here and made a "local" release depend on a remote service, so the rule is
+    # now checked mechanically instead of trusted.
+    HOST_CLI_PATTERN = re.compile(
+        r"\b(?:gh|glab|hub)\s+(?:release|auth|api|repo|pr|issue|workflow|upload|secret|run)\b"
+    )
+    HOST_CLI_FILES = ("scripts/pipeline.py", "Makefile", ".github/workflows/ci.yml")
+
+    def _assert_no_host_cli(self):
+        offenders = []
+        for rel in self.HOST_CLI_FILES:
+            path = ROOT / rel
+            if not path.exists():
+                continue
+            for lineno, line in enumerate(self._read_preserving(path).splitlines(), 1):
+                if self.HOST_CLI_PATTERN.search(line):
+                    offenders.append(f"{rel}:{lineno}: {line.strip()}")
+        if offenders:
+            raise RuntimeError(
+                "The release path must not invoke a host CLI (git only). Found:\n  "
+                + "\n  ".join(offenders)
+            )
+        log("Release path is host-CLI free (git + clang only).")
+
     def stage_preflight(self):
         log("STAGE 1: Preflight checks", header=True)
         # Check clang
@@ -138,6 +162,8 @@ class ReleasePipeline:
             )
         self.remote = res.stdout.strip()
         log(f"Remote: origin = {self.remote}")
+
+        self._assert_no_host_cli()
 
         log("Preflight passed.")
 
