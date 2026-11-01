@@ -11,14 +11,14 @@ document disagree, the script is wrong.
 
 | Stage | Command / Action | Description |
 |---|---|---|
-| **1. `preflight`** | `clang --version`, `gh auth status`, `git status` | Validates host requirements: clang on `PATH`, `bin/forge.exe` present, `gh` installed and authenticated. A dirty tree is reported here and enforced later, at publish time. |
+| **1. `preflight`** | `clang --version`, `git` checks | Validates host requirements: clang on `PATH`, `bin/forge.exe` present, inside a git work tree on a branch, and an `origin` remote configured. A dirty tree is reported here and enforced later, at publish time. No host service or CLI client is consulted. |
 | **2. `version`** | rewrites declarations | Sets the release version in every place it is declared: `compiler/forge.mw` (`forge X.Y.Z ...`), `docs/SYNTAX.md` (header + "verified against" line), `README.md` (release badge), `Makefile` (`TAG ?=`), `ROADMAP.md` (status note). Fails if any declaration still carries a different version afterwards. Line endings are preserved. |
 | **3. `build`** | `mwc -> stage1 -> stage2 -> stage3` | 3-stage self-hosting bootstrap; requires `SHA256(stage2.exe.ll) == SHA256(stage3.exe.ll)`. Copies stage 3 over `bin/forge.exe` and `bin/mwc.exe`, then **asserts the rebuilt binary reports the release version and that `docs/SYNTAX.md` agrees** (the same rule the CI gate enforces). |
 | **4. `test`** | `forge test` + example builds | Runs all positive and compile-fail suites, writes the full log to `target/pipeline-test.log`, and **requires the `test result: ok. N positive suites, M compile-fail suites passed.` line**. Then compiles every `examples/*.mw`. |
 | **5. `bench`** | `forge bench` | Runs the Morrow benchmarks and their `-O2` C baselines. |
 | **6. `package`** | assets in `dist/v{VER}/` | Copies `forge.exe`, `mwc.exe`, builds `Morrow-v{VER}-win64.zip`, and writes `RELEASE_NOTES.md` (see §4). |
 | **7. `verify`** | checksums + integrity | Requires the four expected assets to exist, writes `SHA256SUMS.txt` covering every asset, and runs a CRC check over the archive. |
-| **8. `publish`** | `git` + `gh` | Commits pipeline-managed changes, tags `HEAD`, pushes branch and tag, then creates the GitHub release — or updates it in place if that tag already has one. |
+| **8. `publish`** | `git` only | Commits pipeline-managed changes, tags `HEAD`, pushes branch and tag, then **verifies with `git ls-remote` that the tag exists on `origin` and points at the tagged commit**. Writes `dist/v{VER}/PUBLISH.txt` recording commit, remote, fixed point and asset list. |
 
 ---
 
@@ -27,10 +27,9 @@ document disagree, the script is wrong.
 ```bash
 python scripts/pipeline.py v2.3.1                 # full release
 python scripts/pipeline.py v2.3.1 --dry-run       # preview, no side effects
-python scripts/pipeline.py v2.3.1 --no-publish    # everything except push + gh release
+python scripts/pipeline.py v2.3.1 --no-publish    # everything except tag + push
 python scripts/pipeline.py v2.3.1 --from package  # resume from a stage
 python scripts/pipeline.py v2.3.1 --skip bench    # skip one stage
-python scripts/pipeline.py v2.3.1 --draft         # publish as a draft release
 python scripts/pipeline.py v2.3.1 --no-bump       # declarations must already match
 python scripts/pipeline.py v2.3.1 --force         # adopt dirty files, move an existing tag
 ```
@@ -53,9 +52,19 @@ make build | test | bench | package | verify | dry-run
    release unless `--force` is passed.
 2. **Tags.** The annotated tag `vX.Y.Z` is created at `HEAD`. If it exists, it must
    already point at `HEAD`; moving it requires `--force`.
-3. **Idempotency.** Re-running the publish stage on an existing release updates its
-   title, body and assets (`gh release edit` + `gh release upload --clobber`)
-   instead of failing on `gh release create`.
+3. **Verification, not trust.** After pushing, the pipeline runs
+   `git ls-remote --tags origin` and compares the peeled commit of `vX.Y.Z` with
+   `HEAD`. A push that silently did not land (proxy, permissions, pre-receive hook)
+   fails the stage instead of being reported as a release.
+4. **No API client.** Publishing is `git commit`, `git tag`, `git push` and
+   `git ls-remote`. The release *is* the tag; the toolchain that produced the
+   artifacts is checkout-able from it. There is no dependency on a web UI, a
+   personal access token, or a host CLI, so the same command works offline, in a
+   mirror, or on a fork with a different remote.
+
+   Attaching the `dist/` assets to a release page is a **separate, optional**
+   convenience. If a maintainer or a fork wants that, they upload
+   `dist/vX.Y.Z/*` themselves; the pipeline neither needs nor performs it.
 
 ---
 
@@ -81,25 +90,31 @@ dist/v2.3.1/
 │                              # README, ROADMAP, RELEASE_PROCESS, Makefile, LICENSE*
 ├── forge.exe                  # standalone unified CLI
 ├── mwc.exe                    # standalone compiler driver
-├── RELEASE_NOTES.md           # release body (also checksummed)
-└── SHA256SUMS.txt             # checksums for every asset above
+├── RELEASE_NOTES.md           # release body
+├── SHA256SUMS.txt             # checksums for every asset above
+└── PUBLISH.txt                # written by the publish stage: tag, commit, remote,
+                               # fixed point, test summary, asset inventory
 ```
 
 `dist/` is git-ignored; it is produced fresh by the package stage on every run.
 
 ---
 
-## 6. Relationship to CI
+## 6. Relationship to CI and host tooling
 
-`.github/workflows/ci.yml` is the safety net, not the release mechanism. It
-re-runs `forge test`, the example builds, `forge bench`, the docs/version gate and
-the bootstrap fixed point on every push. A release is only made locally, after
-those gates pass in the pipeline itself.
+`.github/workflows/ci.yml` is an optional safety net for forked copies, not the
+release mechanism. It re-runs `forge test`, the example builds, `forge bench`, the
+docs/version gate and the bootstrap fixed point on push. Releases are made locally
+by this pipeline, which enforces the same gates before it tags anything.
+
+Host CLIs (`gh`, or any forge-specific client) are **not** part of the release
+path. They are contributor conveniences — useful when working from a fork, opening
+pull requests, or manually attaching assets — and this project deliberately keeps
+them out of `scripts/pipeline.py` so a release needs nothing but `clang` and `git`.
 
 **Status (2026-11-01, v2.3.1).** GitHub Actions is currently not executing this
-workflow: every job since 2026-10-31 completes in ~2 s with no steps and the
-annotation *"The job was not started because your account is locked due to a
-billing issue."* (`gh api repos/LeTrollologist/Morrow/check-runs/<id>/annotations`).
-The workflow file itself is valid and the same steps pass locally. Until the
-account lock is cleared, the **local pipeline is the only enforced gate** — treat a
-red/absent CI run as "not run", never as "passed".
+workflow: every job since 2026-10-31 completes in ~2 s with no steps, and the
+job annotation reads *"The job was not started because your account is locked due
+to a billing issue."* The workflow file itself is valid and the same steps pass
+locally. Until the account lock is cleared, the **local pipeline is the only
+enforced gate** — treat a red/absent CI run as "not run", never as "passed".

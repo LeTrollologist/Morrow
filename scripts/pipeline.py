@@ -5,24 +5,28 @@ Morrow Local Release Pipeline
 Standardized build, verify, package, and release orchestrator for Morrow.
 
 Stages:
-  1. preflight: check toolchain requirements (clang, git, gh) and git hygiene.
+  1. preflight: check toolchain requirements (clang, git) and git hygiene.
   2. version:   bump the release version everywhere it is declared (compiler, docs, README, Makefile).
   3. build:     execute 3-stage self-hosting bootstrap and verify LLVM IR fixed-point parity.
   4. test:      run all positive and compile-fail test suites, plus build all shipped examples.
   5. bench:     run runtime benchmarks and C baselines.
   6. package:   generate canonical distribution archives, assets and release notes in dist/v{VER}/.
   7. verify:    compute SHA256SUMS.txt, test zip integrity, and cross-check docs/version agreement.
-  8. publish:   push branch/tag and create (or update) the GitHub release via `gh`.
+  8. publish:   commit, tag HEAD, push branch+tag with plain git, and verify the tag on origin.
 
 Usage:
   python scripts/pipeline.py v2.3.0                 # full release pipeline
   python scripts/pipeline.py v2.3.0 --dry-run       # preview stages without side effects
   python scripts/pipeline.py v2.3.0 --from package  # resume from packaging
   python scripts/pipeline.py v2.3.0 --skip bench    # skip a specific stage
-  python scripts/pipeline.py v2.3.0 --no-publish    # test and package locally without remote upload
-  python scripts/pipeline.py v2.3.0 --draft         # publish as draft release
+  python scripts/pipeline.py v2.3.0 --no-publish    # test and package locally without tagging/pushing
   python scripts/pipeline.py v2.3.0 --no-bump       # keep declared versions (they must already match)
   python scripts/pipeline.py v2.3.0 --force         # publish a dirty tree / move an existing tag
+
+Publishing is deliberately pure git: the release *is* the annotated tag plus the
+artifacts in dist/vX.Y.Z/. No host CLI or API client is invoked, so a release can
+be made on any machine with clang + git. Web/CLI release uploads are an optional
+convenience for forked copies and are out of scope here.
 """
 
 import argparse
@@ -78,16 +82,16 @@ def compute_sha256(path: Path) -> str:
 
 class ReleasePipeline:
     def __init__(self, tag: str, dry_run: bool = False, no_publish: bool = False,
-                 draft: bool = False, no_bump: bool = False, force: bool = False):
+                 no_bump: bool = False, force: bool = False):
         if not tag.startswith("v"):
             tag = f"v{tag}"
         self.tag = tag
         self.ver = tag.lstrip("v")
         self.dry_run = dry_run
         self.no_publish = no_publish
-        self.draft = draft
         self.no_bump = no_bump
         self.force = force
+        self.remote = None
         self.dist_dir = ROOT / "dist" / self.tag
         self.parity_hash = None
         self.suite_summary = None
@@ -117,15 +121,22 @@ class ReleasePipeline:
             log(f"Warning: working tree has modifications:\n{res.stdout.strip()}")
             # If not dry run, we still proceed if requested or warn
 
-        # Check gh cli
-        res = run("gh --version", capture_output=True, check=False)
+        # Check git wiring (local only -- releasing never leaves the machine's git).
+        res = run("git rev-parse --is-inside-work-tree", capture_output=True, check=False)
         if res.returncode != 0:
-            raise RuntimeError("gh CLI is not installed or not in PATH")
-        res = run("gh auth status", capture_output=True, check=False)
+            raise RuntimeError("Not inside a git work tree; cannot release.")
+        branch = run("git branch --show-current", capture_output=True).stdout.strip()
+        if not branch:
+            raise RuntimeError("HEAD is detached; check out the release branch first.")
+        log(f"Branch: {branch}")
+        res = run("git remote get-url origin", capture_output=True, check=False)
         if res.returncode != 0:
-            log("Warning: gh CLI is not authenticated or unable to verify auth status")
-        else:
-            log("GitHub CLI authenticated")
+            raise RuntimeError(
+                "No 'origin' remote configured; add one (git remote add origin <url>) "
+                "or run with --no-publish."
+            )
+        self.remote = res.stdout.strip()
+        log(f"Remote: origin = {self.remote}")
 
         log("Preflight passed.")
 
@@ -441,14 +452,16 @@ Built with the local release pipeline (`scripts/pipeline.py`, see `RELEASE_PROCE
                     return stripped.lstrip("#").strip()
         return f"Morrow {self.tag}"
 
-    def _split_dirty(self, porcelain: str):
+    def _split_dirty(self, lines):
         """Split `git status --porcelain` entries into pipeline-managed and not."""
         managed, unmanaged = [], []
         owned_files = {rel for rel, _ in VERSION_DECLARATIONS}
         owned_prefixes = ("bin/", "release-notes/", "dist/")
-        for line in porcelain.splitlines():
-            if not line.strip():
+        for line in lines:
+            if len(line) < 4:
                 continue
+            # Porcelain v1 is exactly "XY<space>path"; never strip the leading space
+            # of the first entry or a modified file loses its first character.
             path = line[3:].strip().strip('"')
             if " -> " in path:
                 path = path.split(" -> ", 1)[1].strip().strip('"')
@@ -472,9 +485,10 @@ Built with the local release pipeline (`scripts/pipeline.py`, see `RELEASE_PROCE
         # 0. The tag must describe the tree that produced the artifacts. Version
         #    bumps and rebuilt binaries are this pipeline's own output, so they are
         #    committed here; anything else must be a deliberate --force.
-        dirty = run("git status --porcelain", capture_output=True).stdout.strip()
-        if dirty:
-            managed, unmanaged = self._split_dirty(dirty)
+        dirty_lines = [l for l in run("git status --porcelain", capture_output=True)
+                       .stdout.splitlines() if l.strip()]
+        if dirty_lines:
+            managed, unmanaged = self._split_dirty(dirty_lines)
             if unmanaged and not self.force:
                 listing = "\n".join(unmanaged)
                 raise RuntimeError(
@@ -512,36 +526,82 @@ Built with the local release pipeline (`scripts/pipeline.py`, see `RELEASE_PROCE
             else:
                 log(f"Tag {self.tag} already points at HEAD")
 
-        # 2. Push branch and tag.
+        # 2. Push branch and tag (plain git; no CLI wrappers).
         branch = run("git branch --show-current", capture_output=True).stdout.strip() or "main"
         log(f"Pushing {branch} and {self.tag} to origin...")
         run(f"git push origin {branch}")
         run(f"git push origin {self.tag} --force")
 
-        # 3. Release body comes from the packaged notes (authored or generated).
+        # 3. Prove the tag actually landed on the remote, comparing the peeled
+        #    commit id reported by ls-remote with the commit we tagged. The peeled
+        #    ref is matched in Python rather than on the command line, because "^" is
+        #    a shell metacharacter on Windows and would silently drop the comparison.
+        tag_obj = run(f"git rev-parse {self.tag}", capture_output=True).stdout.strip()
+        res = run("git ls-remote --tags origin", capture_output=True, check=False)
+        if res.returncode != 0:
+            raise RuntimeError(f"git ls-remote failed:\n{res.stdout}{res.stderr}")
+        tag_ref = f"refs/tags/{self.tag}"
+        peeled_ref = tag_ref + "^{}"
+        remote_obj, remote_sha = "", ""
+        for line in res.stdout.splitlines():
+            parts = line.split()
+            if len(parts) != 2:
+                continue
+            if parts[1] == tag_ref:
+                remote_obj = parts[0]
+            elif parts[1] == peeled_ref:
+                remote_sha = parts[0]
+        if not remote_obj:
+            raise RuntimeError(f"Remote does not report tag {self.tag} after push.")
+        if remote_obj != tag_obj:
+            raise RuntimeError(
+                f"Remote tag object {remote_obj[:8]} != local {tag_obj[:8]} for {self.tag}"
+            )
+        if remote_sha and remote_sha != head:
+            raise RuntimeError(
+                f"Remote tag {self.tag} peels to {remote_sha[:8]}, expected {head[:8]}"
+            )
+        log(f"Remote tag {self.tag} verified "
+            f"(object {remote_obj[:8]}, commit {remote_sha[:8] if remote_sha else head[:8]})")
+
+        # 4. Write the publish manifest next to the artifacts. Distribution artifacts
+        #    are local by design; attaching them to a forge release page (if one is
+        #    used at all) is a separate, optional step for whoever owns the fork.
         notes_file = self.dist_dir / "RELEASE_NOTES.md"
         if not notes_file.exists():
             raise FileNotFoundError(
                 f"{notes_file} is missing; run the package stage before publishing"
             )
-        title = self._release_title()
-        assets = [str(p) for p in sorted(self.dist_dir.glob("*")) if p.is_file()]
-        assets_arg = " ".join(f'"{a}"' for a in assets)
-        draft_flag = " --draft" if self.draft else ""
+        remote = getattr(self, "remote", None) or run(
+            "git remote get-url origin", capture_output=True, check=False).stdout.strip()
+        manifest = self.dist_dir / "PUBLISH.txt"
+        lines = [
+            self._release_title(),
+            "",
+            f"commit:       {head}",
+            f"branch:       {branch}",
+            f"remote:       {remote}",
+            f"fixed point:  {self.parity_hash or 'n/a'}",
+            f"tests:        {self.suite_summary or 'n/a'}",
+            "",
+            "assets (SHA-256 in SHA256SUMS.txt):",
+        ]
+        for asset in sorted(self.dist_dir.glob("*")):
+            if asset.is_file() and asset.name not in ("SHA256SUMS.txt", "PUBLISH.txt"):
+                lines.append(f"  {asset.name}  ({asset.stat().st_size} bytes)")
+        lines += [
+            "",
+            "Publishing = git tag + push. The toolchain that built these artifacts is",
+            "checkout-able from that tag; no host service is required.",
+            "",
+        ]
+        manifest.write_text("\n".join(lines), encoding="utf-8")
+        log(f"Wrote {manifest.relative_to(ROOT)}")
 
-        # 4. Create the release, or update it in place when it already exists.
-        res = run(f"gh release view {self.tag}", check=False, capture_output=True)
-        if res.returncode != 0:
-            cmd = (f'gh release create {self.tag} {assets_arg} --title "{title}" '
-                   f'--notes-file "{notes_file}"{draft_flag}')
-            log(f"Executing: {cmd}")
-            run(cmd)
-            log(f"GitHub release {self.tag} created ({len(assets)} assets).")
-        else:
-            log(f"Release {self.tag} already exists; updating metadata and assets.")
-            run(f'gh release edit {self.tag} --title "{title}" --notes-file "{notes_file}"')
-            run(f"gh release upload {self.tag} {assets_arg} --clobber")
-            log(f"GitHub release {self.tag} updated ({len(assets)} assets).")
+        if "github.com" in remote:
+            slug = remote.rstrip("/").removesuffix(".git").split("github.com")[-1].lstrip(":/")
+            log(f"Release page: https://github.com/{slug}/releases/tag/{self.tag}")
+        log(f"{self.tag} published: tag pushed and verified on origin ({len(list(self.dist_dir.glob('*')))} assets in {self.dist_dir.name}/).")
 
 
 def main():
@@ -550,15 +610,14 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="Preview stages without running commands")
     parser.add_argument("--from", dest="from_stage", choices=STAGES, default="preflight", help="Resume pipeline from stage")
     parser.add_argument("--skip", action="append", choices=STAGES, default=[], help="Skip specified stage (can be repeated)")
-    parser.add_argument("--no-publish", action="store_true", help="Run all stages except git push and GitHub release")
-    parser.add_argument("--draft", action="store_true", help="Create GitHub release as a draft")
+    parser.add_argument("--no-publish", action="store_true", help="Run all stages except git tag/push")
     parser.add_argument("--no-bump", action="store_true", help="Do not rewrite version declarations (must already be correct)")
     parser.add_argument("--force", action="store_true", help="Allow publishing a dirty tree / moving an existing tag")
 
     args = parser.parse_args()
 
     pipeline = ReleasePipeline(tag=args.tag, dry_run=args.dry_run, no_publish=args.no_publish,
-                               draft=args.draft, no_bump=args.no_bump, force=args.force)
+                               no_bump=args.no_bump, force=args.force)
 
     start_idx = STAGES.index(args.from_stage)
     active_stages = STAGES[start_idx:]
