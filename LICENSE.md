@@ -21,13 +21,13 @@ Beginning with **v2.4.1**, Morrow adopts the Morrow Triumvirate License Model.
 
 The Triumvirate consists of three complementary legal agreements governing the use, contribution, and independent redistribution of Morrow:
 
-### I. Morrow Use License
+### I. [Morrow Use License](https://github.com/LeTrollologist/Morrow/blob/main/MORROW-USE-LICENSE.md)
 
 The Morrow Use License governs personal, educational, professional, and commercial use of Morrow.
 
 It establishes the permissions and restrictions applicable to using Morrow, including the permitted use and private modification of the compiler, restrictions on redistribution of the compiler and its source code, and the right to distribute programs created using Morrow.
 
-### II. Morrow Contributor License Agreement
+### II. [Morrow Contributor License Agreement](https://github.com/LeTrollologist/Morrow/blob/main/MORROW-CONTRIBUTOR-LICENSE-AGREEMENT.md)
 
 The Morrow Contributor License Agreement governs contributions submitted for inclusion in the official Morrow project.
 
@@ -35,7 +35,7 @@ Contributors retain copyright ownership of their original contributions. By subm
 
 Submitting a contribution does not, by itself, transfer ownership of the contributor's copyright to the project maintainer.
 
-### III. Morrow Fork and Redistribution Agreement
+### III. [Morrow Fork and Redistribution Agreement](https://github.com/LeTrollologist/Morrow/blob/main/MORROW-FORK-AND-REDISTRIBUTION-AGREEMENT.md)
 
 The Morrow Fork and Redistribution Agreement governs authorization for independent forks, modified compiler distributions, mirrors, and other forms of redistribution requiring explicit project permission.
 
