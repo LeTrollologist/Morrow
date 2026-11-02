@@ -674,3 +674,32 @@ them would be a mistake:
   `TcType` does not record for struct instantiations. Fixing it requires element-type
   tracking. A helper table of "functions that return their first argument's element" is
   explicitly rejected: it is a special case, and the corpus exists to keep those out.
+
+### Element-type representation: investigation closed (v2.4.15)
+
+Answer recorded in `docs/GENERIC-TYPES.md`: **no reusable representation exists**, and the
+obstacle is not the monomorphizer — it is the parser. `parse_type` consumes `<...>` and
+returns only the base symbol (`compiler/parser.mw:117-131`), so `Vec<String>` and `Vec<i64>`
+are literally the same symbol `Vec` in every annotation, parameter and return type. Nothing
+later can recover what was never kept.
+
+Against the three criteria: (1) distinct type identities — **no**; (2) survival through
+parameters/calls/returns — **no** (only a call's turbofish survives, in `int_val`, until
+monomorphization rewrites it); (3) reachable without a later phase — **no**, because the
+monomorphizer runs only on the build path (`forge.mw:875-878`) and emits a mutated AST, not
+a type table, while `check`/`argkinds`/`lsp` typecheck the templates directly
+(`forge.mw:1000`, `:1018`, `lsp.mw:325`).
+
+Chosen direction: **intern the concrete type name in `parse_type`**, reusing the mechanism
+the monomorphizer already relies on (`base__concrete` symbols, `forge.mw:278-287`), so
+`TcType.sym` carries identity without any `TcType` change; `tc_resolve_type` gains one
+fallback to find the template's fields. Alternatives rejected: reusing monomorphizer output
+(changes what `check` means, absent on three of four paths) and a type-argument list on
+`TcType` (largest blast radius, touches every allocation and comparison).
+
+Four risks recorded before implementation: refinement intervals share `parse_type`;
+`tc_resolve_type` has two plain-name maps that will both miss instantiated names; the parser
+symbol and the monomorphizer's mangled symbol are deliberately different symbols for the same
+concept; and `&mut Vec<T>` must keep producing `ty_ref`/`ty_ptr` exactly as today, because the
+region-escape rules depend on those kinds.
+
