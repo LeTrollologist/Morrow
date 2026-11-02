@@ -17,13 +17,13 @@
     <img src="https://img.shields.io/badge/Compiler-Pure_Morrow-8B5CF6?style=for-the-badge&logo=llvm&logoColor=white&labelColor=0f172a" alt="Compiler" />
   </a>
   <a href="bin/">
-    <img src="https://img.shields.io/badge/Self--Hosting-100%25_Genesis-10B981?style=for-the-badge&logo=git&logoColor=white&labelColor=0f172a" alt="Self-Hosting" />
+    <img src="https://img.shields.io/badge/Self--Hosting-100%25_Pure_Morrow-10B981?style=for-the-badge&logo=git&logoColor=white&labelColor=0f172a" alt="Self-Hosting" />
   </a>
   <a href="ROADMAP.md">
-    <img src="https://img.shields.io/badge/Parity-Bitwise_Identical-06B6D4?style=for-the-badge&logo=target&logoColor=white&labelColor=0f172a" alt="Parity" />
+    <img src="https://img.shields.io/badge/Parity-IR_%2B_Exe_Bitwise-06B6D4?style=for-the-badge&logo=target&logoColor=white&labelColor=0f172a" alt="Parity" />
   </a>
   <a href="tests/">
-    <img src="https://img.shields.io/badge/Tests-23%2F23_Passing-22C55E?style=for-the-badge&logo=checkmarx&logoColor=white&labelColor=0f172a" alt="Tests" />
+    <img src="https://img.shields.io/badge/Tests-23_%2B_18_Passing-22C55E?style=for-the-badge&logo=checkmarx&logoColor=white&labelColor=0f172a" alt="Tests" />
   </a>
   <a href="LICENSE.md">
     <img src="https://img.shields.io/badge/License-Morrow_Unified_License_(MUL)-F59E0B?style=for-the-badge&logo=open-source-initiative&logoColor=white&labelColor=0f172a" alt="License" />
@@ -85,10 +85,17 @@
 
 ---
 
-## Verified Reality (v2.2.0)
+## Verified Reality (v2.4.7)
 
 This README describes what the released compiler **actually does**. The full,
 tested breakdown lives in [`docs/SYNTAX.md` §14](docs/SYNTAX.md#14-not-implemented--known-limitations); the short version:
+
+**What the self-hosting claim rests on**, measured on every release rather than
+asserted: a three-stage bootstrap (`mwc` → stage1 → stage2 → stage3) must close to a
+fixed point before anything is tagged — `SHA256(stage2.exe.ll) == SHA256(stage3.exe.ll)`
+**and** `stage2.exe == stage3.exe` byte-for-byte. Each release records the resulting
+hash in `releases/vX.Y.Z.json`; if the closure fails, the pipeline refuses to release.
+There is no CI involved: the check runs on the machine that builds the binaries.
 
 | Area | Status |
 |---|---|

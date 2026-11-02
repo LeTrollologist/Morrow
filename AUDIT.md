@@ -1,5 +1,13 @@
 # Morrow Language Compiler — Audit Report & Remediation Plan
 
+> **HISTORICAL DOCUMENT (2026-09-25 → 2026-10-06).** This audit describes the
+> repository as it was under its earlier name (`LeTrollologist/Tungsten`), before the
+> rewrite to the current Pure Morrow compiler and the versioning that followed. Its
+> counts (14 test suites, 22 examples) and its file names (`.tg` sources, `tgc.exe`) do
+> not describe the shipping toolchain. For what the released compiler actually does
+> today, read [`docs/SYNTAX.md`](docs/SYNTAX.md); for what each release shipped, read
+> [`releases/`](releases/). Kept for provenance, not as current status.
+
 > **Repository:** `LeTrollologist/Tungsten`  
 > **Language:** Morrow (formerly Tungsten), source extension `.mw`  
 > **Audit Date:** 2026-09-25 → 2026-10-06  

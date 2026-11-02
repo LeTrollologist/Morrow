@@ -52,6 +52,7 @@ VERSION_DECLARATIONS = [
     ("docs/SYNTAX.md", r"# Morrow Language & Syntax Reference \(v\d+\.\d+\.\d+\)"),
     ("docs/SYNTAX.md", r"`forge \d+\.\d+\.\d+ \(morrow standalone 2026\)`"),
     ("README.md", r"Release-v\d+\.\d+\.\d+_Standalone"),
+    ("README.md", r"## Verified Reality \(v\d+\.\d+\.\d+\)"),
     ("Makefile", r"TAG \?= v\d+\.\d+\.\d+"),
     ("ROADMAP.md", r"\*\*Status note \(v\d+\.\d+\.\d+\)\.\*\*"),
 ]

@@ -55,6 +55,11 @@ same feature set, and the table below is the authoritative comparison. Every
 
 ## Progress Overview
 
+The `Status` column below records how far the **archived Stage-0 Rust** implementation
+(`archive/stage0-rust/`) got. It is not a statement about the shipping Pure Morrow
+compiler — for that, read the **Feature Status Matrix** above, which is the
+authoritative comparison.
+
 | Phase | Milestone | Focus Area | Status |
 |:---|:---|:---|:---:|
 | **v0.1** | **Working Prototype** | Parser, Typechecker, Refinement Intervals, Effect VM, CLI (Stage-0 Rust) | **Completed** |

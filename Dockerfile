@@ -1,4 +1,18 @@
 # ==============================================================================
+# UNMAINTAINED — DO NOT USE (status as of v2.4.8)
+#
+# This file predates the current toolchain and no longer builds:
+#   * it COPYs bin/tgc_linux, a stale Linux compiler binary that was removed in
+#     v2.4.8 (it still reported "Forge 0.2.0");
+#   * it runs ./bin/mwc (no extension) with a `--target` flag, which is the
+#     current `forge build` interface, not the compiler driver's.
+#
+# Container builds cannot work without a Morrow compiler built for Linux, and the
+# release ships only Windows binaries — bootstrapping the compiler inside a container
+# would need that Linux binary as the seed. Until such a seed is published, this file
+# is kept for provenance only. The supported build path is the local pipeline
+# (scripts/pipeline.py); see RELEASE_PROCESS.md.
+# ==============================================================================
 # Tungsten Genesis (v1.8) — Self-Hosted Production Multi-Stage Dockerfile
 # Multi-Stage Build:
 #   Stage 1: Pure Self-Hosted Tungsten Toolchain & Application Compilation

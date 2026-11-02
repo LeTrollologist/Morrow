@@ -1,3 +1,5 @@
+# UNMAINTAINED (v2.4.8): the Dockerfile this compose file builds no longer works —
+# it depends on a Linux Morrow binary that is not shipped. See the Dockerfile header.
 version: '3.8'
 
 services:
