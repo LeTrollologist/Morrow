@@ -1,0 +1,15 @@
+// ARGKINDS CORPUS — case 3b
+// Turbofish instantiates T as i64, and a String is passed: this MUST be reported, with
+// the declared side shown as the instantiated kind (int), not as an unsubstituted `T`.
+fn id<T>(x: T) -> T {
+    x
+}
+
+fn run() -> i64 {
+    let n = id::<i64>("hi");
+    0
+}
+
+fn main() -> i64 {
+    0
+}

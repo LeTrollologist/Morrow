@@ -666,6 +666,33 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
                             // failing the build, so the real mismatch rate can be measured
                             // before any of this becomes an enforced rule.
                             if tc.arg_report == 1 {
+                                // Generic substitution, call-site only: when the declared
+                                // parameter *is* the callee's generic parameter (`fn
+                                // id<T>(x: T)`), its declared kind says nothing -- it
+                                // resolves to `int` today. Use the turbofish instantiation
+                                // when the caller supplied one; otherwise leave the argument
+                                // unreported rather than inventing an expectation.
+                                let mut generic_param = false;
+                                if target_fn.type_param_sym != 0 {
+                                    let pname = interner_lookup(interner_ref, p.ty_sym);
+                                    let gname = interner_lookup(interner_ref, target_fn.type_param_sym);
+                                    if unsafe { strcmp(pname as *const u8, gname as *const u8) } == 0 {
+                                        generic_param = true;
+                                    }
+                                }
+                                let mut expected_kind = param_ty.kind;
+                                let mut have_expectation = true;
+                                if generic_param {
+                                    let turbo_sym = expr.int_val;
+                                    if turbo_sym != 0 {
+                                        let inst_ty = tc_resolve_type(tc, types, struct_defs, turbo_sym);
+                                        if inst_ty != (0 as *mut TcType) {
+                                            expected_kind = inst_ty.kind;
+                                        }
+                                    } else {
+                                        have_expectation = false;
+                                    }
+                                }
                                 // Implicit dereference, comparison only: a *by-value*
                                 // parameter accepts `&x` / `&mut x`, so compare against the
                                 // referent instead of the reference. One level only, and
@@ -675,13 +702,13 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
                                 // checker rule still sees the reference.
                                 let mut eff_kind = arg_ty.kind;
                                 if arg_ty.kind == ty_ref() || arg_ty.kind == ty_ptr() {
-                                    let param_is_ref = param_ty.kind == ty_ref() || param_ty.kind == ty_ptr();
+                                    let param_is_ref = expected_kind == ty_ref() || expected_kind == ty_ptr();
                                     if !param_is_ref && arg_ty.left != (0 as *mut TcType) {
                                         eff_kind = arg_ty.left.kind;
                                     }
                                 }
-                                if param_ty.kind != eff_kind {
-                                    let wtxt = tc_kind_name(param_ty.kind);
+                                if have_expectation && expected_kind != eff_kind {
+                                    let wtxt = tc_kind_name(expected_kind);
                                     let gtxt = tc_kind_name(eff_kind);
                                     let tag = tc_kind_tag(tc.arena, wtxt, gtxt);
                                     let line = tc_compose_callee_msg(tc.arena, tag, s);

@@ -619,16 +619,22 @@ that single rule accounts for 82% of the findings above.
 
 **Step (a) landed in v2.4.10 — measured, not assumed.** The comparison now unwraps one
 level of reference, and only when the parameter is not itself a reference (a *by-value*
-parameter accepts `&x`/`&mut x`). Over `compiler/main.mw`:
+parameter accepts `&x`/`&mut x`). **Step (b) of the plan — call-site generic substitution
+— landed in v2.4.11**: when a parameter *is* the callee's generic parameter, the
+expectation comes from the turbofish instantiation; with no turbofish the argument is left
+unreported rather than compared against the placeholder kind. Over `compiler/main.mw`:
 
-| | v2.4.9 | v2.4.10 |
-|---|---|---|
-| total findings | 1882 | **367** |
-| `want=struct got=ref` | 1538 | **0** |
+| | v2.4.9 | v2.4.10 | v2.4.11 |
+|---|---|---|---|
+| total findings | 1882 | 367 | **229** |
+| `want=struct got=ref` | 1538 | 0 | 0 |
+| `want=int got=String` (generic) | 77 | 77 | **0** |
 
-The residual 367 are exactly the classes the unwrap rule does not touch:
-`struct↔int` (185), `int↔String` (150), `u8↔ptr` (13), `bool↔int` (12 — literal kind lost
-through variables).
+The residual 229 are the next class, untouched so far: `struct↔int` 124 and `String↔int`
+73 — parameters typed `Vec`/`String` receiving expressions the checker infers as `int`
+(call results, struct fields, values out of `vec_get`), plus `u8↔ptr` 13 and `bool↔int` 12
+for literal kind lost through variables. That is **call-result and field inference**, i.e.
+the `ty_int()` fallbacks at ~40 sites, not another substitution rule.
 
 **The instrument is pinned by a corpus** (`tests/argkinds/`, 5 cases) so it cannot be
 trusted for the wrong reason: `&Probe`→`Probe` and `&i64`→`i64` stay silent; `"hello"`→
