@@ -779,13 +779,19 @@ Built with the local release pipeline (`scripts/pipeline.py`, see `RELEASE_PROCE
         else:
             tag_sha = run(f"git rev-list -n 1 {self.tag}", capture_output=True).stdout.strip()
             if tag_sha != head:
-                if not self.force:
+                if self.force:
+                    run(f'git tag -f -a {self.tag} -m "Morrow {self.tag}"')
+                    log(f"Moved tag {self.tag} to {head[:8]}")
+                elif self.clobber:
+                    # Republication: the tag keeps identifying the release commit and
+                    # the new publication record is committed on top of it.
+                    log(f"Tag {self.tag} stays at {tag_sha[:8]} (release commit); "
+                        f"publication recorded at {head[:8]}")
+                else:
                     raise RuntimeError(
                         f"Tag {self.tag} points at {tag_sha[:8]} but HEAD is {head[:8]}; "
-                        f"pass --force to move it"
+                        f"pass --force to move it, or --clobber to record a republication"
                     )
-                run(f'git tag -f -a {self.tag} -m "Morrow {self.tag}"')
-                log(f"Moved tag {self.tag} to {head[:8]}")
             else:
                 log(f"Tag {self.tag} already points at HEAD")
 
