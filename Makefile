@@ -2,7 +2,7 @@
 # Stages: preflight -> version -> build -> test -> bench -> package -> verify -> publish
 TAG ?= v2.4.3
 
-.PHONY: release check version build test bench package verify dry-run clean
+.PHONY: release check version build test bench package verify dry-run republish clean
 
 # Full release pipeline (bumps versions, rebuilds, verifies, publishes)
 release:
@@ -35,6 +35,11 @@ package:
 # Verify asset checksums and archive integrity
 verify:
 	python scripts/pipeline.py $(TAG) --from verify --skip publish
+
+# Republish an already-released version: rebuild artifacts, re-verify byte equality,
+# record another publication in releases/$(TAG).json
+republish:
+	python scripts/pipeline.py $(TAG) --clobber
 
 # Preview pipeline execution without modifying state
 dry-run:

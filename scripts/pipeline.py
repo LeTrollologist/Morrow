@@ -22,11 +22,13 @@ Usage:
   python scripts/pipeline.py v2.3.0 --no-publish    # test and package locally without tagging/pushing
   python scripts/pipeline.py v2.3.0 --no-bump       # keep declared versions (they must already match)
   python scripts/pipeline.py v2.3.0 --force         # publish a dirty tree / move an existing tag
+  python scripts/pipeline.py v2.3.0 --clobber       # republish a released version (rebuild + re-record)
 
-Publishing is deliberately pure git: the release *is* the annotated tag plus the
-artifacts in dist/vX.Y.Z/. No host CLI or API client is invoked, so a release can
-be made on any machine with clang + git. Web/CLI release uploads are an optional
-convenience for forked copies and are out of scope here.
+Publishing is deliberately pure git: the release *is* the annotated tag, the artifacts
+in dist/vX.Y.Z/ and the record in releases/vX.Y.Z.json. No host CLI, API client or CI
+runner is invoked, so a release can be made on any machine with clang + git -- and
+re-made later with --clobber, which re-verifies the artifacts byte-for-byte instead of
+trusting them.
 """
 
 import argparse
@@ -38,6 +40,7 @@ import shutil
 import subprocess
 import sys
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -83,7 +86,7 @@ def compute_sha256(path: Path) -> str:
 
 class ReleasePipeline:
     def __init__(self, tag: str, dry_run: bool = False, no_publish: bool = False,
-                 no_bump: bool = False, force: bool = False):
+                 no_bump: bool = False, force: bool = False, clobber: bool = False):
         if not tag.startswith("v"):
             tag = f"v{tag}"
         self.tag = tag
@@ -92,12 +95,14 @@ class ReleasePipeline:
         self.no_publish = no_publish
         self.no_bump = no_bump
         self.force = force
+        self.clobber = clobber
         self.remote = None
         self.dist_dir = ROOT / "dist" / self.tag
         self.parity_hash = None
         self.suite_summary = None
         self.example_count = 0
         self.notes_path = ROOT / "release-notes" / f"{self.tag}.md"
+        self.ledger_path = ROOT / "releases" / f"{self.tag}.json"
 
     # The release path on `main` is git and clang, nothing else. A host CLI used to
     # live here and made a "local" release depend on a remote service, so the rule is
@@ -122,6 +127,26 @@ class ReleasePipeline:
                 + "\n  ".join(offenders)
             )
         log("Release path is host-CLI free (git + clang only).")
+
+    def _load_ledger(self):
+        """Read this tag's local release record, if one has been written."""
+        if not self.ledger_path.exists():
+            return {}
+        try:
+            return json.loads(self.ledger_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+
+    def _asset_digests(self):
+        return [
+            {
+                "name": asset.name,
+                "bytes": asset.stat().st_size,
+                "sha256": compute_sha256(asset),
+            }
+            for asset in sorted(self.dist_dir.glob("*"))
+            if asset.is_file() and asset.name not in ("SHA256SUMS.txt", "PUBLISH.txt")
+        ]
 
     def stage_preflight(self):
         log("STAGE 1: Preflight checks", header=True)
@@ -436,6 +461,14 @@ class ReleasePipeline:
             log(f"[DRY-RUN] Would package release artifacts in {self.dist_dir}")
             return
 
+        if self.dist_dir.exists() and (self.dist_dir / "PUBLISH.txt").exists():
+            if not self.clobber:
+                raise RuntimeError(
+                    f"{self.dist_dir} already holds a published release record "
+                    f"(PUBLISH.txt). Pass --clobber to rebuild and overwrite it, or "
+                    f"cut a new version."
+                )
+            log(f"--clobber: overwriting the published artifacts in {self.dist_dir.name}/")
         if self.dist_dir.exists():
             shutil.rmtree(self.dist_dir)
         self.dist_dir.mkdir(parents=True, exist_ok=True)
@@ -531,6 +564,30 @@ Built with the local release pipeline (`scripts/pipeline.py`, see `RELEASE_PROCE
             f.write("\n".join(lines) + "\n")
         log(f"Wrote {checksum_file}")
 
+        # Cross-check against the local release record. On a --clobber rebuild this is
+        # the proof that the artifacts are byte-identical to the ones already published,
+        # or the warning that they are not.
+        ledger = self._load_ledger()
+        if ledger:
+            recorded = {a["name"]: a["sha256"] for a in ledger.get("assets", [])}
+            current = {a["name"]: a["sha256"] for a in self._asset_digests()}
+            drift = sorted(n for n in current if n in recorded and recorded[n] != current[n])
+            added = sorted(set(current) - set(recorded))
+            removed = sorted(set(recorded) - set(current))
+            if drift:
+                if not self.clobber:
+                    raise RuntimeError(
+                        "Artifacts differ from the recorded publication of "
+                        f"{self.tag} ({', '.join(drift)}). Pass --clobber to record the "
+                        "new bytes, or investigate why the build changed."
+                    )
+                log("Warning: --clobber recording new bytes for: " + ", ".join(drift))
+            if added or removed:
+                log(f"Asset set changed vs {self.ledger_path.name}: "
+                    f"+{added or '[]'} -{removed or '[]'}")
+            if not drift and not added and not removed:
+                log(f"Artifacts match the recorded publication of {self.tag} byte-for-byte.")
+
         # Verify zip integrity
         for z in self.dist_dir.glob("*.zip"):
             with zipfile.ZipFile(z, "r") as zf:
@@ -567,7 +624,7 @@ Built with the local release pipeline (`scripts/pipeline.py`, see `RELEASE_PROCE
         """Split `git status --porcelain` entries into pipeline-managed and not."""
         managed, unmanaged = [], []
         owned_files = {rel for rel, _ in VERSION_DECLARATIONS}
-        owned_prefixes = ("bin/", "release-notes/", "dist/")
+        owned_prefixes = ("bin/", "release-notes/", "releases/", "dist/")
         for line in lines:
             if len(line) < 4:
                 continue
@@ -583,6 +640,59 @@ Built with the local release pipeline (`scripts/pipeline.py`, see `RELEASE_PROCE
                 unmanaged.append(path)
         return managed, unmanaged
 
+    def _write_ledger(self, previous):
+        """Record this release locally so the repo, not a host, holds the proof."""
+        if not self.dist_dir.exists():
+            raise FileNotFoundError(
+                f"{self.dist_dir} does not exist; run the package stage first"
+            )
+        commit = run("git rev-parse HEAD", capture_output=True).stdout.strip()
+        remote = self.remote or run(
+            "git remote get-url origin", capture_output=True, check=False).stdout.strip()
+        entry = {
+            "tag": self.tag,
+            "version": self.ver,
+            "commit": commit,
+            "remote": remote,
+            "fixed_point": self.parity_hash,
+            "tests": self.suite_summary,
+            "examples": self.example_count or None,
+            "notes": (f"release-notes/{self.tag}.md" if self.notes_path.exists() else None),
+            "assets": self._asset_digests(),
+            "published_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "republish_count": int(previous.get("republish_count", 0)) + (1 if previous else 0),
+            "previous_publication": (
+                {
+                    "commit": previous.get("commit"),
+                    "published_at": previous.get("published_at"),
+                    "assets": previous.get("assets"),
+                }
+                if previous else None
+            ),
+        }
+        self.ledger_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # A republication that changes nothing must not create churn: if commit,
+        # artifacts, fixed point and test summary all match the existing record,
+        # leave the ledger (and therefore the tree) untouched.
+        if previous:
+            same = (
+                previous.get("commit") == entry["commit"]
+                and previous.get("fixed_point") == entry["fixed_point"]
+                and previous.get("tests") == entry["tests"]
+                and previous.get("assets") == entry["assets"]
+            )
+            if same:
+                log(f"{self.ledger_path.name} already records this publication "
+                    f"exactly (commit {entry['commit'][:8]}, identical artifacts); "
+                    f"nothing to re-record.")
+                return False
+
+        self.ledger_path.write_text(json.dumps(entry, indent=2) + "\n", encoding="utf-8")
+        log(f"Wrote local release record {self.ledger_path.relative_to(ROOT)} "
+            f"(republish #{entry['republish_count']})")
+        return True
+
     def stage_publish(self):
         log("STAGE 8: Publish Release", header=True)
         if self.dry_run:
@@ -595,20 +705,43 @@ Built with the local release pipeline (`scripts/pipeline.py`, see `RELEASE_PROCE
 
         self._recover_facts()
 
-        # 0. Refuse to "re-publish" a tag that already points elsewhere before touching
-        #    the tree: otherwise a rerun commits regenerated binaries and only then
-        #    discovers the tag cannot move, leaving a stray release commit behind.
+        # 0. Refuse to "re-publish" a tag that cannot describe what is being published,
+        #    before touching the tree: otherwise a rerun commits regenerated binaries and
+        #    only then discovers the tag cannot move, leaving a stray release commit.
+        #    A tag at HEAD is the normal case; a tag that is an *ancestor* of HEAD is a
+        #    republication, whose ledger commit necessarily lands on top of the release
+        #    commit without moving the tag.
         head = run("git rev-parse HEAD", capture_output=True).stdout.strip()
         tag_exists = run(f"git rev-parse -q --verify refs/tags/{self.tag}",
                          check=False, capture_output=True).returncode == 0
         if tag_exists:
             tag_sha = run(f"git rev-list -n 1 {self.tag}", capture_output=True).stdout.strip()
-            if tag_sha != head and not self.force:
+            at_head = tag_sha == head
+            ancestor = at_head or run(f"git merge-base --is-ancestor {self.tag} HEAD",
+                                      check=False, capture_output=True).returncode == 0
+            if not ancestor and not self.force:
                 raise RuntimeError(
-                    f"Tag {self.tag} already points at {tag_sha[:8]} but HEAD is "
-                    f"{head[:8]}. Nothing was committed. Either check out the tagged "
-                    f"commit, cut a new version, or pass --force to move the tag."
+                    f"Tag {self.tag} points at {tag_sha[:8]}, which is not an ancestor "
+                    f"of HEAD ({head[:8]}). Nothing was committed. Either check out the "
+                    f"tagged commit, cut a new version, or pass --force to move the tag."
                 )
+            if not at_head and not self.clobber:
+                raise RuntimeError(
+                    f"Tag {self.tag} points at {tag_sha[:8]}, behind HEAD ({head[:8]}). "
+                    f"That is a republication; pass --clobber to record it."
+                )
+
+        # 1b. An already-published version can only be refreshed deliberately.
+        ledger = self._load_ledger()
+        if ledger and not self.clobber:
+            raise RuntimeError(
+                f"{self.tag} is already published (local release record "
+                f"{self.ledger_path.name}, publication "
+                f"#{ledger.get('republish_count', 0)} at "
+                f"{ledger.get('published_at')}). Pass --clobber to rebuild the "
+                f"artifacts and record another publication."
+            )
+        self._write_ledger(ledger)
 
         # 1. The tag must describe the tree that produced the artifacts. Version
         #    bumps and rebuilt binaries are this pipeline's own output, so they are
@@ -628,9 +761,11 @@ Built with the local release pipeline (`scripts/pipeline.py`, see `RELEASE_PROCE
             )
             if add_arg.strip():
                 run(f"git add {add_arg}")
-                run(f'git commit -m "chore(release): {self.tag}" -m '
-                    f'"Version declarations bumped and toolchain binaries rebuilt by '
-                    f'scripts/pipeline.py. Fixed point: {self.parity_hash or "n/a"}."')
+                suffix = " (republish)" if self.clobber else ""
+                run(f'git commit -m "chore(release): {self.tag}{suffix}" -m '
+                    f'"Version declarations, toolchain binaries and the local release '
+                    f'record written by scripts/pipeline.py. Fixed point: '
+                    f'{self.parity_hash or "n/a"}."')
                 log(f"Committed {len(managed)} pipeline-managed change(s).")
         else:
             log("Working tree clean.")
@@ -728,7 +863,8 @@ Built with the local release pipeline (`scripts/pipeline.py`, see `RELEASE_PROCE
 
         if "github.com" in remote:
             slug = remote.rstrip("/").removesuffix(".git").split("github.com")[-1].lstrip(":/")
-            log(f"Release page: https://github.com/{slug}/releases/tag/{self.tag}")
+            log(f"Tag page: https://github.com/{slug}/releases/tag/{self.tag} "
+                f"(a tag, not a Release object -- nothing is uploaded to a host)")
         log(f"{self.tag} published: tag pushed and verified on origin ({len(list(self.dist_dir.glob('*')))} assets in {self.dist_dir.name}/).")
 
 
@@ -741,11 +877,12 @@ def main():
     parser.add_argument("--no-publish", action="store_true", help="Run all stages except git tag/push")
     parser.add_argument("--no-bump", action="store_true", help="Do not rewrite version declarations (must already be correct)")
     parser.add_argument("--force", action="store_true", help="Allow publishing a dirty tree / moving an existing tag")
+    parser.add_argument("--clobber", action="store_true", help="Republish an already-released version: rebuild its artifacts and record another publication")
 
     args = parser.parse_args()
 
     pipeline = ReleasePipeline(tag=args.tag, dry_run=args.dry_run, no_publish=args.no_publish,
-                               no_bump=args.no_bump, force=args.force)
+                               no_bump=args.no_bump, force=args.force, clobber=args.clobber)
 
     start_idx = STAGES.index(args.from_stage)
     active_stages = STAGES[start_idx:]
