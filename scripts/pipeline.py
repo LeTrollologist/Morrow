@@ -765,9 +765,11 @@ Built with the local release pipeline (`scripts/pipeline.py`, see `RELEASE_PROCE
                     f"That is a republication; pass --clobber to record it."
                 )
 
-        # 1b. An already-published version can only be refreshed deliberately.
+        # 1b. An already-published version can only be refreshed deliberately. A ledger
+        #     without its tag means a previous run died before finishing, which is a
+        #     completion, not a republication -- allow it without --clobber.
         ledger = self._load_ledger()
-        if ledger and not self.clobber:
+        if ledger and tag_exists and not self.clobber:
             raise RuntimeError(
                 f"{self.tag} is already published (local release record "
                 f"{self.ledger_path.name}, publication "
