@@ -1,0 +1,25 @@
+// NEGATIVE TEST: a region-scoped value must not be stored into an element of a
+// container that outlives the region. Same rule as the field store, for `outer[i] = p`.
+import std::collections;
+
+extern "C" {
+    fn morrow_region_alloc(arena: *mut u8, size: i64, align: i64) -> *mut u8;
+}
+
+fn store() -> i64 {
+    let mut slots = vec_new();
+    let mut i: i64 = 0;
+    while i < 4 {
+        vec_push(&mut slots, 0);
+        i = i + 1;
+    }
+    region r {
+        let p = morrow_region_alloc(r, 8, 8);
+        slots[0] = p;
+    }
+    0
+}
+
+fn main() -> i64 {
+    0
+}

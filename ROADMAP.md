@@ -27,7 +27,7 @@ same feature set, and the table below is the authoritative comparison. Every
 |---|---|---|
 | Compiler implementation | Rust crates (`tungsten-*`) | `compiler/*.mw`, 3-stage fixed point verified in CI |
 | Regions (`region r { … }`) | Region inference in `tungsten-typeck` | Implemented, value-yielding; bulk teardown at scope exit |
-| Region escape analysis | Borrow checker in stage-0 | **Partial (v2.4.0)**: tagging from pointers/refs, region-allocator (`*_in`) results and region-expression values; rejects direct returns, outer-scope assignments and struct-field stores into outer-scope values. Indirect flows and indexed stores are **not** detected (§4 of SYNTAX) |
+| Region escape analysis | Borrow checker in stage-0 | **Partial (v2.4.7)**: tagging from pointers/refs, region-allocator (`*_in`) results and region-expression values; rejects direct returns, outer-scope assignments, and struct-field or element stores into outer-scope values. Indirect flows through calls are **not** detected (§4 of SYNTAX) |
 | Refinement types | Linear + relational refinements, SMT intervals | **Partial**: literal bounds, divisor-span rejection, argument/return refinement checks; no path narrowing and no variable-range proofs |
 | Generics / monomorphization | Hindley-Milner-style unification | Implemented: explicit turbofish, call-site monomorphization (`tests/generics_test.mw`) |
 | Algebraic effects | Effect VM + delimited continuations | Implemented: `effect`, `yields`, `perform`, `handle … with`, `resume`; one arm form (`fn op(k, args)`), all ops required |
@@ -46,7 +46,7 @@ same feature set, and the table below is the authoritative comparison. Every
 
 - 23 native suites (`forge test`), including region, refinement, generics, effects,
   linear resources, LSP, HTTP, net and syntax-feature coverage.
-- 17 compile-fail suites (`tests/negative/`), which assert that documented
+- 18 compile-fail suites (`tests/negative/`), which assert that documented
   limitations are still rejected with the documented diagnostic.
 - 22/22 examples built by CI; benchmarks run on every push.
 - 3-stage bootstrap fixed point (identical LLVM IR across rebuilds).
@@ -513,7 +513,7 @@ same feature set, and the table below is the authoritative comparison. Every
 - Reverted. This needs real inference/unification first; arity and callee existence remain enforced (Phase 13.6).
 
 ### Phase 14.2: CI Wiring ✅
-- **No CI workflow** (removed in v2.4.6). GitHub never builds this project: the local pipeline is the only gate, and it enforces `forge test` (23 positive + 17 compile-fail), the example builds, `forge bench`, the docs/version rule, bootstrap IR parity, executable byte-equality, archive determinism, licensing and the release record. Releases are published with plain `git` plus a REST upload of the bytes built here — no host CLI, no Actions, no runner.
+- **No CI workflow** (removed in v2.4.6). GitHub never builds this project: the local pipeline is the only gate, and it enforces `forge test` (23 positive + 18 compile-fail), the example builds, `forge bench`, the docs/version rule, bootstrap IR parity, executable byte-equality, archive determinism, licensing and the release record. Releases are published with plain `git` plus a REST upload of the bytes built here — no host CLI, no Actions, no runner.
 
 ### Phase 14.3: Region escape analysis — substantially closed ✅ (v2.2.0, v2.4.0)
 - Region-scoped values are tagged from **allocation**, not from type kind: a value is tagged inside a `region` block when it is a pointer/reference **or** the result of an allocator whose callee name ends in `_in` / `morrow_region_alloc`. Previously `let v = vec_new_in(r); return v;` was invisible to the checker because `Vec` is not a pointer kind.
@@ -521,8 +521,8 @@ same feature set, and the table below is the authoritative comparison. Every
   - `tc_expr` now takes `vars: &mut HashMap` and `ret_ty: *mut TcType`, so it can type region **expressions** by recursion (`region r { … }` as an rvalue) instead of falling through to `i64`. The tail value is tagged when it is a pointer/reference or an allocator result, and the binding inherits that tag (`stmt_let` copies `expr_ty.right`).
   - The `return` and assignment escape checks are **no longer gated on `region_depth`**, because a tag produced by a region *expression* is checked after the region has closed.
   - `stmt_field_assign` rejects `outer.field = region_value` when the field's root value is not itself region-scoped (`Region Escape Violation: region-scoped value stored in field of outer-scope value`). The root of a field chain is used, so `a.b.c = p` is attributed to `a`.
-- Enforced boundaries (all pinned in `tests/negative/`): `return`, assignment to an outer-scope variable, struct-field store into an outer-scope value.
-- Still **not** detected (documented in SYNTAX §4 with the matrix): indirect escapes through calls and indexed stores (`outer_vec[0] = p`).
+- Enforced boundaries (all pinned in `tests/negative/`): `return`, assignment to an outer-scope variable, and struct-field / element stores into an outer-scope value.
+- Still **not** detected (documented in SYNTAX §4 with the matrix): indirect escapes through calls.
 - Tagging is gated on `region_depth > 0` (or on being the tail of a region expression), so arena handles passed as parameters (`fn f(arena: *mut u8) -> Vec<i64>`) — the idiom the compiler itself uses everywhere — remain legal and no false positives appeared in the self-hosted build.
 
 ### Parser: struct-field progress guarantee (v2.4.0)
@@ -532,10 +532,9 @@ same feature set, and the table below is the authoritative comparison. Every
 - **Built-in effect handlers** for `Process`, `FS`, and `IO`:
   - `compiler/typeck.mw`: `tc_is_effect_covered` treats built-in effect names (`Process`, `FS`, `IO`, `Time`) as permanently covered. `IO.read_line` requires an explicit yields contract or user handler.
   - `compiler/tir.mw`: `lower_ast_expr_to_tir` lowers `perform` on built-in effects directly to `tir_inst_call` on existing runtime thunks (`@morrow_process_exec`, `@morrow_fs_*`, `puts`) when no user handler encloses the `perform` lexically. When user handlers are present, delimited continuation unwinding is preserved and takes precedence.
-  - Acceptance tests in `tests/default_effect_handler_test.mw` verify `command_status`, `fs_exists`, `fs_size`, `perform IO.print`, and user handler precedence. All 23 positive test suites and 17 compile-fail suites pass.
+  - Acceptance tests in `tests/default_effect_handler_test.mw` verify `command_status`, `fs_exists`, `fs_size`, `perform IO.print`, and user handler precedence. All 23 positive test suites and 18 compile-fail suites pass.
 - **Open items**:
   - **Indirect region escapes** (`take(&v)` where `take` stores or returns the value): needs interprocedural analysis; see Phase 14.3.
-  - **Indexed stores** (`outer_vec[0] = region_value`): `stmt_index_assign` needs the same holder check that `stmt_field_assign` now has.
 
 
 #### Default-handler design (implemented in v2.3.0)

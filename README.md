@@ -98,7 +98,7 @@ tested breakdown lives in [`docs/SYNTAX.md` §14](docs/SYNTAX.md#14-not-implemen
 | Affine resources (`affine struct`) | ⚠️ parsed; all-paths consumption required (no auto-drop on early `return`) |
 | Refinements | ⚠️ literal casts + divisor-span checks only (no variable proofs, no narrowing) |
 | Generics + turbofish (`identity::<i64>(42)`, `Pair::<i64> { … }`) | ✅ implemented |
-| Region escape analysis | ⚠️ partial: region-allocated values (pointers, references, `*_in` results, region-expression values) are rejected on `return`, on outer-scope assignment and on struct-field stores into an outer-scope value; indirect escapes and indexed stores are not detected |
+| Region escape analysis | ⚠️ partial: region-allocated values (pointers, references, `*_in` results, region-expression values) are rejected on `return`, on outer-scope assignment, and on struct-field or element stores into an outer-scope value; indirect escapes through calls are not detected |
 | `enum` / `match`, `for`, `nursery`/fibers, closures, `if`-expressions | ❌ not implemented (parse errors) |
 | Float literals | ❌ not implemented |
 | Debug info (PDB), LTO, section GC | ❌ not implemented (stage-0 Rust only) |

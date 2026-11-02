@@ -241,18 +241,18 @@ boundaries. A value is region-scoped when
 | `let mut out: i64 = 0; region r { let v = vec_new_in(r); out = v; }` | **Rejected** — `Region Escape Violation: region-scoped value assigned to outer-scope variable` |
 | `let v = region r { … }; out = v;` (outer-scope assignment) | **Rejected** — same diagnostic |
 | `region r { let p = morrow_region_alloc(r, 8, 8); outer.field = p; }` | **Rejected** — `Region Escape Violation: region-scoped value stored in field of outer-scope value` |
+| `region r { let p = …; outer_vec[0] = p; }` | **Rejected** — `Region Escape Violation: region-scoped value stored in element of outer-scope value` |
 | `region r { let p = …; out.p = p; }` where `out` is itself region-scoped | Accepted — the holder lives in the same region |
 | `region r { let p = morrow_region_alloc(r, 8, 8) as *mut i64; *p = 1; }` (used, not returned) | Accepted |
 | `region r { let inner: i64 = 99; val = inner; }` (scalar out of the region) | Accepted — scalars carry no tag |
 | `let n = region r { let v = vec_new_in(r); vec_len(&v) }; n` (scalar value) | Accepted — only pointer/allocator values are tagged |
 | Indirect escape: `region r { let v = vec_new_in(r); take(&v); }` where `take` stores or returns it | **Not detected** — no interprocedural analysis |
-| Indexed store: `region r { let p = …; outer_vec[0] = p; }` | **Not detected** — the store check covers field assignment only |
 
 Consequences worth stating plainly:
 
 - The rule is **conservative on allocation, not on flow**: a region-allocated value
-  copied into a value the checker cannot see into (through a call, or into an index)
-  is not tracked any further.
+  copied into a value the checker cannot see into (through a call) is not tracked any
+  further.
 - The escape checks are **not gated on being inside the region**. Because tags
   survive a region expression, a value produced by `region r { … }` is still checked
   when it is returned or assigned later, outside the block.
@@ -771,8 +771,8 @@ Implemented but weaker than older drafts claimed:
 - **Escape analysis**: **partial** (v2.4.0). Region-allocated values (pointers,
   references, `*_in` allocator results and the values of region expressions) are
   rejected on `return`, on assignment to an outer-scope variable, and on
-  struct-field stores into an outer-scope value. Indirect escapes through calls and
-  indexed stores are still not detected. The full detection matrix is
+  struct-field and element stores into an outer-scope value. Indirect escapes through
+  calls are still not detected. The full detection matrix is
   in [§4](#escape-analysis-what-is-and-is-not-rejected).
 - **`println`**: one value per call, no `{}` interpolation.
 - **Call signatures**: callee existence and argument **count** are enforced
@@ -816,7 +816,7 @@ Every claim above was checked against the released compiler with a probe suite:
 4. **Tooling** — `forge resolve` on a two-level dependency graph (lockfile captured
    verbatim above), `--target` builds checked by magic bytes, and every shipped
    example built with the released binary.
-5. **Release gates** — 23/23 native suites, 17 compile-fail suites
+5. **Release gates** — 23/23 native suites, 18 compile-fail suites
    (`tests/negative/*.mw`, asserted by `forge test`), benchmark suite, and the
    3-stage self-hosting fixed point.
 

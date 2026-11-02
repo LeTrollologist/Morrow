@@ -1223,7 +1223,49 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
     if kind == stmt_index_assign() {
         let base_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, stmt.left);
         tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, stmt.right);
-        tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, stmt.expr);
+        let rhs_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, stmt.expr);
+
+        // Region escape check for element stores (`outer[i] = region_value`): the same
+        // leak as a field store, so it gets the same rule. The holder is the root of the
+        // index/field chain (`a.b[i].c = x` checks `a`).
+        let mut rhs_scoped = false;
+        if rhs_ty != (0 as *mut TcType) {
+            if rhs_ty.right != (0 as *mut TcType) {
+                rhs_scoped = true;
+            }
+            if region_depth > 0 {
+                if rhs_ty.kind == ty_ptr() || rhs_ty.kind == ty_ref() {
+                    rhs_scoped = true;
+                }
+            }
+        }
+        if region_depth > 0 && tc_is_region_alloc_call(tc, stmt.expr) {
+            rhs_scoped = true;
+        }
+        if rhs_scoped {
+            let mut root = stmt.left;
+            let mut hops: i64 = 0;
+            while root != (0 as *mut AstExpr) && hops < 16 {
+                if root.kind != expr_field() && root.kind != expr_index() {
+                    break;
+                }
+                root = root.left;
+                hops = hops + 1;
+            }
+            let holder_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, root);
+            let mut holder_scoped = false;
+            if holder_ty != (0 as *mut TcType) {
+                if holder_ty.right != (0 as *mut TcType) {
+                    holder_scoped = true;
+                }
+            }
+            if !holder_scoped {
+                report_err("Region Escape Violation: region-scoped value stored in element of outer-scope value", 1, 1);
+                tc.pos = tc.pos + 1;
+                return false;
+            }
+        }
+
         if base_ty != (0 as *mut TcType) {
             if base_ty.kind == ty_byte() {
                 stmt.sym = 1;
