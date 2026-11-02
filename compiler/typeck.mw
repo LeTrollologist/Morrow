@@ -324,6 +324,76 @@ pub fn tc_init_prelude(tc: &mut TypeChecker, types: &mut HashMap) {
     hashmap_insert(types, "Byte", t_byte_val as i64);
 }
 
+// First generic argument of a concrete type symbol: "Vec<String>" -> "String",
+// "Vec<Vec<i64>>" -> "Vec<i64>". Returns 0 when the symbol carries no argument list.
+fn tc_type_arg_sym(tc: &mut TypeChecker, sym: i64) -> i64 {
+    if sym == 0 {
+        return 0;
+    }
+    let interner_ref = tc.interner as &Interner;
+    let s = interner_lookup(interner_ref, sym);
+    let p = s as *const u8;
+    let n = unsafe { strlen(p) } as i64;
+    let mut open: i64 = 0 - 1;
+    let mut i: i64 = 0;
+    while i < n {
+        if unsafe { p[i] } as i64 == 60 {
+            open = i;
+            break;
+        }
+        i = i + 1;
+    }
+    if open < 0 || n < open + 2 {
+        return 0;
+    }
+    // Trim the closing '>' (last character) to keep nested arguments intact.
+    let end = n - 1;
+    if end <= open + 1 {
+        return 0;
+    }
+    let len = end - open - 1;
+    let buf = unsafe { morrow_alloc(len + 1, 1) };
+    let mut k: i64 = 0;
+    while k < len {
+        unsafe { buf[k] = p[open + 1 + k]; }
+        k = k + 1;
+    }
+    unsafe { buf[len] = 0 as u8; }
+    let inner = buf as String;
+    interner_intern(tc.interner as &mut Interner, inner)
+}
+
+// Bare name of a possibly-instantiated type symbol: "Vec<i64>" -> "Vec", and
+// "Vec<Vec<String>>" -> "Vec". Identity is the full symbol; field lookup needs the base.
+fn tc_bare_type_sym(tc: &mut TypeChecker, sym: i64) -> i64 {
+    if sym == 0 {
+        return 0;
+    }
+    let interner_ref = tc.interner as &Interner;
+    let s = interner_lookup(interner_ref, sym);
+    let p = s as *const u8;
+    let n = unsafe { strlen(p) } as i64;
+    let mut i: i64 = 0;
+    while i < n {
+        if unsafe { p[i] } as i64 == 60 { // '<'
+            break;
+        }
+        i = i + 1;
+    }
+    if i == n {
+        return sym;
+    }
+    let buf = unsafe { morrow_alloc(i + 1, 1) };
+    let mut k: i64 = 0;
+    while k < i {
+        unsafe { buf[k] = p[k]; }
+        k = k + 1;
+    }
+    unsafe { buf[i] = 0 as u8; }
+    let bare = buf as String;
+    interner_intern(tc.interner as &mut Interner, bare)
+}
+
 pub fn tc_resolve_type(tc: &mut TypeChecker, types: &HashMap, struct_defs: &HashMap, sym: i64) -> *mut TcType {
     if sym == 0 {
         return alloc_tc_type(tc.arena, ty_unit(), 0);
@@ -338,6 +408,23 @@ pub fn tc_resolve_type(tc: &mut TypeChecker, types: &HashMap, struct_defs: &Hash
     let s_val = hashmap_get(struct_defs, s);
     if s_val != 0 - 1 {
         return alloc_tc_type(tc.arena, ty_struct(), sym);
+    }
+    // An instantiated name (`Vec<i64>`) is not a declaration: fall back to its bare name
+    // for the lookup, but keep the CONCRETE symbol on the resulting type so two
+    // instantiations stay distinguishable (`Vec<i64>` != `Vec<String>`).
+    let bare = tc_bare_type_sym(tc, sym);
+    if bare != sym {
+        let interner_ref2 = tc.interner as &Interner;
+        let b_s = interner_lookup(interner_ref2, bare);
+        let b_val = hashmap_get(types, b_s);
+        if b_val != 0 - 1 {
+            let base_ty = b_val as *mut TcType;
+            return alloc_tc_type(tc.arena, base_ty.kind, sym);
+        }
+        let b_sv = hashmap_get(struct_defs, b_s);
+        if b_sv != 0 - 1 {
+            return alloc_tc_type(tc.arena, ty_struct(), sym);
+        }
     }
     // Default fallback to Int for scalar types
     alloc_tc_type(tc.arena, ty_int(), sym)
@@ -707,7 +794,15 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
                                         eff_kind = arg_ty.left.kind;
                                     }
                                 }
-                                if have_expectation && expected_kind != eff_kind {
+                                let mut mismatch = have_expectation && expected_kind != eff_kind;
+                                // NOTE: struct identity comparison (Vec<String> vs Vec<i64>)
+                                // is NOT enabled yet. The declared type of a binding is not
+                                // stored in the AST (`alloc_stmt_let` carries only name and
+                                // initializer), so a variable's type still comes from its
+                                // initializer and carries no instantiation. Comparing struct
+                                // symbols here would report template-vs-instantiation noise
+                                // instead of real mismatches -- see docs/GENERIC-TYPES.md.
+                                if mismatch {
                                     let wtxt = tc_kind_name(expected_kind);
                                     let gtxt = tc_kind_name(eff_kind);
                                     let tag = tc_kind_tag(tc.arena, wtxt, gtxt);
@@ -747,6 +842,38 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
                     if unsafe { strcmp(rname as *const u8, gname as *const u8) } == 0 {
                         return tc_resolve_type(tc, types, struct_defs, expr.int_val);
                     }
+                } else {
+                    // No turbofish: the result type of `T` comes from the container the
+                    // callee reads or writes, i.e. the element of the first argument's
+                    // concrete type (`vec_get(&v, 0)` where `v: Vec<String>` -> String).
+                    // This consumes the identity the parser now preserves; it is not a
+                    // table of function names.
+                    let rname = interner_lookup(interner_ref, ret_sym);
+                    let gname = interner_lookup(interner_ref, target_fn.type_param_sym);
+                    if unsafe { strcmp(rname as *const u8, gname as *const u8) } == 0 {
+                        if expr.args.len > 0 {
+                            let a0 = vec_get(&expr.args, 0);
+                            let mut probe = a0;
+                            let mut hops: i64 = 0;
+                            while probe != (0 as *mut AstExpr) && probe.kind == expr_unary() && hops < 4 {
+                                probe = probe.left;
+                                hops = hops + 1;
+                            }
+                            if probe != (0 as *mut AstExpr) && probe.kind == expr_var() {
+                                let vs = interner_lookup(interner_ref, probe.sym);
+                                let vty = hashmap_get(vars, vs);
+                                if vty != 0 - 1 {
+                                    let cty = vty as *mut TcType;
+                                    if cty.sym != 0 {
+                                        let elem = tc_type_arg_sym(tc, cty.sym);
+                                        if elem != 0 {
+                                            return tc_resolve_type(tc, types, struct_defs, elem);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
             return tc_resolve_type(tc, types, struct_defs, ret_sym);
@@ -767,8 +894,10 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
         let base_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, expr.left);
         let field_sym = expr.sym;
         if base_ty != (0 as *mut TcType) && base_ty.sym != 0 {
+            // Instantiated names resolve by their bare name for field lookup.
+            let base_sym = tc_bare_type_sym(tc, base_ty.sym);
             let interner_ref = tc.interner as &Interner;
-            let s = interner_lookup(interner_ref, base_ty.sym);
+            let s = interner_lookup(interner_ref, base_sym);
             let st_val = hashmap_get(struct_defs, s);
             if st_val != 0 - 1 {
                 let st = st_val as *mut AstStruct;
@@ -1314,8 +1443,10 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
         }
 
         if base_ty != (0 as *mut TcType) && base_ty.sym != 0 {
+            // Instantiated names resolve by their bare name for field lookup.
+            let base_sym = tc_bare_type_sym(tc, base_ty.sym);
             let interner_ref = tc.interner as &Interner;
-            let s = interner_lookup(interner_ref, base_ty.sym);
+            let s = interner_lookup(interner_ref, base_sym);
             let st_val = hashmap_get(struct_defs, s);
             if st_val != 0 - 1 {
                 let st = st_val as *mut AstStruct;

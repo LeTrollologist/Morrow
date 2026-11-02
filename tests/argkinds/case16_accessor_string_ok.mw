@@ -8,7 +8,7 @@ fn want_string(s: String) -> i64 {
 }
 
 fn run() -> i64 {
-    let mut v = vec_new();
+    let mut v: Vec<String> = vec_new();
     vec_push(&mut v, "elem");
     want_string(vec_get(&v, 0))
 }

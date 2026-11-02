@@ -8,7 +8,7 @@ fn want_int(n: i64) -> i64 {
 }
 
 fn run() -> i64 {
-    let mut v = vec_new();
+    let mut v: Vec<i64> = vec_new();
     vec_push(&mut v, 5);
     want_int(vec_get(&v, 0))
 }

@@ -118,16 +118,45 @@ pub fn parse_type(p: &mut Parser) -> i64 yields [Diagnostics] {
         let tok = advance(p);
         let sym = tok.sym;
         if check(p, tok_lt()) {
+            // Generic instantiation: intern the CONCRETE type name (`Vec<i64>`,
+            // `Vec<Vec<String>>`) as its own symbol, so two instantiations are two
+            // identities from the moment they are parsed. tc_resolve_type falls back to
+            // the bare name for field lookup; codegen never resolves types by name.
+            let mut buf = string_buffer_new_in(p.arena);
+            let interner_ref = p.interner as &Interner;
+            let base_s = interner_lookup(interner_ref, sym);
+            let base_len = unsafe { strlen(base_s as *const u8) } as i64;
+            string_buffer_push_str(&mut buf, base_s as *const u8, base_len);
+            string_buffer_push_byte(&mut buf, 60 as u8); // '<'
             advance(p); // consume <
             let mut depth: i64 = 1;
             while depth > 0 && !check(p, tok_eof()) {
                 if check(p, tok_lt()) {
                     depth = depth + 1;
+                    string_buffer_push_byte(&mut buf, 60 as u8);
                 } else if check(p, tok_gt()) {
                     depth = depth - 1;
+                    if depth > 0 {
+                        string_buffer_push_byte(&mut buf, 62 as u8);
+                    }
+                } else if check(p, tok_comma()) {
+                    string_buffer_push_byte(&mut buf, 44 as u8);
+                } else if check(p, tok_star()) {
+                    string_buffer_push_byte(&mut buf, 42 as u8);
+                } else if check(p, tok_amp()) {
+                    string_buffer_push_byte(&mut buf, 38 as u8);
+                } else if check(p, tok_ident()) {
+                    let it = current_tok(p);
+                    let interner_ref2 = p.interner as &Interner;
+                    let id_s = interner_lookup(interner_ref2, it.sym);
+                    let id_len = unsafe { strlen(id_s as *const u8) } as i64;
+                    string_buffer_push_str(&mut buf, id_s as *const u8, id_len);
                 }
                 advance(p);
             }
+            string_buffer_push_byte(&mut buf, 0 as u8);
+            let concrete = string_as_ptr(&buf) as String;
+            return interner_intern(p.interner as &mut Interner, concrete);
         } else if check(p, tok_lbracket()) {
             advance(p); // consume [
             while !check(p, tok_rbracket()) && !check(p, tok_eof()) {
