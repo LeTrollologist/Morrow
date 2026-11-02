@@ -649,10 +649,13 @@ Built with the local release pipeline (`scripts/pipeline.py`, see `RELEASE_PROCE
         commit = run("git rev-parse HEAD", capture_output=True).stdout.strip()
         remote = self.remote or run(
             "git remote get-url origin", capture_output=True, check=False).stdout.strip()
+        # Deliberately no commit hash in the record: the ledger is committed alongside the
+        # release, so any hash it stored would be invalidated by its own commit (or an
+        # amend) and every rerun would look like a change. git already answers
+        # "which commit is this tag" -- the ledger answers "which bytes were published".
         entry = {
             "tag": self.tag,
             "version": self.ver,
-            "commit": commit,
             "remote": remote,
             "fixed_point": self.parity_hash,
             "tests": self.suite_summary,
@@ -661,9 +664,9 @@ Built with the local release pipeline (`scripts/pipeline.py`, see `RELEASE_PROCE
             "assets": self._asset_digests(),
             "published_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "republish_count": int(previous.get("republish_count", 0)) + (1 if previous else 0),
+            "recorded_near_commit": commit,
             "previous_publication": (
                 {
-                    "commit": previous.get("commit"),
                     "published_at": previous.get("published_at"),
                     "assets": previous.get("assets"),
                 }
@@ -677,14 +680,14 @@ Built with the local release pipeline (`scripts/pipeline.py`, see `RELEASE_PROCE
         # leave the ledger (and therefore the tree) untouched.
         if previous:
             same = (
-                previous.get("commit") == entry["commit"]
-                and previous.get("fixed_point") == entry["fixed_point"]
+                previous.get("fixed_point") == entry["fixed_point"]
                 and previous.get("tests") == entry["tests"]
+                and previous.get("examples") == entry["examples"]
                 and previous.get("assets") == entry["assets"]
             )
             if same:
                 log(f"{self.ledger_path.name} already records this publication "
-                    f"exactly (commit {entry['commit'][:8]}, identical artifacts); "
+                    f"exactly (identical artifacts and verification facts); "
                     f"nothing to re-record.")
                 return False
 
