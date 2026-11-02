@@ -89,11 +89,12 @@ missing. It never invents feature claims.
 ## 5. Distribution layout
 
 ```
-dist/v2.3.1/
-├── Morrow-v2.3.1-win64.zip    # bin, std, compiler, lib (incl. CRT), examples,
+dist/v2.4.1/
+├── Morrow-v2.4.1-win64.zip    # bin, std, compiler, lib (incl. CRT), examples,
 │                              # tests (incl. tests/negative), benchmarks + c,
-│                              # docs, scripts, release-notes, .github,
-│                              # README, ROADMAP, RELEASE_PROCESS, Makefile, LICENSE*
+│                              # docs, scripts, release-notes, licenses, .github,
+│                              # README, ROADMAP, RELEASE_PROCESS, LICENSE.md,
+│                              # THIRD-PARTY-NOTICES.md, Makefile
 ├── forge.exe                  # standalone unified CLI
 ├── mwc.exe                    # standalone compiler driver
 ├── RELEASE_NOTES.md           # release body
@@ -103,6 +104,18 @@ dist/v2.3.1/
 ```
 
 `dist/` is git-ignored; it is produced fresh by the package stage on every run.
+
+### Licensing in the archive
+
+The verify stage refuses to pass an archive that does not contain `LICENSE.md`,
+`THIRD-PARTY-NOTICES.md` and the upstream license texts under `licenses/`. The
+bundled CRT (`lib/crt/*.a`, `*.o`) is third-party material — GCC runtime (GPL-3.0 +
+GCC Runtime Library Exception), mingw-w64 (ZPL 2.1), libiconv (LGPL-2.1), SQLite
+(public domain) — so its attribution has to ship with it.
+
+Note that `LICENSE.md` is **not** part of the version-bump list in §1: it records
+"effective for v2.4.1 and later" as a historical boundary, so the `version` stage
+must never rewrite it to a later release.
 
 ---
 

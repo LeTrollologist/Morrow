@@ -240,10 +240,9 @@ Morrow/
 │   └── player.mw          # Game demo with effects, refinements, and regions
 ├── docs/
 │   └── SYNTAX.md          # Comprehensive Language & Syntax Specification
-├── LICENSE.md             # Morrow Triumvirate License
-├── MORROW-USE-LICENSE.md  # Morrow's Use License text
-├── MORROW-CONTRIBUTOR-LICENSE-AGREEMENT.md         # Morrow's Contributor License
-├── MORROW-FORK-AND-REDISTRIBUTION-AGREEMENT.md         # Morrow's Fork and Redistribution Agreement License
+├── LICENSE.md             # Morrow Unified License (MUL) v1.0
+├── THIRD-PARTY-NOTICES.md # Upstream attribution for bundled runtime libraries
+├── licenses/              # Verbatim GPL-3.0, LGPL-2.1, ZPL-2.1 and GCC RLE texts
 └── archive/               # Historical Stage-0 Artifacts
     └── stage0-rust/       # Archived legacy Rust bootstrap compiler crates
 ```

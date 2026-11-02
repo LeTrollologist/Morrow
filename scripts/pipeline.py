@@ -424,9 +424,9 @@ class ReleasePipeline:
         log(f"Creating distribution archive: {zip_name}...")
 
         include_dirs = ["bin", "std", "compiler", "lib", "examples", "tests", "benchmarks",
-                        "docs", "scripts", "release-notes", ".github"]
-        include_files = ["README.md", "ROADMAP.md", "RELEASE_PROCESS.md", "Makefile",
-                         "LICENSE", "LICENSE-MIT", "LICENSE-APACHE"]
+                        "docs", "scripts", "release-notes", "licenses", ".github"]
+        include_files = ["README.md", "ROADMAP.md", "RELEASE_PROCESS.md",
+                         "THIRD-PARTY-NOTICES.md", "Makefile", "LICENSE.md"]
 
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
             for fname in include_files:
@@ -509,6 +509,22 @@ Built with the local release pipeline (`scripts/pipeline.py`, see `RELEASE_PROCE
                 bad_file = zf.testzip()
                 if bad_file:
                     raise RuntimeError(f"Corrupted file in {z.name}: {bad_file}")
+                # Licensing must travel with the artifacts: MUL requires its own
+                # notice, and the bundled CRT imposes upstream attribution.
+                names = set(zf.namelist())
+                required = {
+                    "Morrow/LICENSE.md",
+                    "Morrow/THIRD-PARTY-NOTICES.md",
+                    "Morrow/licenses/GPL-3.0.txt",
+                    "Morrow/licenses/ZPL-2.1.txt",
+                }
+                missing = sorted(required - names)
+                if missing:
+                    raise RuntimeError(
+                        f"{z.name} is missing licensing files: {', '.join(missing)}"
+                    )
+                log(f"Licensing present in {z.name}: LICENSE.md, "
+                    f"THIRD-PARTY-NOTICES.md and {len([n for n in names if n.startswith('Morrow/licenses/')])} upstream texts")
             log(f"Verified archive integrity: {z.name}")
 
     def _release_title(self) -> str:
