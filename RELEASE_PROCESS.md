@@ -164,6 +164,13 @@ The verify stage compares freshly built artifacts against this record on every
 byte-identical (nothing is written), or the drift is named asset by asset and must be
 accepted with `--clobber`.
 
+One bootstrap property worth knowing: the archive is built *before* the record for
+the release being made, so `Morrow-vX.Y.Z-win64.zip` ships the records of earlier
+releases plus its own `dist/vX.Y.Z/PUBLISH.txt`. The record for the release itself is
+added to `releases/` by the publish stage and ships with the following release. That
+is the same ordering a changelog has, and it keeps the packaged bytes and the
+recorded hashes describing the same moment.
+
 ---
 
 ## 8. Relationship to CI and host tooling
