@@ -112,8 +112,7 @@ class ReleasePipeline:
     HOST_CLI_PATTERN = re.compile(
         r"\b(?:gh|glab|hub)\s+(?:release|auth|api|repo|pr|issue|workflow|upload|secret|run)\b"
     )
-    HOST_CLI_FILES = ("scripts/pipeline.py", "scripts/release_page.py", "Makefile",
-                      ".github/workflows/ci.yml")
+    HOST_CLI_FILES = ("scripts/pipeline.py", "scripts/release_page.py", "Makefile")
 
     def _assert_no_host_cli(self):
         offenders = []

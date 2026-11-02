@@ -1,0 +1,14 @@
+{
+  "tag": "v2.4.2",
+  "version": "2.4.2",
+  "remote": "https://github.com/LeTrollologist/Morrow.git",
+  "fixed_point": null,
+  "tests": null,
+  "examples": null,
+  "notes": "release-notes/v2.4.2.md",
+  "assets": [],
+  "published_at": "2026-11-02T00:13:49-05:00",
+  "republish_count": 0,
+  "reconstructed": true,
+  "reconstruction_note": "Record rebuilt after the fact from the tag and the surviving dist/ directory. Fixed point and suite counts were not captured at the time, so they are null rather than guessed. Artifacts omitted: no dist/SHA256SUMS.txt survives."
+}

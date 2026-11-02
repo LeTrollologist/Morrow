@@ -513,8 +513,7 @@ same feature set, and the table below is the authoritative comparison. Every
 - Reverted. This needs real inference/unification first; arity and callee existence remain enforced (Phase 13.6).
 
 ### Phase 14.2: CI Wiring ✅
-- `.github/workflows/ci.yml` (windows-latest): `forge version`, `forge test` (23 positive + 17 compile-fail), build every example, run `forge bench`, and verify the 3-stage bootstrap fixed point.
-  **Not currently executing:** GitHub Actions refuses every job with *"The job was not started because your account is locked due to a billing issue."* (seen in the job annotation on 2026-11-01). The same gates are enforced by the local pipeline (`scripts/pipeline.py`), which is what produced v2.3.0 and v2.3.1, and releases are published with plain `git` only — no host CLI in the path.
+- **No CI workflow** (removed in v2.4.6). GitHub never builds this project: the local pipeline is the only gate, and it enforces `forge test` (23 positive + 17 compile-fail), the example builds, `forge bench`, the docs/version rule, bootstrap IR parity, executable byte-equality, archive determinism, licensing and the release record. Releases are published with plain `git` plus a REST upload of the bytes built here — no host CLI, no Actions, no runner.
 
 ### Phase 14.3: Region escape analysis — substantially closed ✅ (v2.2.0, v2.4.0)
 - Region-scoped values are tagged from **allocation**, not from type kind: a value is tagged inside a `region` block when it is a pointer/reference **or** the result of an allocator whose callee name ends in `_in` / `morrow_region_alloc`. Previously `let v = vec_new_in(r); return v;` was invisible to the checker because `Vec` is not a pointer kind.

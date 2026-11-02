@@ -1,0 +1,35 @@
+{
+  "tag": "v2.4.1",
+  "version": "2.4.1",
+  "remote": "https://github.com/LeTrollologist/Morrow.git",
+  "fixed_point": null,
+  "tests": null,
+  "examples": null,
+  "notes": "release-notes/v2.4.1.md",
+  "assets": [
+    {
+      "name": "forge.exe",
+      "bytes": 462848,
+      "sha256": "6709174658CCD0E32E6FF968AB73C2896401F7020E60F91E7B6C3F9BE09D3353"
+    },
+    {
+      "name": "Morrow-v2.4.1-win64.zip",
+      "bytes": 7420560,
+      "sha256": "8809831C30C7215834CC1274046D641DBFEB2508C1BA9C3BA23D56D08E9BB2FF"
+    },
+    {
+      "name": "mwc.exe",
+      "bytes": 462848,
+      "sha256": "6709174658CCD0E32E6FF968AB73C2896401F7020E60F91E7B6C3F9BE09D3353"
+    },
+    {
+      "name": "RELEASE_NOTES.md",
+      "bytes": 4236,
+      "sha256": "2A024B5BB9D01608FF3A9707953D21F21E9F474C2672507A72A6D473DDC40FD3"
+    }
+  ],
+  "published_at": "2026-11-01T23:42:17-05:00",
+  "republish_count": 0,
+  "reconstructed": true,
+  "reconstruction_note": "Record rebuilt after the fact from the tag and the surviving dist/ directory. Fixed point and suite counts were not captured at the time, so they are null rather than guessed."
+}

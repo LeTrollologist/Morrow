@@ -71,9 +71,9 @@ a builder: no Actions workflow, no CI runner, no forge CLI.
    bytes. `--no-release-page` keeps the release local-only.
 5. **No host CLI on `main`.** `main` never invokes `gh`, `glab`, `hub` or any other
    forge client -- not for auth, not for release creation, not for uploads. This is
-   checked mechanically: the preflight stage scans `scripts/pipeline.py`, `Makefile`
-   and `.github/workflows/ci.yml` for host-CLI invocations and aborts the release if
-   one appears, naming the file and line.
+   checked mechanically: the preflight stage scans `scripts/pipeline.py`,
+   `scripts/release_page.py` and `Makefile` for host-CLI invocations and aborts the
+   release if one appears, naming the file and line.
 
 ## 3a. `--clobber`: republication as a first-class operation
 
@@ -182,14 +182,15 @@ recorded hashes describing the same moment.
 
 **Nothing is ever built on the host.** The compiler, the archive, the checksums and the
 release record are all produced on this machine; GitHub receives finished bytes and
-stores them. There is no Actions build, no CI runner in the release path, and no forge
-CLI: `stage_ship` speaks the REST API directly with the credential `git push` already
-uses.
+stores them.
 
-`.github/workflows/ci.yml` remains an optional safety net for forked copies, not the
-release mechanism. It re-runs `forge test`, the example builds, `forge bench`, the
-docs/version gate and the bootstrap fixed point on push. Releases are made locally by
-this pipeline, which enforces the same gates before it tags anything.
+**There is no CI in this repository.** `.github/workflows/` was removed in v2.4.6: it
+did not build anything (the account is locked for Actions billing) and, had it run, it
+would have been a second, weaker copy of gates this pipeline already enforces —
+`forge test`, the example builds, `forge bench`, the docs/version rule, bootstrap
+parity, executable byte-equality, archive determinism, licensing and the release
+record. A pipeline that can be bypassed by "just push" is not a gate; the local
+pipeline is the gate. `make check` is the full verification without publishing.
 
 Host CLIs (`gh`, `glab`, `hub`, …) are **never** used by `main`; preflight fails if an
 invocation ever creeps into the release path. They remain a convenience for people
