@@ -1,0 +1,17 @@
+// ARGKINDS CORPUS — case 8 (call result, positive)
+// A function returning String, passed to a String parameter, must not be reported.
+fn greet() -> String {
+    "hello"
+}
+
+fn want_string(s: String) -> i64 {
+    0
+}
+
+fn run() -> i64 {
+    want_string(greet())
+}
+
+fn main() -> i64 {
+    0
+}

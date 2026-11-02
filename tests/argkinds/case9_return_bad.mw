@@ -1,0 +1,17 @@
+// ARGKINDS CORPUS — case 9 (call result, negative)
+// A function returning i64, passed to a String parameter, must be reported.
+fn count() -> i64 {
+    7
+}
+
+fn want_string(s: String) -> i64 {
+    0
+}
+
+fn run() -> i64 {
+    want_string(count())
+}
+
+fn main() -> i64 {
+    0
+}

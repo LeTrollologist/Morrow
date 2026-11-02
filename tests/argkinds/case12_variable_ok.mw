@@ -1,0 +1,14 @@
+// ARGKINDS CORPUS — case 12 (typed variable, positive)
+// A variable declared String keeps its kind when passed to a String parameter.
+fn want_string(s: String) -> i64 {
+    0
+}
+
+fn run() -> i64 {
+    let s: String = "hold";
+    want_string(s)
+}
+
+fn main() -> i64 {
+    0
+}

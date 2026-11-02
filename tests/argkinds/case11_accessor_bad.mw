@@ -1,0 +1,17 @@
+// ARGKINDS CORPUS — case 11 (collection accessor, negative)
+// A collection length is an integer, passed to a String parameter: must be reported.
+import std::collections;
+
+fn want_string(s: String) -> i64 {
+    0
+}
+
+fn run() -> i64 {
+    let mut v = vec_new();
+    vec_push(&mut v, 1);
+    want_string(vec_len(&v))
+}
+
+fn main() -> i64 {
+    0
+}

@@ -636,10 +636,22 @@ The residual 229 are the next class, untouched so far: `struct↔int` 124 and `S
 for literal kind lost through variables. That is **call-result and field inference**, i.e.
 the `ty_int()` fallbacks at ~40 sites, not another substitution rule.
 
-**The instrument is pinned by a corpus** (`tests/argkinds/`, 5 cases) so it cannot be
-trusted for the wrong reason: `&Probe`→`Probe` and `&i64`→`i64` stay silent; `"hello"`→
-`i64` and `&&Probe`→`Probe` stay reported; `id::<String>` reports `String` on the argument
-side (true today) while the parameter side is still `int` (the substitution gap). Two
-limits of the model are stated openly there: `&T` and `&mut T` are the same `ty_ref`
-today, so no mutability rule can be honest yet; and the comparison is kind-level, so
-`struct` vs `struct` never clashes.
+**The instrument is pinned by a corpus** (`tests/argkinds/`, 13 cases since v2.4.12), and
+the corpus localises where information is actually lost:
+
+| Area | Own findings | Meaning |
+|---|---|---|
+| struct field, `String`/`int` | 0 / 1 | field lookup **preserves** the kind |
+| call result, `String`/`int` | 0 / 1 | the return type **is** resolved from `ret_ty_sym` |
+| typed variable, `String`/`int` | 0 / 1 | declared kind survives the binding |
+| collection accessor, `vec_get`/`vec_len` | 0 / 1 | the case's own call is silent; std's `hashmap_insert` contributes a named baseline line |
+
+So the remaining 229 are **one** loss of information — generic/collection plumbing (`vec_get`
+returning `T`, `hashmap_insert` taking a `String` key), not four independent failures. The
+next fix belongs in how `T`-typed callees report results, not in a rule that re-derives
+kinds at every argument.
+
+Per-case expected counts are recorded in `tests/argkinds/README.md` as two numbers: **own**
+(findings naming a callee declared in the case) and **baseline** (named findings contributed
+by imported std at that version), because the report has no source positions and importing
+`std::collections` typechecks std's own calls.

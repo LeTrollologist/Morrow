@@ -1,0 +1,22 @@
+// ARGKINDS CORPUS — case 6 (struct field, positive)
+// A String field passed to a String parameter must not be reported.
+struct Info {
+    label: String,
+}
+
+fn want_string(s: String) -> i64 {
+    strlen(s as *const u8) as i64
+}
+
+extern "C" {
+    fn strlen(s: *const u8) -> usize;
+}
+
+fn run() -> i64 {
+    let info = Info { label: "ok" };
+    want_string(info.label)
+}
+
+fn main() -> i64 {
+    0
+}

@@ -1,0 +1,18 @@
+// ARGKINDS CORPUS — case 10 (collection accessor, positive)
+// A value read out of a collection, where the element type is what the parameter
+// expects. `vec_get` returns T, which the checker may still see as int.
+import std::collections;
+
+fn want_int(n: i64) -> i64 {
+    n
+}
+
+fn run() -> i64 {
+    let mut v = vec_new();
+    vec_push(&mut v, 41);
+    want_int(vec_get(&v, 0))
+}
+
+fn main() -> i64 {
+    0
+}
