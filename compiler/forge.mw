@@ -923,7 +923,7 @@ pub fn compile_file_target(src_path: String, out_ll_path: String, out_exe_path: 
                         string_buffer_push_str(&mut cmd_args, out_ll_path as *const u8, unsafe { strlen(out_ll_path as *const u8) } as i64);
                         string_buffer_push_str(&mut cmd_args, opt_suffix as *const u8, unsafe { strlen(opt_suffix as *const u8) } as i64);
                     } else {
-                        let opt_prefix = "--target=x86_64-pc-windows-gnu -nostartfiles -o ";
+                        let opt_prefix = "--target=x86_64-pc-windows-gnu -nostartfiles -Wl,--no-insert-timestamp -o ";
                         let opt_suffix = " lib/crt/crt2.o -Llib/crt -lsqlite3 -lbcrypt -lmingw32 -lmingwex -lmsvcrt -lkernel32 -luser32 -lgdi32 -lwinmm -lws2_32 -lgcc";
                         string_buffer_push_str(&mut cmd_args, opt_prefix as *const u8, unsafe { strlen(opt_prefix as *const u8) } as i64);
                         string_buffer_push_str(&mut cmd_args, out_exe_path as *const u8, unsafe { strlen(out_exe_path as *const u8) } as i64);
@@ -1341,7 +1341,7 @@ pub fn forge_run_bench(arena: *mut u8) -> i64 yields [FS, Process, Diagnostics, 
             let c_exe = string_as_ptr(&c_exe_buf) as String;
 
             let mut c_args_buf = string_buffer_new_in(arena);
-            fmt_append_str(&mut c_args_buf, "--target=x86_64-pc-windows-gnu -nostartfiles -O2 -o ");
+            fmt_append_str(&mut c_args_buf, "--target=x86_64-pc-windows-gnu -nostartfiles -Wl,--no-insert-timestamp -O2 -o ");
             fmt_append_str(&mut c_args_buf, c_exe);
             fmt_append_str(&mut c_args_buf, " ");
             fmt_append_str(&mut c_args_buf, c_src);

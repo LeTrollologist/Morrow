@@ -318,6 +318,22 @@ class ReleasePipeline:
         self._save_state(parity=h2, version=self.ver)
         log("Bootstrap fixed-point closure verified (100% bitwise parity)!")
 
+        # IR parity is necessary but not sufficient: stage2 and stage3 are linked from
+        # the same .ll, so the executables themselves must match byte-for-byte. This is
+        # what catches a non-deterministic linker (a PE TimeDateStamp, for instance),
+        # which otherwise makes every rebuild dirty `bin/` with different bytes.
+        exe2 = (target_dir / "stage2.exe").read_bytes()
+        exe3 = (target_dir / "stage3.exe").read_bytes()
+        if exe2 != exe3:
+            off = next((i for i, (x, y) in enumerate(zip(exe2, exe3)) if x != y), None)
+            raise RuntimeError(
+                "Reproducibility failure: stage2.exe and stage3.exe are linked from "
+                f"identical IR but differ ({len(exe2)} vs {len(exe3)} bytes"
+                + (f", first difference at offset {off}" if off is not None else "")
+                + "). Check the linker for timestamps or embedded paths."
+            )
+        log(f"stage2.exe == stage3.exe byte-for-byte ({len(exe2)} bytes).")
+
         # Update bin/
         shutil.copy2(stage3, ROOT / "bin" / "mwc.exe")
         shutil.copy2(stage3, ROOT / "bin" / "forge.exe")
@@ -567,7 +583,22 @@ Built with the local release pipeline (`scripts/pipeline.py`, see `RELEASE_PROCE
 
         self._recover_facts()
 
-        # 0. The tag must describe the tree that produced the artifacts. Version
+        # 0. Refuse to "re-publish" a tag that already points elsewhere before touching
+        #    the tree: otherwise a rerun commits regenerated binaries and only then
+        #    discovers the tag cannot move, leaving a stray release commit behind.
+        head = run("git rev-parse HEAD", capture_output=True).stdout.strip()
+        tag_exists = run(f"git rev-parse -q --verify refs/tags/{self.tag}",
+                         check=False, capture_output=True).returncode == 0
+        if tag_exists:
+            tag_sha = run(f"git rev-list -n 1 {self.tag}", capture_output=True).stdout.strip()
+            if tag_sha != head and not self.force:
+                raise RuntimeError(
+                    f"Tag {self.tag} already points at {tag_sha[:8]} but HEAD is "
+                    f"{head[:8]}. Nothing was committed. Either check out the tagged "
+                    f"commit, cut a new version, or pass --force to move the tag."
+                )
+
+        # 1. The tag must describe the tree that produced the artifacts. Version
         #    bumps and rebuilt binaries are this pipeline's own output, so they are
         #    committed here; anything else must be a deliberate --force.
         dirty_lines = [l for l in run("git status --porcelain", capture_output=True)
