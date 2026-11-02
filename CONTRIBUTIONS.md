@@ -1,0 +1,1 @@
+> By **submitting** a contribution to the Morrow project, you **agree** it is licensed under the Morrow Unified License, including the grant in `§8.2`, which lets the Project relicense your contribution as part of Morrow in the future.
