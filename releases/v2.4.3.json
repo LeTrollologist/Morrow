@@ -14,8 +14,8 @@
     },
     {
       "name": "Morrow-v2.4.3-win64.zip",
-      "bytes": 7426095,
-      "sha256": "005CAC4001B829E214554A801190150980DE8FAE1982700D68E7628EDCCEF315"
+      "bytes": 7426309,
+      "sha256": "769997A23C1DEB15D605735A2CF5485DFE06C86D48179E2A5D8FDF77B137D4C1"
     },
     {
       "name": "mwc.exe",
@@ -28,8 +28,32 @@
       "sha256": "A7B1924CA7CB34B5236ADE57692284AD5A0903EE7B3FA2D83875B076FF03576D"
     }
   ],
-  "published_at": "2026-11-02T05:26:57Z",
-  "republish_count": 0,
-  "recorded_near_commit": "19193c73797455a3e7df7bfb4066756170989524",
-  "previous_publication": null
+  "published_at": "2026-11-02T05:27:37Z",
+  "republish_count": 1,
+  "recorded_near_commit": "4e60caf45f11a8300e762c2b88313fadff0db02f",
+  "previous_publication": {
+    "published_at": "2026-11-02T05:26:57Z",
+    "assets": [
+      {
+        "name": "forge.exe",
+        "bytes": 462848,
+        "sha256": "9422C3E307DB34D1C1B0959C50F6DB5D09274609578BD32A4C78025E1790CA8B"
+      },
+      {
+        "name": "Morrow-v2.4.3-win64.zip",
+        "bytes": 7426095,
+        "sha256": "005CAC4001B829E214554A801190150980DE8FAE1982700D68E7628EDCCEF315"
+      },
+      {
+        "name": "mwc.exe",
+        "bytes": 462848,
+        "sha256": "9422C3E307DB34D1C1B0959C50F6DB5D09274609578BD32A4C78025E1790CA8B"
+      },
+      {
+        "name": "RELEASE_NOTES.md",
+        "bytes": 3162,
+        "sha256": "A7B1924CA7CB34B5236ADE57692284AD5A0903EE7B3FA2D83875B076FF03576D"
+      }
+    ]
+  }
 }
