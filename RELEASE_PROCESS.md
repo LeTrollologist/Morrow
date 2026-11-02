@@ -19,6 +19,7 @@ document disagree, the script is wrong.
 | **6. `package`** | assets in `dist/v{VER}/` | Copies `forge.exe`, `mwc.exe`, builds `Morrow-v{VER}-win64.zip`, and writes `RELEASE_NOTES.md` (see §4). |
 | **7. `verify`** | checksums + integrity | Requires the four expected assets to exist, writes `SHA256SUMS.txt` covering every asset, and runs a CRC check over the archive. |
 | **8. `publish`** | `git` only | Commits pipeline-managed changes, tags `HEAD`, pushes branch and tag, then **verifies with `git ls-remote` that the tag exists on `origin` and points at the tagged commit**. Writes `dist/v{VER}/PUBLISH.txt` recording commit, remote, fixed point and asset list. |
+| **9. `ship`** | `scripts/release_page.py` | Uploads `dist/v{VER}/*` to the release page for the tag and sets its body from `release-notes/v{VER}.md`. GitHub stores bytes we built; it never builds. `--no-release-page` skips this stage. |
 
 ---
 
@@ -47,9 +48,9 @@ make build | test | bench | package | verify | dry-run
 ## 3. Publish semantics
 
 Publishing is entirely local: `git commit`, `git tag -a`, `git push`,
-`git ls-remote`, plus the release record described in §7. No host CLI, API client or
-CI runner is involved, and no Release object is created on any forge — the tag is the
-release.
+`git ls-remote`, plus the release record described in §7. The final stage then uploads
+the artifacts this machine built to the release page — GitHub is a **file host**, never
+a builder: no Actions workflow, no CI runner, no forge CLI.
 
 1. **Dirty trees.** The publish stage owns exactly the files it writes: version
    declarations, `bin/*.exe`, `release-notes/`, `releases/`, `dist/`. If only those
@@ -61,9 +62,13 @@ release.
 3. **Verification, not trust.** After pushing, the pipeline runs
    `git ls-remote --tags origin` and checks the tag object id and its peeled commit
    against the local tag. A push that silently did not land fails the stage.
-4. **No API client.** There is no dependency on a web UI, a personal access token or a
-   forge CLI, so the same command works offline, against a mirror, or on a fork with a
-   different remote.
+4. **Then we ship it.** `stage_ship` runs `scripts/release_page.py`, which creates the
+   release page for the tag (or updates it) and uploads `dist/vX.Y.Z/*`, replacing any
+   asset of the same name. The body is `release-notes/vX.Y.Z.md`. It talks to the REST
+   API directly with the credential `git push` already uses (`MORROW_GITHUB_TOKEN` is
+   honoured first). It refuses to upload a binary whose hash disagrees with the
+   `SHA256SUMS.txt` beside it — a page without binaries is better than unverified
+   bytes. `--no-release-page` keeps the release local-only.
 5. **No host CLI on `main`.** `main` never invokes `gh`, `glab`, `hub` or any other
    forge client -- not for auth, not for release creation, not for uploads. This is
    checked mechanically: the preflight stage scans `scripts/pipeline.py`, `Makefile`
@@ -175,15 +180,20 @@ recorded hashes describing the same moment.
 
 ## 8. Relationship to CI and host tooling
 
-`.github/workflows/ci.yml` is an optional safety net for forked copies, not the
-release mechanism. It re-runs `forge test`, the example builds, `forge bench`, the
-docs/version gate and the bootstrap fixed point on push. Releases are made locally
-by this pipeline, which enforces the same gates before it tags anything.
+**Nothing is ever built on the host.** The compiler, the archive, the checksums and the
+release record are all produced on this machine; GitHub receives finished bytes and
+stores them. There is no Actions build, no CI runner in the release path, and no forge
+CLI: `stage_ship` speaks the REST API directly with the credential `git push` already
+uses.
 
-Host CLIs (`gh`, `glab`, `hub`, …) are **never** used by `main`. They exist as a
-convenience for people working from a fork — opening pull requests, or manually
-attaching assets to their own release page. `scripts/pipeline.py` is git-only, and
-preflight fails if a host-CLI invocation ever creeps into the release path.
+`.github/workflows/ci.yml` remains an optional safety net for forked copies, not the
+release mechanism. It re-runs `forge test`, the example builds, `forge bench`, the
+docs/version gate and the bootstrap fixed point on push. Releases are made locally by
+this pipeline, which enforces the same gates before it tags anything.
+
+Host CLIs (`gh`, `glab`, `hub`, …) are **never** used by `main`; preflight fails if an
+invocation ever creeps into the release path. They remain a convenience for people
+working from a fork.
 
 **Status (2026-11-01, v2.3.1).** GitHub Actions is currently not executing this
 workflow: every job since 2026-10-31 completes in ~2 s with no steps, and the

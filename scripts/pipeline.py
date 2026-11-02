@@ -44,7 +44,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-STAGES = ["preflight", "version", "build", "test", "bench", "package", "verify", "publish"]
+STAGES = ["preflight", "version", "build", "test", "bench", "package", "verify", "publish", "ship"]
 
 # Files whose declared version must follow the release tag.
 VERSION_DECLARATIONS = [
@@ -86,7 +86,8 @@ def compute_sha256(path: Path) -> str:
 
 class ReleasePipeline:
     def __init__(self, tag: str, dry_run: bool = False, no_publish: bool = False,
-                 no_bump: bool = False, force: bool = False, clobber: bool = False):
+                 no_bump: bool = False, force: bool = False, clobber: bool = False,
+                 no_release_page: bool = False):
         if not tag.startswith("v"):
             tag = f"v{tag}"
         self.tag = tag
@@ -96,6 +97,7 @@ class ReleasePipeline:
         self.no_bump = no_bump
         self.force = force
         self.clobber = clobber
+        self.no_release_page = no_release_page
         self.remote = None
         self.dist_dir = ROOT / "dist" / self.tag
         self.parity_hash = None
@@ -110,7 +112,8 @@ class ReleasePipeline:
     HOST_CLI_PATTERN = re.compile(
         r"\b(?:gh|glab|hub)\s+(?:release|auth|api|repo|pr|issue|workflow|upload|secret|run)\b"
     )
-    HOST_CLI_FILES = ("scripts/pipeline.py", "Makefile", ".github/workflows/ci.yml")
+    HOST_CLI_FILES = ("scripts/pipeline.py", "scripts/release_page.py", "Makefile",
+                      ".github/workflows/ci.yml")
 
     def _assert_no_host_cli(self):
         offenders = []
@@ -147,6 +150,34 @@ class ReleasePipeline:
             for asset in sorted(self.dist_dir.glob("*"))
             if asset.is_file() and asset.name not in ("SHA256SUMS.txt", "PUBLISH.txt")
         ]
+
+    def stage_ship(self):
+        log("STAGE 9: Shipping the built artifacts to the release page", header=True)
+        if self.dry_run:
+            log(f"[DRY-RUN] Would upload dist/{self.tag}/* to the release page for {self.tag}.")
+            return
+        if self.no_publish:
+            log("--no-publish requested; skipping the release page.")
+            return
+        if self.no_release_page:
+            log("--no-release-page requested; artifacts stay local in dist/ only.")
+            return
+
+        script = ROOT / "scripts" / "release_page.py"
+        if not script.exists():
+            raise FileNotFoundError(f"missing {script}")
+        # GitHub is a file host here, never a builder: these are the bytes this machine
+        # just built, verified and archived. No Actions workflow, no CI, no forge CLI.
+        res = run(f'"{sys.executable}" "{script}" {self.tag}', check=False, capture_output=True)
+        output = (res.stdout or "") + (res.stderr or "")
+        for line in output.splitlines():
+            if line.strip():
+                log(line.strip())
+        if res.returncode != 0:
+            raise RuntimeError(
+                f"release page upload failed (exit {res.returncode}); the local release "
+                f"is complete, rerun with --from ship to retry"
+            )
 
     def stage_preflight(self):
         log("STAGE 1: Preflight checks", header=True)
@@ -892,11 +923,13 @@ def main():
     parser.add_argument("--no-bump", action="store_true", help="Do not rewrite version declarations (must already be correct)")
     parser.add_argument("--force", action="store_true", help="Allow publishing a dirty tree / moving an existing tag")
     parser.add_argument("--clobber", action="store_true", help="Republish an already-released version: rebuild its artifacts and record another publication")
+    parser.add_argument("--no-release-page", action="store_true", help="Keep the artifacts local; do not upload them to the release page")
 
     args = parser.parse_args()
 
     pipeline = ReleasePipeline(tag=args.tag, dry_run=args.dry_run, no_publish=args.no_publish,
-                               no_bump=args.no_bump, force=args.force, clobber=args.clobber)
+                               no_bump=args.no_bump, force=args.force, clobber=args.clobber,
+                               no_release_page=args.no_release_page)
 
     start_idx = STAGES.index(args.from_stage)
     active_stages = STAGES[start_idx:]

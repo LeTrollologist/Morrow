@@ -36,6 +36,10 @@ package:
 verify:
 	python scripts/pipeline.py $(TAG) --from verify --skip publish
 
+# Upload the locally built artifacts to the release page (no building happens there)
+ship:
+	python scripts/pipeline.py $(TAG) --from ship
+
 # Republish an already-released version: rebuild artifacts, re-verify byte equality,
 # record another publication in releases/$(TAG).json
 republish:
