@@ -1,0 +1,2 @@
+# Keep upstream license texts byte-for-byte as published (no EOL conversion).
+licenses/*.txt -text
