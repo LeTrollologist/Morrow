@@ -1,7 +1,7 @@
 {
   "tag": "v2.4.3",
   "version": "2.4.3",
-  "commit": "5c46b6d80c133023766e1b4077ff64fc89b29c91",
+  "commit": "bdcd2ccfc64d29a7a64d7c116386b126f2c6de8d",
   "remote": "https://github.com/LeTrollologist/Morrow.git",
   "fixed_point": "C48EA8C12A9CB4D5CE1F8496BAFFF62E5A6A2693A8B1469CC6080615F77858A0",
   "tests": "test result: ok. 23 positive suites, 17 compile-fail suites passed.",
@@ -29,7 +29,32 @@
       "sha256": "A7B1924CA7CB34B5236ADE57692284AD5A0903EE7B3FA2D83875B076FF03576D"
     }
   ],
-  "published_at": "2026-11-02T05:25:49Z",
-  "republish_count": 0,
-  "previous_publication": null
+  "published_at": "2026-11-02T05:26:11Z",
+  "republish_count": 1,
+  "previous_publication": {
+    "commit": "5c46b6d80c133023766e1b4077ff64fc89b29c91",
+    "published_at": "2026-11-02T05:25:49Z",
+    "assets": [
+      {
+        "name": "forge.exe",
+        "bytes": 462848,
+        "sha256": "9422C3E307DB34D1C1B0959C50F6DB5D09274609578BD32A4C78025E1790CA8B"
+      },
+      {
+        "name": "Morrow-v2.4.3-win64.zip",
+        "bytes": 7426095,
+        "sha256": "005CAC4001B829E214554A801190150980DE8FAE1982700D68E7628EDCCEF315"
+      },
+      {
+        "name": "mwc.exe",
+        "bytes": 462848,
+        "sha256": "9422C3E307DB34D1C1B0959C50F6DB5D09274609578BD32A4C78025E1790CA8B"
+      },
+      {
+        "name": "RELEASE_NOTES.md",
+        "bytes": 3162,
+        "sha256": "A7B1924CA7CB34B5236ADE57692284AD5A0903EE7B3FA2D83875B076FF03576D"
+      }
+    ]
+  }
 }
