@@ -829,12 +829,17 @@ Built with the local release pipeline (`scripts/pipeline.py`, see `RELEASE_PROCE
             raise RuntimeError(
                 f"Remote tag object {remote_obj[:8]} != local {tag_obj[:8]} for {self.tag}"
             )
-        if remote_sha and remote_sha != head:
+        # Compare against the commit the tag actually identifies, not HEAD: on a
+        # republication the tag deliberately stays behind the record commit.
+        tagged_commit = run(f"git rev-list -n 1 {self.tag}",
+                            capture_output=True).stdout.strip()
+        if remote_sha and remote_sha != tagged_commit:
             raise RuntimeError(
-                f"Remote tag {self.tag} peels to {remote_sha[:8]}, expected {head[:8]}"
+                f"Remote tag {self.tag} peels to {remote_sha[:8]}, expected "
+                f"{tagged_commit[:8]}"
             )
         log(f"Remote tag {self.tag} verified "
-            f"(object {remote_obj[:8]}, commit {remote_sha[:8] if remote_sha else head[:8]})")
+            f"(object {remote_obj[:8]}, commit {remote_sha[:8] if remote_sha else tagged_commit[:8]})")
 
         # 4. Write the publish manifest next to the artifacts. Distribution artifacts
         #    are local by design; attaching them to a forge release page (if one is
