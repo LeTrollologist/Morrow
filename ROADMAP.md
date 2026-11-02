@@ -609,7 +609,31 @@ the true order of magnitude is an order larger.
 kind comparison must run **after** monomorphization, not in `tc_expr`. Likewise a
 `&T`/`&mut T` argument passed to a `T` parameter must be unwrapped before comparison —
 that single rule accounts for 82% of the findings above.
-3. Landing order: (a) reference unwrapping (`&mut Vec<T>` → `Vec<T>`) and literal-kind
-preservation through `expr_var` lookups, (b) parameter-kind check behind a flag,
-(c) enable by default once `forge check` over `compiler/*.mw` and `std/*.mw` reports
-zero findings. Step (a) is now measurable: rerun `forge argkinds` and watch 1882 fall.
+3. Landing order: three separate stages, never blurred:
+   **(a) diagnostic** (report only) — **done**, v2.4.9/v2.4.10;
+   **(b) experimental enforcement** — reject mismatches behind a dedicated flag;
+   **(c) default enforcement** — reject in ordinary checking, only after (a) is
+   trustworthy by corpus *and* negative tests prove invalid calls are rejected.
+   Zero findings alone is **not** an acceptance criterion: an inference system that is
+   merely permissive also reports zero.
+
+**Step (a) landed in v2.4.10 — measured, not assumed.** The comparison now unwraps one
+level of reference, and only when the parameter is not itself a reference (a *by-value*
+parameter accepts `&x`/`&mut x`). Over `compiler/main.mw`:
+
+| | v2.4.9 | v2.4.10 |
+|---|---|---|
+| total findings | 1882 | **367** |
+| `want=struct got=ref` | 1538 | **0** |
+
+The residual 367 are exactly the classes the unwrap rule does not touch:
+`struct↔int` (185), `int↔String` (150), `u8↔ptr` (13), `bool↔int` (12 — literal kind lost
+through variables).
+
+**The instrument is pinned by a corpus** (`tests/argkinds/`, 5 cases) so it cannot be
+trusted for the wrong reason: `&Probe`→`Probe` and `&i64`→`i64` stay silent; `"hello"`→
+`i64` and `&&Probe`→`Probe` stay reported; `id::<String>` reports `String` on the argument
+side (true today) while the parameter side is still `int` (the substitution gap). Two
+limits of the model are stated openly there: `&T` and `&mut T` are the same `ty_ref`
+today, so no mutability rule can be honest yet; and the comparison is kind-level, so
+`struct` vs `struct` never clashes.

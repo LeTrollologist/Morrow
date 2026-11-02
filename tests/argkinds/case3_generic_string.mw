@@ -1,0 +1,15 @@
+// ARGKINDS CORPUS — case 3
+// Generic instantiated as String. Desired: want=String. Current known gap: the
+// parameter resolves to int because `T` is not substituted at the call site.
+fn id<T>(x: T) -> T {
+    x
+}
+
+fn run() -> i64 {
+    let s = id::<String>("hi");
+    0
+}
+
+fn main() -> i64 {
+    0
+}

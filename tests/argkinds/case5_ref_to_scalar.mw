@@ -1,0 +1,15 @@
+// ARGKINDS CORPUS — case 5
+// Reference to a non-struct type: `&i64` against a by-value i64 parameter.
+// Must NOT be reported (the rule is about references, not about structs).
+fn want_int(n: i64) -> i64 {
+    n
+}
+
+fn run() -> i64 {
+    let n: i64 = 7;
+    want_int(&n)
+}
+
+fn main() -> i64 {
+    0
+}

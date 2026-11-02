@@ -1,0 +1,19 @@
+// ARGKINDS CORPUS — case 1
+// `&p` passed to a by-value struct parameter must NOT be reported (implicit deref).
+// Deliberately not a Vec/HashMap: the rule must be about references, not collections.
+struct Probe {
+    x: i64,
+}
+
+fn take(p: Probe) -> i64 {
+    p.x
+}
+
+fn run() -> i64 {
+    let p = Probe { x: 1 };
+    take(&p)
+}
+
+fn main() -> i64 {
+    0
+}

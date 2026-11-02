@@ -1,0 +1,14 @@
+// ARGKINDS CORPUS — case 2
+// A String argument to an integer parameter must REMAIN reported. This is the
+// control: whatever unwrapping we add must not silence real mismatches.
+fn want_int(n: i64) -> i64 {
+    n
+}
+
+fn run() -> i64 {
+    want_int("hello")
+}
+
+fn main() -> i64 {
+    0
+}

@@ -666,9 +666,23 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
                             // failing the build, so the real mismatch rate can be measured
                             // before any of this becomes an enforced rule.
                             if tc.arg_report == 1 {
-                                if param_ty.kind != arg_ty.kind {
+                                // Implicit dereference, comparison only: a *by-value*
+                                // parameter accepts `&x` / `&mut x`, so compare against the
+                                // referent instead of the reference. One level only, and
+                                // only when the parameter is not itself a reference --
+                                // `&&T` against `T` stays reported. Nothing is rewritten:
+                                // `ty_ref` keeps its referent (left) and every other
+                                // checker rule still sees the reference.
+                                let mut eff_kind = arg_ty.kind;
+                                if arg_ty.kind == ty_ref() || arg_ty.kind == ty_ptr() {
+                                    let param_is_ref = param_ty.kind == ty_ref() || param_ty.kind == ty_ptr();
+                                    if !param_is_ref && arg_ty.left != (0 as *mut TcType) {
+                                        eff_kind = arg_ty.left.kind;
+                                    }
+                                }
+                                if param_ty.kind != eff_kind {
                                     let wtxt = tc_kind_name(param_ty.kind);
-                                    let gtxt = tc_kind_name(arg_ty.kind);
+                                    let gtxt = tc_kind_name(eff_kind);
                                     let tag = tc_kind_tag(tc.arena, wtxt, gtxt);
                                     let line = tc_compose_callee_msg(tc.arena, tag, s);
                                     unsafe { puts(line as *const u8); }
