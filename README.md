@@ -25,7 +25,7 @@
   <a href="tests/">
     <img src="https://img.shields.io/badge/Tests-23%2F23_Passing-22C55E?style=for-the-badge&logo=checkmarx&logoColor=white&labelColor=0f172a" alt="Tests" />
   </a>
-  <a href="LICENSE">
+  <a href="LICENSE.md">
     <img src="https://img.shields.io/badge/License-Morrow_Unified_License_(MUL)-F59E0B?style=for-the-badge&logo=open-source-initiative&logoColor=white&labelColor=0f172a" alt="License" />
   </a>
 </p>
