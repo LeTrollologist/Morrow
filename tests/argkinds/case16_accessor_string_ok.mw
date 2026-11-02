@@ -1,0 +1,18 @@
+// ARGKINDS CORPUS — case 16 (generic accessor, element consumed as String, positive)
+// `vec_get` returns T. Target: the element of a Vec holding a String, passed to a String
+// parameter, produces no finding. Today the result is typed from `T`, i.e. int.
+import std::collections;
+
+fn want_string(s: String) -> i64 {
+    0
+}
+
+fn run() -> i64 {
+    let mut v = vec_new();
+    vec_push(&mut v, "elem");
+    want_string(vec_get(&v, 0))
+}
+
+fn main() -> i64 {
+    0
+}

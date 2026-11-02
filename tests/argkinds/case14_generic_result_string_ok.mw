@@ -1,0 +1,18 @@
+// ARGKINDS CORPUS — case 14 (generic result, String instantiation, positive)
+// A generic function instantiated as String, whose RESULT is passed to a String
+// parameter. Target: no finding. Today the call result is typed from `T`, i.e. int.
+fn id<T>(x: T) -> T {
+    x
+}
+
+fn want_string(s: String) -> i64 {
+    0
+}
+
+fn run() -> i64 {
+    want_string(id::<String>("hi"))
+}
+
+fn main() -> i64 {
+    0
+}

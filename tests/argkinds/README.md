@@ -72,3 +72,50 @@ unwrapping.
   where `HashMap` is expected is not reported until substitution makes an `sym` comparison
   meaningful.
 - **Finding attribution is by callee name**, because expressions carry no source position.
+## Generic results — isolation cases (v2.4.13)
+
+These six cases isolate *where* a generic result loses its type. Readings are from the
+v2.4.13 binary; `own = total − import baseline`, where the baseline is measured by
+`baseline_import_collections.mw` (import only, no calls of our own) and is **1** line at
+this version: `want=String got=u8 :: hashmap_insert`, contributed by std's own code.
+
+| Case | Situation | Today (own) | Target |
+|---|---|---|---|
+| `case14_generic_result_string_ok` | `want_string(id::<String>("hi"))` | **1** — `want=String got=int` | 0 |
+| `case15_generic_result_int_ok` | `want_int(id::<i64>(7))` | 0 | 0 (must stay 0) |
+| `case16_accessor_string_ok` | `want_string(vec_get(&v, 0))` over `Vec<String>` | **1** — `want=String got=int` | 0 |
+| `case17_accessor_int_ok` | `want_int(vec_get(&v, 0))` over `Vec<i64>` | 0 | 0 (must stay 0) |
+| `case18_insertion_string_key_ok` | `hashmap_insert(&mut m, "key", 1)` | **0** | 0 |
+| `case19_incompatible_must_report` | `want_string(vec_get(&v, 0))` over `Vec<i64>` | 1 — `want=String got=int` | 1 (must stay 1) |
+
+Cases 15 and 17 pass **by accident**: the placeholder kind (`int`) happens to match the
+expected `i64`. They exist so a fix cannot break them. Cases 14/16 are known false
+positives; case 19 is the negative that forbids "stop reporting generic results" as a fix.
+
+## Where the type is lost — one shared point, two very different cases
+
+The call-result type is produced in exactly one place per callee kind:
+
+```
+compiler/typeck.mw:737   let ret_sym = target_fn.ret_ty_sym;
+compiler/typeck.mw:738   return tc_resolve_type(tc, types, struct_defs, ret_sym);
+compiler/typeck.mw:745   let ret_sym = ext.ret_ty_sym;          (extern functions)
+```
+
+`tc_resolve_type` knows type aliases and struct names, nothing else: a return type of `T`
+is neither, so it becomes `ty_int`. Every generic-returning callee — `id`, `vec_get`,
+`hashmap_get` — collapses there. That is the shared point; no `vec_get`/`hashmap_insert`
+special case is needed or wanted.
+
+But the two cases reach it with different information available:
+
+- **case14 (`id::<String>`)** — the instantiation is *written at the call site* in the
+  turbofish, which the parser already stores in `expr.int_val`. A substitution at line 737
+  can use it, with no new state. **Fixable now.**
+- **case16 (`vec_get`)** — there is no turbofish; `T` is only knowable from the container
+  argument (`&mut Vec<T>` → element type). `TcType` does not carry element types for struct
+  instantiations, so this cannot be recovered at line 737 at all. A special case would have
+  to invent a table of "functions whose result is their first argument's element" — which
+  is exactly the kind of rule this project has been removing. **Needs element-type
+  tracking, not a lookup.**
+

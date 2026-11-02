@@ -1,0 +1,18 @@
+// ARGKINDS CORPUS — case 15 (generic result, i64 instantiation, positive)
+// Same generic function instantiated as i64. Target: no finding. This one passes today,
+// which is exactly why it is kept: it proves a future fix does not break the int case.
+fn id<T>(x: T) -> T {
+    x
+}
+
+fn want_int(n: i64) -> i64 {
+    n
+}
+
+fn run() -> i64 {
+    want_int(id::<i64>(7))
+}
+
+fn main() -> i64 {
+    0
+}

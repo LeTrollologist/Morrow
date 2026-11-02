@@ -1,0 +1,8 @@
+// ARGKINDS BASELINE — import only, no calls of our own.
+// Used to attribute findings: anything this file reports comes from the imported module's
+// own typechecking, and is subtracted from a case's total to get the case's own count.
+import std::collections;
+
+fn main() -> i64 {
+    0
+}

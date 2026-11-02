@@ -655,3 +655,22 @@ Per-case expected counts are recorded in `tests/argkinds/README.md` as two numbe
 (findings naming a callee declared in the case) and **baseline** (named findings contributed
 by imported std at that version), because the report has no source positions and importing
 `std::collections` typechecks std's own calls.
+
+**v2.4.13 isolated the generic-result loss (corpus now 20 files) and found one shared point.**
+The call-result type is produced in a single place per callee kind —
+`typeck.mw:737-738` (`target_fn.ret_ty_sym`) and `745-746` (extern) — where
+`tc_resolve_type` turns any return type of `T` into `ty_int`, because `T` is neither an
+alias nor a struct name. Two of the new cases are **known false positives** today
+(`want_string(id::<String>("hi"))` and `want_string(vec_get(&v, 0))` over `Vec<String>`,
+each 1 own finding), one **must stay reported** (`want_string(vec_get(&v, 0))` over
+`Vec<i64>`), and two pass **by accident** (the placeholder `int` happens to equal `i64`).
+
+The two false positives reach that shared point with different information, and conflating
+them would be a mistake:
+
+- `id::<String>` carries its instantiation in the turbofish, already stored in
+  `expr.int_val` — a substitution at 737 is sufficient and needs no new state.
+- `vec_get` has no turbofish; `T` is only knowable from the container's element type, which
+  `TcType` does not record for struct instantiations. Fixing it requires element-type
+  tracking. A helper table of "functions that return their first argument's element" is
+  explicitly rejected: it is a special case, and the corpus exists to keep those out.

@@ -1,0 +1,19 @@
+// ARGKINDS CORPUS — case 19 (incompatible instantiation, must report)
+// A Vec of integers, element passed to a String parameter. This MUST produce a finding:
+// it is the negative that stops "concrete types propagate" from being satisfied by
+// simply not reporting generic results.
+import std::collections;
+
+fn want_string(s: String) -> i64 {
+    0
+}
+
+fn run() -> i64 {
+    let mut v = vec_new();
+    vec_push(&mut v, 9);
+    want_string(vec_get(&v, 0))
+}
+
+fn main() -> i64 {
+    0
+}

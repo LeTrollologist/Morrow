@@ -1,0 +1,18 @@
+// ARGKINDS CORPUS — case 17 (generic accessor, element consumed as i64, positive)
+// The same accessor over a Vec of integers. Target: no finding, and it must stay that way
+// after case 16 is fixed.
+import std::collections;
+
+fn want_int(n: i64) -> i64 {
+    n
+}
+
+fn run() -> i64 {
+    let mut v = vec_new();
+    vec_push(&mut v, 5);
+    want_int(vec_get(&v, 0))
+}
+
+fn main() -> i64 {
+    0
+}

@@ -1,0 +1,15 @@
+// ARGKINDS CORPUS — case 18 (generic collection insertion, concrete String key)
+// Inserting with a concrete String key into a HashMap. Target: no finding on the insertion
+// itself. std's own insertion currently produces a finding of its own (recorded as the
+// baseline line), which is the same loss of information seen from the other side.
+import std::collections;
+
+fn run() -> i64 {
+    let mut m = hashmap_new();
+    hashmap_insert(&mut m, "key", 1);
+    0
+}
+
+fn main() -> i64 {
+    0
+}
