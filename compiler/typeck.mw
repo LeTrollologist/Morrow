@@ -735,6 +735,20 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
                 ei = ei + 1;
             }
             let ret_sym = target_fn.ret_ty_sym;
+            // Explicit instantiation determines the result type: when the declared return
+            // type IS the callee's type parameter and the caller wrote `::<T>`, the call
+            // produces T's instantiation, not the placeholder. This affects the RESULT
+            // only -- arguments were already typed and compared against the declared
+            // parameters above, so `id::<i64>("hello")` still reports the bad argument.
+            if target_fn.type_param_sym != 0 {
+                if expr.int_val != 0 {
+                    let rname = interner_lookup(interner_ref, ret_sym);
+                    let gname = interner_lookup(interner_ref, target_fn.type_param_sym);
+                    if unsafe { strcmp(rname as *const u8, gname as *const u8) } == 0 {
+                        return tc_resolve_type(tc, types, struct_defs, expr.int_val);
+                    }
+                }
+            }
             return tc_resolve_type(tc, types, struct_defs, ret_sym);
         }
 
