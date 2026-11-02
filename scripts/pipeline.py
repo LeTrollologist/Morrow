@@ -910,8 +910,8 @@ Built with the local release pipeline (`scripts/pipeline.py`, see `RELEASE_PROCE
 
         if "github.com" in remote:
             slug = remote.rstrip("/").removesuffix(".git").split("github.com")[-1].lstrip(":/")
-            log(f"Tag page: https://github.com/{slug}/releases/tag/{self.tag} "
-                f"(a tag, not a Release object -- nothing is uploaded to a host)")
+            log(f"Release page: https://github.com/{slug}/releases/tag/{self.tag} "
+                f"(artifacts are attached by the ship stage)")
         log(f"{self.tag} published: tag pushed and verified on origin ({len(list(self.dist_dir.glob('*')))} assets in {self.dist_dir.name}/).")
 
 
