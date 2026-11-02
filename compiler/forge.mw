@@ -875,7 +875,7 @@ pub fn compile_file_target(src_path: String, out_ll_path: String, out_exe_path: 
             forge_print("TGC: Type checking & solving refinements...");
             desugar_handlers_program(prog, &mut interner, comp_reg);
             monomorphize_program(prog, &mut interner, comp_reg);
-            let tc_ok = typecheck_program(prog, &mut interner, comp_reg);
+            let tc_ok = typecheck_program(prog, &mut interner, comp_reg, 0);
             if !tc_ok || diag_has_errors() {
                 report_err("Type checking failed", 1, 1);
                 exit_code = 1;
@@ -988,6 +988,24 @@ pub fn forge_usage() {
     forge_print("  help                       Display this help message");
 }
 
+pub fn forge_run_argkinds(path: String, arena: *mut u8) -> i64 yields [FS, Diagnostics, IO] {
+    forge_print("forge: reporting argument-kind discrepancies (report only, nothing is rejected)...");
+    diag_reset();
+    let mut interner = interner_new_in(arena);
+    let prog = load_program_modules(path, &mut interner, arena);
+    if diag_has_errors() {
+        report_err("forge argkinds failed: syntax errors detected", 1, 1);
+        return 1;
+    }
+    let tc_ok = typecheck_program(prog, &mut interner, arena, 1);
+    if tc_ok && !diag_has_errors() {
+        forge_print("forge: arg-kind scan finished; type checks still pass");
+        return 0;
+    }
+    forge_print("forge: arg-kind scan finished; the file itself has type errors");
+    1
+}
+
 pub fn forge_run_check(path: String, arena: *mut u8) -> i64 yields [FS, Diagnostics, IO] {
     forge_print("forge: checking syntax and refinement types...");
     diag_reset();
@@ -997,7 +1015,7 @@ pub fn forge_run_check(path: String, arena: *mut u8) -> i64 yields [FS, Diagnost
         report_err("forge check failed: syntax errors detected", 1, 1);
         return 1;
     }
-    let tc_ok = typecheck_program(prog, &mut interner, arena);
+    let tc_ok = typecheck_program(prog, &mut interner, arena, 0);
     if !tc_ok || diag_has_errors() {
         report_err("forge check failed: refinement or type violations detected", 1, 1);
         return 1;
@@ -1669,6 +1687,16 @@ pub fn forge_main(args: Vec<String>, arena: *mut u8) -> i64 yields [FS, Process,
         }
         let file = vec_get(&args, 2);
         return forge_run_check(file, arena);
+    }
+
+    if unsafe { strcmp(p_cmd, "argkinds" as *const u8) == 0 } {
+        if args.len < 3 {
+            forge_print("Error: 'forge argkinds' requires a target .mw file");
+            forge_print("Reports call sites whose argument kind differs from the declared parameter kind (diagnostic only)");
+            return 1;
+        }
+        let file = vec_get(&args, 2);
+        return forge_run_argkinds(file, arena);
     }
 
     if unsafe { strcmp(p_cmd, "build" as *const u8) == 0 } {

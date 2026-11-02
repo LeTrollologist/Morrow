@@ -10,6 +10,50 @@ extern "C" {
     fn strcmp(s1: *const u8, s2: *const u8) -> i32;
     fn strlen(s: *const u8) -> usize;
     fn morrow_alloc(size: i64, align: i64) -> *mut u8;
+    fn puts(s: *const u8) -> i32;
+}
+
+// Human-readable name for a type kind, used only by the argument-kind report.
+fn tc_kind_name(k: i64) -> String {
+    if k == ty_int() { return "int"; }
+    if k == ty_string() { return "String"; }
+    if k == ty_bool() { return "bool"; }
+    if k == ty_ptr() { return "ptr"; }
+    if k == ty_ref() { return "ref"; }
+    if k == ty_struct() { return "struct"; }
+    if k == ty_unit() { return "unit"; }
+    if k == ty_byte() { return "u8"; }
+    if k == ty_fn() { return "fn"; }
+    "unknown"
+}
+
+// "ARGKIND want=<w> got=<g> :: " — built on the heap so it survives region teardown.
+fn tc_kind_tag(arena: *mut u8, want: String, got: String) -> String {
+    let w_ptr = want as *const u8;
+    let g_ptr = got as *const u8;
+    let pre = "ARGKIND want=" as String;
+    let mid = " got=" as String;
+    let post = " :: " as String;
+    let pl = unsafe { strlen(pre as *const u8) } as i64;
+    let wl = unsafe { strlen(w_ptr) } as i64;
+    let ml = unsafe { strlen(mid as *const u8) } as i64;
+    let gl = unsafe { strlen(g_ptr) } as i64;
+    let sl = unsafe { strlen(post as *const u8) } as i64;
+    let total = pl + wl + ml + gl + sl + 1;
+    let buf = unsafe { morrow_alloc(total, 1) };
+    let mut at: i64 = 0;
+    let mut i: i64 = 0;
+    while i < pl { unsafe { buf[at] = (pre as *const u8)[i]; } at = at + 1; i = i + 1; }
+    i = 0;
+    while i < wl { unsafe { buf[at] = w_ptr[i]; } at = at + 1; i = i + 1; }
+    i = 0;
+    while i < ml { unsafe { buf[at] = (mid as *const u8)[i]; } at = at + 1; i = i + 1; }
+    i = 0;
+    while i < gl { unsafe { buf[at] = g_ptr[i]; } at = at + 1; i = i + 1; }
+    i = 0;
+    while i < sl { unsafe { buf[at] = (post as *const u8)[i]; } at = at + 1; i = i + 1; }
+    unsafe { buf[at] = 0 as u8; }
+    buf as String
 }
 
 // Builds "<prefix><callee name>" diagnostics so a signature error names the
@@ -161,6 +205,7 @@ pub struct TypeChecker {
     linear_vars: *mut HashMap,      // 7: Map of var name -> i64 status (1=active, 2=consumed, 3=leaked/reported)
     linear_names: *mut Vec<String>, // 8: Vec of active linear resource variable names
     linear_modes: *mut HashMap,     // 9: Map of var name -> i64 mode (1=linear, 2=affine)
+    arg_report: i64,                // 10: 1 = print argument-kind discrepancies (never fails the build)
 }
 
 pub fn typechecker_new_in(interner: *mut Interner, arena: *mut u8) -> TypeChecker {
@@ -176,6 +221,7 @@ pub fn typechecker_new_in(interner: *mut Interner, arena: *mut u8) -> TypeChecke
         linear_vars: 0 as *mut HashMap,
         linear_names: 0 as *mut Vec<String>,
         linear_modes: 0 as *mut HashMap,
+        arg_report: 0,
     }
 }
 
@@ -614,6 +660,18 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
                                             tc.pos = tc.pos + 1;
                                         }
                                     }
+                                }
+                            }
+                            // Argument-kind report: prints discrepancies without ever
+                            // failing the build, so the real mismatch rate can be measured
+                            // before any of this becomes an enforced rule.
+                            if tc.arg_report == 1 {
+                                if param_ty.kind != arg_ty.kind {
+                                    let wtxt = tc_kind_name(param_ty.kind);
+                                    let gtxt = tc_kind_name(arg_ty.kind);
+                                    let tag = tc_kind_tag(tc.arena, wtxt, gtxt);
+                                    let line = tc_compose_callee_msg(tc.arena, tag, s);
+                                    unsafe { puts(line as *const u8); }
                                 }
                             }
                         }
@@ -1717,8 +1775,9 @@ pub fn tc_function(tc: &mut TypeChecker, fn_defs: &HashMap, ext_defs: &HashMap, 
     true
 }
 
-pub fn typecheck_program(prog: *mut AstProgram, interner: *mut Interner, arena: *mut u8) -> bool yields [Diagnostics] {
+pub fn typecheck_program(prog: *mut AstProgram, interner: *mut Interner, arena: *mut u8, arg_report: i64) -> bool yields [Diagnostics] {
     let mut tc = typechecker_new_in(interner, arena);
+    tc.arg_report = arg_report;
     let mut types = hashmap_new_in(arena, 64);
     let mut struct_defs = hashmap_new_in(arena, 64);
     let mut fn_defs = hashmap_new_in(arena, 128);

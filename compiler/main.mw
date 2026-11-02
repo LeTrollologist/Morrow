@@ -86,6 +86,7 @@ fn main() -> i64 yields [FS, Process, Diagnostics, IO] {
             let p1 = a1 as *const u8;
             if unsafe {
                 strcmp(p1, "check" as *const u8) == 0 ||
+                strcmp(p1, "argkinds" as *const u8) == 0 ||
                 strcmp(p1, "build" as *const u8) == 0 ||
                 strcmp(p1, "run" as *const u8) == 0 ||
                 strcmp(p1, "test" as *const u8) == 0 ||

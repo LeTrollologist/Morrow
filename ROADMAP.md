@@ -586,6 +586,30 @@ errors for a *non*-built-in effect.
 
 ### Phase 14.5: Phase 14.1 blocked item — what real inference would take
 Recorded so the next attempt starts from evidence instead of a reverted patch:
+
+**Measurement (v2.4.9).** `forge argkinds <file>` runs the typechecker in report-only
+mode: at every call site it compares the declared parameter kind with the inferred
+argument kind and prints `ARGKIND want=<w> got=<g> :: <callee>` without failing the
+build. Over `compiler/main.mw` (which pulls in the whole compiler and stdlib) it finds
+**1882 discrepancies**, and their shape is the whole argument:
+
+| Count | Pattern | What it actually is |
+|---|---|---|
+| 1538 | `want=struct got=ref` | `vec_push(&mut v, x)`, `hashmap_insert(&mut m, k, v)`, `string_as_ptr(&sb)` — the parameter is `Vec<T>`/`HashMap`, the argument is `&mut Vec<T>`; the checker has no reference-of-struct unwrapping |
+| 103 | `want=struct got=int` | generic `T` parameters resolve to `int` |
+| 77 / 73 / 61 | `int` ↔ `String` ↔ `struct` | `T`-parameter substitution and call-result inference |
+| 13 / 12 / 4 | `u8`↔`ptr`, `bool`↔`int` | literal/bool kind loss through variables |
+
+So a kind-equality rule would reject ~1882 valid call sites in the compiler's own
+source. The earlier "152 false positives" figure was measured on a *smaller* corpus;
+the true order of magnitude is an order larger.
+
 1. `TcType` needs a `fresh` flag / unification variables; `tc_expr` must stop returning a shared `i64` type for unresolved expressions (it currently allocates `ty_int()` at ~40 sites).
-2. Parameters must be substituted before call checking: generic `T` parameters currently verify as `int`, so any kind comparison must run **after** monomorphization, not in `tc_expr`.
-3. Landing order: (a) string/bool literal kinds preserved through `expr_var` lookups, (b) parameter-kind check behind a flag, (c) enable by default once `forge check` over `compiler/*.mw` and `std/*.mw` reports zero findings. The 152-false-positive result came from step (c) being attempted before (a)/(b).
+2. Parameters must be substituted before call checking: generic `T` parameters currently verify as `int`, so any
+kind comparison must run **after** monomorphization, not in `tc_expr`. Likewise a
+`&T`/`&mut T` argument passed to a `T` parameter must be unwrapped before comparison —
+that single rule accounts for 82% of the findings above.
+3. Landing order: (a) reference unwrapping (`&mut Vec<T>` → `Vec<T>`) and literal-kind
+preservation through `expr_var` lookups, (b) parameter-kind check behind a flag,
+(c) enable by default once `forge check` over `compiler/*.mw` and `std/*.mw` reports
+zero findings. Step (a) is now measurable: rerun `forge argkinds` and watch 1882 fall.

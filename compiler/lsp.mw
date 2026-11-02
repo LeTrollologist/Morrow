@@ -322,7 +322,7 @@ pub fn lsp_handle_request(req_json_str: String, arena: *mut u8) -> String yields
             let mut interner = interner_new_in(arena);
             let tokens = tokenize(text, &mut interner, arena);
             let prog   = parse_program(tokens, &mut interner, arena);
-            let tc_ok  = typecheck_program(prog, &mut interner, arena);
+            let tc_ok  = typecheck_program(prog, &mut interner, arena, 0);
             if !tc_ok || diag_has_errors() {
                 // Typechecker currently always passes (1, 1) as location;
                 // accurate line/col tracking is planned for Phase 13.2.
