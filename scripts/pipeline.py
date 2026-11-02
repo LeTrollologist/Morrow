@@ -485,7 +485,7 @@ class ReleasePipeline:
         log(f"Creating distribution archive: {zip_name}...")
 
         include_dirs = ["bin", "std", "compiler", "lib", "examples", "tests", "benchmarks",
-                        "docs", "scripts", "release-notes", "licenses", ".github"]
+                        "docs", "scripts", "release-notes", "releases", "licenses", ".github"]
         include_files = ["README.md", "ROADMAP.md", "RELEASE_PROCESS.md",
                          "THIRD-PARTY-NOTICES.md", "Makefile", "LICENSE.md"]
 

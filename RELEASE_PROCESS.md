@@ -46,31 +46,44 @@ make build | test | bench | package | verify | dry-run
 
 ## 3. Publish semantics
 
-1. **Dirty trees.** The publish stage owns exactly the files it writes: version
-   declarations, `bin/*.exe`, `release-notes/`, `dist/`. If only those changed, it
-   commits them as `chore(release): vX.Y.Z`. Any other uncommitted file aborts the
-   release unless `--force` is passed.
-2. **Tags.** The annotated tag `vX.Y.Z` is created at `HEAD`. If it exists, it must
-   already point at `HEAD`; moving it requires `--force`.
-3. **Verification, not trust.** After pushing, the pipeline runs
-   `git ls-remote --tags origin` and compares the peeled commit of `vX.Y.Z` with
-   `HEAD`. A push that silently did not land (proxy, permissions, pre-receive hook)
-   fails the stage instead of being reported as a release.
-4. **No API client.** Publishing is `git commit`, `git tag`, `git push` and
-   `git ls-remote`. The release *is* the tag; the toolchain that produced the
-   artifacts is checkout-able from it. There is no dependency on a web UI, a
-   personal access token, or a host CLI, so the same command works offline, in a
-   mirror, or on a fork with a different remote.
+Publishing is entirely local: `git commit`, `git tag -a`, `git push`,
+`git ls-remote`, plus the release record described in §7. No host CLI, API client or
+CI runner is involved, and no Release object is created on any forge — the tag is the
+release.
 
-   Attaching the `dist/` assets to a release page is a **separate, optional**
-   convenience. If a maintainer or a fork wants that, they upload
-   `dist/vX.Y.Z/*` themselves; the pipeline neither needs nor performs it.
+1. **Dirty trees.** The publish stage owns exactly the files it writes: version
+   declarations, `bin/*.exe`, `release-notes/`, `releases/`, `dist/`. If only those
+   changed, it commits them as `chore(release): vX.Y.Z`. Any other uncommitted file
+   aborts the release unless `--force` is passed.
+2. **Tags.** The annotated tag `vX.Y.Z` is created at `HEAD`. Moving an existing tag
+   requires `--force`; a tag that is *behind* `HEAD` (but an ancestor) is a
+   republication and requires `--clobber`.
+3. **Verification, not trust.** After pushing, the pipeline runs
+   `git ls-remote --tags origin` and checks the tag object id and its peeled commit
+   against the local tag. A push that silently did not land fails the stage.
+4. **No API client.** There is no dependency on a web UI, a personal access token or a
+   forge CLI, so the same command works offline, against a mirror, or on a fork with a
+   different remote.
 5. **No host CLI on `main`.** `main` never invokes `gh`, `glab`, `hub` or any other
-   forge client — not for auth, not for release creation, not for uploads. This is
-   checked mechanically: the preflight stage scans `scripts/pipeline.py`,
-   `Makefile` and `.github/workflows/ci.yml` for host-CLI invocations and aborts the
-   release if one appears, naming the file and line. A fork is free to use whatever
-   client it likes; the main branch does not.
+   forge client -- not for auth, not for release creation, not for uploads. This is
+   checked mechanically: the preflight stage scans `scripts/pipeline.py`, `Makefile`
+   and `.github/workflows/ci.yml` for host-CLI invocations and aborts the release if
+   one appears, naming the file and line.
+
+## 3a. `--clobber`: republication as a first-class operation
+
+Publishing the same version twice is a normal need (a rebuilt artifact, a corrected
+notice, a lost `dist/`). It is supported, but never silently:
+
+| Situation | Behaviour |
+|---|---|
+| `dist/vX.Y.Z/` already holds `PUBLISH.txt` | package refuses to overwrite it; `--clobber` rebuilds |
+| rebuilt artifact differs from the recorded publication | verify fails, naming the asset; `--clobber` accepts and records the new bytes |
+| the version is already recorded in `releases/` | publish refuses; `--clobber` records another publication |
+| republication identical to the recorded one | nothing is written and no commit is created -- a clean no-op |
+| `--clobber` on a tag that is behind `HEAD` | allowed; the tag keeps identifying the release commit and the record lands on top |
+
+`--clobber` never moves a tag. Moving one is `--force`, deliberately a different flag.
 
 ---
 
@@ -92,9 +105,9 @@ missing. It never invents feature claims.
 dist/v2.4.1/
 ├── Morrow-v2.4.1-win64.zip    # bin, std, compiler, lib (incl. CRT), examples,
 │                              # tests (incl. tests/negative), benchmarks + c,
-│                              # docs, scripts, release-notes, licenses, .github,
-│                              # README, ROADMAP, RELEASE_PROCESS, LICENSE.md,
-│                              # THIRD-PARTY-NOTICES.md, Makefile
+│                              # docs, scripts, release-notes, releases, licenses,
+│                              # .github, README, ROADMAP, RELEASE_PROCESS,
+│                              # LICENSE.md, THIRD-PARTY-NOTICES.md, Makefile
 ├── forge.exe                  # standalone unified CLI
 ├── mwc.exe                    # standalone compiler driver
 ├── RELEASE_NOTES.md           # release body
@@ -119,7 +132,41 @@ must never rewrite it to a later release.
 
 ---
 
-## 6. Relationship to CI and host tooling
+## 7. The local release record
+
+Every publication writes `releases/vX.Y.Z.json`, committed with the release. It is
+the repository's own answer to "what did this version actually ship", with no host
+service in the loop:
+
+```json
+{
+  "tag": "v2.4.4",
+  "version": "2.4.4",
+  "remote": "https://github.com/LeTrollologist/Morrow.git",
+  "fixed_point": "…",
+  "tests": "test result: ok. 23 positive suites, 17 compile-fail suites passed.",
+  "examples": 22,
+  "notes": "release-notes/v2.4.4.md",
+  "assets": [{"name": "…", "bytes": 0, "sha256": "…"}],
+  "published_at": "…Z",
+  "republish_count": 0,
+  "previous_publication": null
+}
+```
+
+It deliberately records **no commit hash**: the record is committed alongside the
+release, so a stored hash would be invalidated by its own commit and every rerun
+would look like a change. `git` already answers "which commit is this tag"; the
+record answers "which bytes were published, and did they verify".
+
+The verify stage compares freshly built artifacts against this record on every
+`--clobber` run, which is what makes republication *provable*: either the rebuild is
+byte-identical (nothing is written), or the drift is named asset by asset and must be
+accepted with `--clobber`.
+
+---
+
+## 8. Relationship to CI and host tooling
 
 `.github/workflows/ci.yml` is an optional safety net for forked copies, not the
 release mechanism. It re-runs `forge test`, the example builds, `forge bench`, the
