@@ -406,6 +406,18 @@ class ReleasePipeline:
 
     PRUNE_DIRS = {"target", "dist", "__pycache__", ".git", "node_modules", ".vs", "obj"}
     PRUNE_SUFFIXES = (".ll", ".obj", ".o", ".pdb", ".pyc", ".rlib", ".rmeta", ".lib", ".exp")
+    # Fixed archive-entry metadata: without this, zip members record the mtime of the
+    # working-tree files, so two packagings of identical content produce different
+    # bytes and a released archive can never be reproduced or compared.
+    ZIP_DATE = (1980, 1, 1, 0, 0, 0)
+
+    @classmethod
+    def _zip_add(cls, zf, path: Path, arcname: str):
+        info = zipfile.ZipInfo(arcname.replace("\\", "/"), date_time=cls.ZIP_DATE)
+        info.compress_type = zipfile.ZIP_DEFLATED
+        info.create_system = 0          # MS-DOS, host independent
+        info.external_attr = 0o644 << 16
+        zf.writestr(info, path.read_bytes())
 
     def _distribution_files(self, root_dir: Path):
         """Files worth shipping: no nested build trees, no intermediates."""
@@ -448,14 +460,14 @@ class ReleasePipeline:
             for fname in include_files:
                 fpath = ROOT / fname
                 if fpath.exists():
-                    zf.write(fpath, arcname=f"Morrow/{fname}")
+                    self._zip_add(zf, fpath, f"Morrow/{fname}")
             for dname in include_dirs:
                 dpath = ROOT / dname
                 if not dpath.exists():
                     continue
                 for full_path in self._distribution_files(dpath):
                     rel_path = full_path.relative_to(ROOT)
-                    zf.write(full_path, arcname=f"Morrow/{rel_path.as_posix()}")
+                    self._zip_add(zf, full_path, f"Morrow/{rel_path.as_posix()}")
 
         zip_size_mb = zip_path.stat().st_size / (1024 * 1024)
         log(f"Packaged {zip_name} ({zip_size_mb:.2f} MB)")
