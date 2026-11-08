@@ -7,6 +7,10 @@
 > not describe the shipping toolchain. For what the released compiler actually does
 > today, read [`docs/SYNTAX.md`](docs/SYNTAX.md); for what each release shipped, read
 > [`releases/`](releases/). Kept for provenance, not as current status.
+>
+> **Current status (2026-11-08):** superseded by the independent audit of v2.4.16 in
+> [`docs/AUDIT-2026-11-08.md`](docs/AUDIT-2026-11-08.md); the remediation plan is
+> [`ROADMAP.md` Phase 15](ROADMAP.md#phase-15-correctness--trust-remediation-v250--post-audit).
 
 > **Repository:** `LeTrollologist/Tungsten`  
 > **Language:** Morrow (formerly Tungsten), source extension `.mw`  

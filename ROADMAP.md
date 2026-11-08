@@ -10,7 +10,13 @@
 > `nursery` scopes, the in-memory JIT, CodeView/PDB debug info, LTO and
 > function-section GC, and `enum`/`match`. See
 > [`docs/SYNTAX.md` §14](docs/SYNTAX.md#14-not-implemented--known-limitations) for
-> the verified list of what v2.0.1 accepts, rejects, and only partially enforces.
+> the verified list of what v2.4.16 accepts, rejects, and only partially enforces.
+>
+> **Current priority (2026-11-08): [Phase 15 — Correctness & Trust Remediation](#phase-15-correctness--trust-remediation-v250--post-audit).**
+> An independent audit of v2.4.16 ([`docs/AUDIT-2026-11-08.md`](docs/AUDIT-2026-11-08.md))
+> found 3 Critical, 9 High, 9 Medium, and 2 Low findings. No Phase 14.x feature
+> work should land until Phase 15 P0 is complete. Several status entries below are
+> corrected inline with a **“2026-11-08 audit”** note.
 
 ---
 
@@ -19,36 +25,42 @@
 The milestones in this document are historical: **v0.1–v0.10 describe the archived
 Stage-0 Rust implementation** (`archive/stage0-rust/`, crates `tungsten-*`). The
 shipping compiler is `compiler/*.mw` and is Pure Morrow. They do **not** have the
-same feature set, and the table below is the authoritative comparison. Every
-"current" entry is backed by a test, a compile-fail case, or a documented gap in
-[`docs/SYNTAX.md` §14](docs/SYNTAX.md#14-not-implemented--known-limitations).
+same feature set, and the table below is the authoritative comparison. “Current”
+entries are backed by a test, a compile-fail case, or a documented gap in
+[`docs/SYNTAX.md` §14](docs/SYNTAX.md#14-not-implemented--known-limitations); entries
+carrying a **2026-11-08 audit** note are known to be weaker than previously stated
+and are tracked in [Phase 15](#phase-15-correctness--trust-remediation-v250--post-audit).
 
 | Capability | Stage-0 Rust (archived) | Current Pure Morrow compiler |
 |---|---|---|
-| Compiler implementation | Rust crates (`tungsten-*`) | `compiler/*.mw`, 3-stage fixed point verified in CI |
+| Compiler implementation | Rust crates (`tungsten-*`) | `compiler/*.mw`, 3-stage fixed point verified by the local release pipeline (no CI) |
 | Regions (`region r { … }`) | Region inference in `tungsten-typeck` | Implemented, value-yielding; bulk teardown at scope exit |
 | Region escape analysis | Borrow checker in stage-0 | **Partial (v2.4.7)**: tagging from pointers/refs, region-allocator (`*_in`) results and region-expression values; rejects direct returns, outer-scope assignments, and struct-field or element stores into outer-scope values. Indirect flows through calls are **not** detected (§4 of SYNTAX) |
-| Refinement types | Linear + relational refinements, SMT intervals | **Partial**: literal bounds, divisor-span rejection, argument/return refinement checks; no path narrowing and no variable-range proofs |
+| Refinement types | Linear + relational refinements, SMT intervals | **Partial**: literal bounds, divisor-span rejection, argument/return refinement checks; branch-local path narrowing is implemented (`typeck.mw`), but there are no variable-range proofs and no interprocedural narrowing (**2026-11-08 audit:** the docs' “no narrowing” claim is stale; see audit H-08) |
 | Generics / monomorphization | Hindley-Milner-style unification | Implemented: explicit turbofish, call-site monomorphization (`tests/generics_test.mw`) |
 | Algebraic effects | Effect VM + delimited continuations | Implemented: `effect`, `yields`, `perform`, `handle … with`, `resume`; one arm form (`fn op(k, args)`), all ops required |
-| Linear / affine resources | Linear types in stage-0 typeck | Implemented: `linear struct` + `consume`, branch convergence; `affine struct` parsed but requires all-path consumption (no auto-drop) |
+| Linear / affine resources | Linear types in stage-0 typeck | Implemented: `linear struct` + `consume`, branch convergence; `affine struct` is accepted at return (typecheck-level auto-drop) but no destructor is emitted (**2026-11-08 audit:** README/SYNTAX's “no auto-drop” is stale; see audit H-08) |
 | M:N fibers, `nursery`, IOCP | **Yes** (`tungsten-fiber`, `c100k_tests`) | **Absent** — `nursery` is a parse error |
 | In-memory JIT | **Yes** (`JitEngine`) | **Absent** |
 | CodeView/PDB debug info, LTO, section GC | **Yes** (stage-0 codegen) | **Absent** — no debug metadata or LTO flags are emitted |
 | Package manager (`Forge.toml`, `Forge.lock`) | Rust `forge` crate | Implemented in Morrow: SemVer subset, deterministic lockfile, `forge add/resolve/lock` |
 | Language server | `tungsten-lsp` (stage-0) | Implemented: `morrow-lsp 0.3.0` over stdio JSON-RPC (`tests/lsp_test.mw`) |
-| Formatter | `forge fmt` (stage-0) | Implemented, idempotent (`tests/formatter_tests.mw`); repo sources are not yet canonical |
+| Formatter | `forge fmt` (stage-0) | ⚠️ **Not shippable as-is (2026-11-08 audit C-01):** idempotent, but drops imports/`effect`/`pub`/`yields`/comments and can write invalid or partial files. Blocked by Phase 15 P0-1; do not run it on a working tree until fixed. |
 | Cross-compilation | Windows + Linux | Implemented: `x86_64-pc-windows-gnu`, `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `wasm32-unknown-unknown` (artifact magic verified) |
 | `enum` / `match`, floats, closures, `if`-expressions | Absent | **Absent** |
-| Built-in effect handlers (`Process`/`FS`/`IO`) | Native in stage-0 runtime | **Implemented**: default handlers for `Process`, `FS`, and `IO.print` lower directly to runtime thunks when unhandled; user handlers take precedence when provided (v2.3.0) |
+| Built-in effect handlers (`Process`/`FS`/`IO`) | Native in stage-0 runtime | ⚠️ **Partially implemented, semantically wrong (2026-11-08 audit C-02):** default thunks fire when no handler is in the *same function*, but this is a lexical, signature-blind rewrite, so handlers around a callee are bypassed (`FS.read_file` reads the real file; `IO.print(i64)` becomes `puts((char*)i64)`). Phase 15 P0-2. |
 
 ### How "current" status is verified
 
 - 23 native suites (`forge test`), including region, refinement, generics, effects,
-  linear resources, LSP, HTTP, net and syntax-feature coverage.
+  linear resources, LSP, HTTP, net and syntax-feature coverage. **Caveat
+  (2026-11-08 audit H-06):** `tests/formal_verification_test.mw` uses a print-only
+  `assert_true`, so that suite cannot fail; it is repaired in Phase 15 P0-5.
 - 18 compile-fail suites (`tests/negative/`), which assert that documented
   limitations are still rejected with the documented diagnostic.
-- 22/22 examples built by CI; benchmarks run on every push.
+- 22/22 examples build in the local release pipeline — but they are **not
+  executed** by it (2026-11-08 audit H-05: 7 of 21 executed examples fail), and
+  there is no CI; benchmarks run locally on release, not every push.
 - 3-stage bootstrap fixed point (identical LLVM IR across rebuilds).
 
 ---
@@ -56,7 +68,8 @@ same feature set, and the table below is the authoritative comparison. Every
 ## Progress Overview
 
 The `Status` column below records how far the **archived Stage-0 Rust** implementation
-(`archive/stage0-rust/`) got. It is not a statement about the shipping Pure Morrow
+(`archive/stage0-rust/`) got, except for the **v2.5** row, which is the current
+shipping-compiler plan. It is not a statement about the shipping Pure Morrow
 compiler — for that, read the **Feature Status Matrix** above, which is the
 authoritative comparison.
 
@@ -82,6 +95,11 @@ authoritative comparison.
 | **v1.7** | **Formal Verification & SMT Bridge** | Z3 Solver Bridge for Non-Linear Arithmetic, Automated Induction Proofs, Affine Handle Invariants | **Completed** |
 | **v1.8** | **Multi-Target Codegen & Cross-Compilation** | Linux ELF Target (`x86_64-unknown-linux-gnu`), Linux AArch64 Target, WebAssembly Target (`wasm32-unknown-unknown`) | **Completed** |
 | **v2.0** | **Morrow Language Rebrand & Standalone Self-Hosting Ecosystem** | Morrow Rebrand (`.mw`, `mwc.exe`), Package Registry & Dependency Solver (`Forge.lock`), 3-Stage Fixed-Point Parity | **Completed** |
+| **v2.5** | **Correctness & Trust Remediation** | Post-audit P0/P1 gate: formatter, dynamic effect dispatch, pointer/cast semantics, type soundness, region cleanup, example execution, test integrity (see [Phase 15](#phase-15-correctness--trust-remediation-v250--post-audit)) | **Planned** |
+
+> The v2.5 row is the only planned row in this table; it gates any further
+> shipping-compiler feature work. Rows v0.x/v1.x above describe the archived
+> stage-0 implementation and are retained for history.
 
 ---
 
@@ -533,11 +551,21 @@ authoritative comparison.
 ### Parser: struct-field progress guarantee (v2.4.0)
 `parse_struct`'s field loop called `expect(ident)` → `expect(':')` → `parse_type` without guaranteeing that any of them consumed a token. A malformed field (`p: i64;`, i.e. `;` instead of `,`) therefore spun forever emitting an unbounded stream of identical diagnostics — it presented as a hang/OOM in `forge check`. The loop now records its start position, and if a full iteration makes no progress it reports a malformed-field diagnostic and consumes one token, so parsing always terminates.
 
-### Phase 14.4: Built-in Effect Handlers ✅ (v2.3.0)
+### Phase 14.4: Built-in Effect Handlers ⚠️ (v2.3.0, reopened by the 2026-11-08 audit)
 - **Built-in effect handlers** for `Process`, `FS`, and `IO`:
   - `compiler/typeck.mw`: `tc_is_effect_covered` treats built-in effect names (`Process`, `FS`, `IO`, `Time`) as permanently covered. `IO.read_line` requires an explicit yields contract or user handler.
   - `compiler/tir.mw`: `lower_ast_expr_to_tir` lowers `perform` on built-in effects directly to `tir_inst_call` on existing runtime thunks (`@morrow_process_exec`, `@morrow_fs_*`, `puts`) when no user handler encloses the `perform` lexically. When user handlers are present, delimited continuation unwinding is preserved and takes precedence.
   - Acceptance tests in `tests/default_effect_handler_test.mw` verify `command_status`, `fs_exists`, `fs_size`, `perform IO.print`, and user handler precedence. All 23 positive test suites and 18 compile-fail suites pass.
+  - **Correction (2026-11-08 audit C-02):** the precedence claim above is only true
+    when the `perform` is *lexically inside* the `handle` block in the same
+    function. `tir.mw` rewrites `IO.print`/`FS.*`/`Process.spawn` whenever
+    `tir_is_effect_lexically_handled` is false, so a handler around a helper
+    function is bypassed and the real thunk runs. The test passes only because its
+    `perform Process.spawn` is lexically inside the `handle`; `FS.read_file` in a
+    callee under a handler returns the real file result, and
+    `IO.print(i64)` becomes `puts((char*)i64)`. The existing “default handler”
+    design must be replaced by dynamic frames (or a signature-aware fallback), not
+    extended. Tracked as Phase 15 P0-2.
 - **Open items**:
   - **Indirect region escapes** (`take(&v)` where `take` stores or returns the value): needs interprocedural analysis; see Phase 14.3.
 
@@ -703,3 +731,134 @@ symbol and the monomorphizer's mangled symbol are deliberately different symbols
 concept; and `&mut Vec<T>` must keep producing `ty_ref`/`ty_ptr` exactly as today, because the
 region-escape rules depend on those kinds.
 
+---
+
+## Phase 15: Correctness & Trust Remediation (v2.5.0) — post-audit
+
+> **Opened 2026-11-08.** Source: [`docs/AUDIT-2026-11-08.md`](docs/AUDIT-2026-11-08.md).
+> The audit of v2.4.16 found **3 Critical, 9 High, 9 Medium, and 2 Low** issues. The
+> bootstrap and the 23 + 18 test suites are real; the problem is that several core
+> semantics do not match the documentation, the formatter destroys source, effect
+> handlers are bypassed for built-ins, and the release gate never executes an example.
+>
+> **This phase is a release blocker.** No Phase 14.x feature work (new syntax,
+> enums, floats, closures, fibers, optimization) lands until **P0** exits. Status:
+> **planned**; the binary in `bin/` remains v2.4.16 until the P0 gate is green.
+>
+> **Guiding rule:** no claim in `README.md`, `docs/`, or this roadmap without a test
+> that fails when the claim is broken. New tests must be shown to fail on v2.4.16
+> (negative control) before they are used to accept a fix.
+>
+> **Coverage:** every audit finding (C-01–C-03, H-01–H-09, M-01–M-09, L-01–L-02)
+> is tracked below; the `Audit ref` column is the cross-check (H-07 is split across
+> P0-3 and P1-5 because pointer casts and integer widths share a representation fix).
+
+### 15.1 Exit criteria for v2.5.0
+
+1. `forge fmt` either preserves source semantics and comments, or is disabled; it
+   must never write a file after a parse error.
+2. A handler around a function call intercepts `IO`, `FS`, and `Process` effects
+   performed inside that function; defaults only apply when no dynamic handler exists.
+3. `&lvalue` is a real address, `as` is a real conversion (or both are rejected with
+   a diagnostic), and `ffi_demo` runs without an access violation.
+4. Unknown type names, incompatible return kinds, incompatible argument kinds, and
+   missing returns are compile errors (with an explicit FFI escape hatch).
+5. All early exits from a `region` release the arena; a 10k-iteration early-return
+   loop stays within a bounded RSS.
+6. Unhandled effects and integer division by zero produce a readable diagnostic or
+   defined trap, never an access violation / `0xC0000094`.
+7. The release gate executes every runnable example; all of them exit 0 (network
+   examples against loopback). The package ships `sqlite3.dll` or links SQLite
+   statically.
+8. A deliberately failing test makes `forge test` fail; assertion failures are no
+   longer retried.
+9. `README.md`/`docs/SYNTAX.md` match observed behavior; the README showcase is a
+   compile test.
+10. A fresh re-audit (`docs/AUDIT-v2.5.0.md`) reproduces every P0/P1 acceptance check.
+
+### 15.2 P0 — release blockers (v2.5.0)
+
+| ID | Work item | Acceptance test | Audit ref |
+|---|---|---|---|
+| **P0-1** | Make the formatter lossless or remove it. Preserve imports, `effect`, `pub`, `yields`, comments, and pointer/ref syntax; refuse to write when `diag_has_errors()`; write via temp file + rename only after the output re-parses and re-typechecks. | `forge fmt` on every `examples/*.mw` and `compiler/*.mw` yields a file that re-parses, re-typechecks, and preserves comments/declarations; invalid input leaves the file untouched. | C-01 |
+| **P0-2** | Replace the lexical, signature-blind built-in rewrite in `tir.mw` with real dynamic dispatch: install default handler frames in `main` (or fall back only when no frame exists, after checking the op signature). A handler around a callee must win. | Callee-under-handler tests for `IO.print`, `FS.read_file`, and `Process.spawn`; `FS.read_file` mock returns `MOCKED`; `IO.print(42)` invokes the handler; `generics_and_relational.mw` runs; defaults still work without a handler. | C-02 |
+| **P0-3** | Represent pointer/reference/cast semantics: `&lvalue` lowers to the alloca address; `as` performs real int/pointer conversions; or reject unsupported forms with a clear diagnostic. | `&mut counter` + `ptr[0] = 100` prints 100; `ffi_demo.exe` exits 0; a cast matrix for `i8/u8/i16/u16/i32/u32/i64/u64/ptr` matches the documented rules. | C-03, H-07 |
+| **P0-4** | Run examples in the release gate and fix the package's runtime dependencies: execute each runnable example with a timeout (loopback for `Net`), fail on abnormal exit, ship `sqlite3.dll` (or static-link SQLite), and check PE imports against the package. | Pipeline fails if any runnable example exits non-zero; all runnable examples exit 0 (`wasm_sample` behavior defined, `player` GUI skipped); `sqlite_benchmark`/`web_service` start; every non-system DLL import is present in `dist/`. | H-05 |
+| **P0-5** | Make the test harness honest: `assert_true` exits non-zero; remove the 10× retry of assertion failures; add negative-control tests (deliberately fail) for each suite family; add formatter golden tests and known-answer crypto vectors. | A deliberately failing suite fails `forge test` and the local gate; no assertion is retried; a broken invariant in the formal suite fails the gate. | H-06 |
+
+### 15.3 P1 — soundness and security (v2.5.0)
+
+| ID | Work item | Acceptance test | Audit ref |
+|---|---|---|---|
+| **P1-1** | Type-checker soundness: unknown type names are errors; compare kind/struct identity for `let`, assignment, arguments, and returns; diagnose missing return paths; keep an explicit `unsafe`/FFI escape hatch for opaque C types. | Negative tests: `let x: NoSuchType`, `fn f() -> String { 123 }`, `takes_string(42)`, missing return; all 23 suites still pass after migration. | H-01 |
+| **P1-2** | Region cleanup on all exits: a per-function cleanup path (or region stack) calls `morrow_region_exit` for `return`, `break`, and `continue`. | IR contains a reachable `region_exit` on every exit path; 10k early-return region loops stay under a documented RSS bound. | H-02 |
+| **P1-3** | Runtime traps: null-check the handler frame with an “unhandled effect `<name>`” message; emit a divisor check (or a defined trap with location); reject unhandled effects in `main` at compile time where a default is not intended. | Minimal unhandled-effect program exits with a readable message, not `0xC0000005`; `10 / z` with `z = 0` reports division by zero, not `0xC0000094`. | H-03 |
+| **P1-4** | Process spawning without a shell: `CreateProcessW`/`posix_spawn` with an argv array, real exit-status propagation, and quoting; fix `command_arg` to append. | `-o` paths containing spaces/`&` work literally and execute no injected command; child exit code is propagated; `command_arg` appends. | H-04 |
+| **P1-5** | Integer width semantics: implement truncation/sign extension/comparisons/casts for the declared widths, or remove the unsupported widths from the docs and reject their use; detect literal overflow. | `u8 250 + 10 == 4`, `300 as u8 == 44`, `-1 as u8 == 255`, `i8` load of -1 is -1; over-large literals are rejected. | H-07 |
+| **P1-6** | Documentation truth pass: update README/SYNTAX §14 for `let`, `\0`, narrowing, affine, effects, integer widths; remove “CSPRNG”/“injection-safe”/“standalone” until earned; add the README showcase to the test suite. | README/SYNTAX claims match tests; the README snippet compiles; a grep gate rejects banned security adjectives. | H-08 |
+| **P1-7** | Location-independent toolchain: resolve `lib/crt`/`std` relative to the executable (or embed them), validate `--target` against the supported set, make `forge new` buildable and non-destructive. | Build from a temp directory and a freshly scaffolded project succeeds; `--target bogus` is an error; `forge new` twice does not overwrite. | H-09 |
+
+### 15.4 P2 — robustness, API, and process (v2.5.1)
+
+| ID | Work item | Acceptance test | Audit ref |
+|---|---|---|---|
+| **P2-1** | Short-circuit logical AND/OR via control flow (`br`/`phi`). | `false && boom()` and the logical-OR counterpart do not evaluate `boom()`; guarded null access is safe. | M-01 |
+| **P2-2** | Parser robustness: nesting-depth limit with diagnostic, unterminated-comment diagnostic, explicit source length instead of `strlen`, fuzz corpus in CI/local gate. | 20k nesting reports “nesting too deep”, not `0xC00000FD`; `/*` without `*/` errors; embedded NUL does not silently truncate. | M-02 |
+| **P2-3** | LSP resource limits: per-request arena reset, cap `Content-Length` (e.g. 8 MB), reject overflow, JSON depth limit, end-to-end stdio test, POSIX path. | Long session memory is bounded; huge frame is rejected cleanly; stdio initialize/didOpen/shutdown/exit test passes. | M-03 |
+| **P2-4** | Pipeline correctness: `--skip publish` also skips `ship` (or explicit `--ship`), no unconditional tag force-push, verify `bin` is rebuilt from current sources, compile Morrow benchmarks with `-O2`, validate tag format. | `make build/test/bench` do not touch the network; a fresh clone cannot overwrite a remote tag without `--force`; package refuses stale `bin`; bench flags match. | M-04 |
+| **P2-5** | Standard-library API hardening: bounds-check `Vec` (or mark `unsafe`), explicit lookup result instead of `-1` sentinel, append args, remove dead `string_buffer_push_str` fallback, honor alignment. | Empty `vec_pop`/OOB `vec_get` is a defined error; map can store `-1`; alignment test for 16/32/64. | M-05 |
+| **P2-6** | Hash/RNG honesty: implement standard CRC-32/FNV-1a with known vectors and a real OS CSPRNG, or rename to `fast_hash`/`lcg` and remove security claims. Remove the “injection-safe” claim from the docs until `std/sql_builder` actually escapes or parameterizes. | Known-answer vectors pass; `CryptoRng` uses an OS entropy source or is renamed; docs match. | M-06 |
+| **P2-7** | Repair or delete `benchmarks/bench_runner.py`; add a `py_compile` + UTF-8 gate for all scripts. | `python -m py_compile` passes for every `.py` in the repo; the bench runner runs. | M-07 |
+| **P2-8** | ABI/runtime debt: model `i32`/pointer/struct in extern declarations, mark `setjmp` `returns_twice` or replace the mechanism, implement or reject effects on wasm, remove name-keyed field/stride fallbacks, reject `main` parameters. | A negative-`i32` extern test returns the right value; effects still pass at `-O1`; wasm handler test is implemented or explicitly compile-fails; field layout test uses arbitrary field names. | M-08 |
+| **P2-9** | `println` of dynamic strings: choose `%s` from the static `String` type (and `%lld` for integers). | `println(s)` and `println("{}", s)` print the string for variables/returns; integers still print numerically. | M-09 |
+| **P2-10** | CLI nits: bare `mwc` prints usage (or documents the default), `forge new` refuses existing files, `forge clean` reports failures, escape TOML in `forge add`, unique temp paths for `run`. | CLI tests for each behavior. | L-01 |
+| **P2-11** | Docs/process nits: refresh `docs/GENERIC-TYPES.md`, correct `AUDIT.md`'s F-07 status, add a CI/local-gate job, verify unlisted `dist/` files before upload. | Docs build/lint; stale claims gone; a local one-command gate runs tests + examples. | L-02 |
+
+### 15.5 Sequencing and dependencies
+
+1. **P0-5 first** (test harness) so every later fix is measured by tests that can
+   actually fail. It has no code dependency.
+2. **P0-1** (formatter) is isolated and can run in parallel; it is also the highest
+   data-loss risk, so it should land early.
+3. **P0-3** (pointers/casts) before **P1-5** (integer width) and **P1-1** (type
+   checker): all three share the representation of casts and pointer types.
+4. **P0-2** (effect dispatch) before **P0-4** (example execution): several examples
+   depend on correct `IO`/`FS`/`Net` behavior.
+5. **P1-2/P1-3/P1-4** are independent and can be parallelized; each needs a runtime
+   regression test.
+6. **P1-6/P1-7** after the code fixes, so the docs describe the fixed behavior.
+7. **P2** after the v2.5.0 gate is green; it can ship as v2.5.1 without blocking the
+   correctness release.
+
+### 15.6 Release gate for v2.5.0
+
+- `forge test` green (23 + 18), **with** the repaired formal suite and no retries.
+- Every runnable example green under the new example runner; network examples use
+  loopback; GUI examples explicitly skipped.
+- Bootstrap fixed point reproduced; `bin` hashes match the release ledger.
+- `docs/AUDIT-v2.5.0.md` re-checks each P0/P1 acceptance item and records the
+  before/after evidence.
+- No tag is cut from a dirty tree, no tag is force-pushed without `--force`, and
+  `make build/test/bench` do not perform network operations.
+
+### 15.7 Non-goals for v2.5
+
+- New syntax or features (`enum`/`match`, floats, closures, `if`-expressions,
+  `nursery`, fibers).
+- New optimization work or performance claims; benchmark fairness (P2-4) is in
+  scope, benchmark *results* are not.
+- wasm execution claims until effects are implemented or explicitly rejected there.
+- Security adjectives (“CSPRNG”, “injection-immune”, “standalone”) until the
+  corresponding tests exist.
+
+### 15.8 Status corrections applied by this phase
+
+| Earlier claim | Correction (2026-11-08 audit) |
+|---|---|
+| “3-stage fixed point verified in CI” (Feature Matrix) | Verified by the **local release pipeline**; there is no CI (`Phase 14.2`). |
+| Refinements: “no path narrowing” (Feature Matrix / SYNTAX §14) | Branch-local path narrowing **is implemented** (`typeck.mw`); docs were stale. Variable-range and interprocedural proofs remain absent. |
+| Affine: “no auto-drop” (Feature Matrix / SYNTAX §14) | `affine` is **accepted at return** (typecheck-level auto-drop), but no destructor is emitted. Docs were stale. |
+| Formatter: “Implemented, idempotent” (Feature Matrix) | Idempotent but **destructive/incomplete**; do not run until P0-1. |
+| Built-in effects: “user handlers take precedence” (Phase 14.4) | Only when `perform` is **lexically inside** the `handle`; callee performs are bypassed. Reopened as P0-2. |
+| “22/22 examples built by CI; benchmarks run on every push” (verification list) | 22/22 build in the **local** pipeline, but are not executed; benchmarks run locally on release; no CI. |
+| “Every current entry is backed by a test” (Feature Matrix intro) | Several entries were contradicted by the audit; v2.5 adds the missing tests before re-asserting them. |
