@@ -2009,13 +2009,226 @@ fn emit_tir_op(cg: &mut Codegen, op: *mut TirOperand) -> i64 {
     0
 }
 
+// Integer casts are real conversions: truncate to the declared width, then
+// sign/zero-extend back to the i64 value representation. Pointer/reference and
+// opaque/alias targets are pointer-width or unknown, so they are no-ops.
+fn emit_cast_value(cg: &mut Codegen, src_reg: i64, target: String, dest_reg: i64) {
+    let p = target as *const u8;
+    let c0 = unsafe { p[0] } as i64;
+    if c0 == 42 || c0 == 38 { // '*', '&'
+        emit_str(cg, "    %t");
+        emit_i64(cg, dest_reg);
+        emit_str(cg, " = add i64 0, %t");
+        emit_i64(cg, src_reg);
+        emit_str(cg, "\n");
+        return;
+    }
+    let is_u8 = unsafe { strcmp(p, "u8" as *const u8) } == 0;
+    let is_i8 = unsafe { strcmp(p, "i8" as *const u8) } == 0;
+    let is_u16 = unsafe { strcmp(p, "u16" as *const u8) } == 0;
+    let is_i16 = unsafe { strcmp(p, "i16" as *const u8) } == 0;
+    let is_u32 = unsafe { strcmp(p, "u32" as *const u8) } == 0;
+    let is_i32 = unsafe { strcmp(p, "i32" as *const u8) } == 0;
+    if is_u8 || is_i8 || is_u16 || is_i16 || is_u32 || is_i32 {
+        let bits = alloc_reg(cg);
+        emit_str(cg, "    %t");
+        emit_i64(cg, bits);
+        emit_str(cg, " = trunc i64 %t");
+        emit_i64(cg, src_reg);
+        if is_u8 || is_i8 {
+            emit_str(cg, " to i8\n");
+        } else if is_u16 || is_i16 {
+            emit_str(cg, " to i16\n");
+        } else {
+            emit_str(cg, " to i32\n");
+        }
+        let widen = alloc_reg(cg);
+        emit_str(cg, "    %t");
+        emit_i64(cg, widen);
+        if is_u8 || is_u16 || is_u32 {
+            emit_str(cg, " = zext ");
+        } else {
+            emit_str(cg, " = sext ");
+        }
+        if is_u8 || is_i8 {
+            emit_str(cg, "i8");
+        } else if is_u16 || is_i16 {
+            emit_str(cg, "i16");
+        } else {
+            emit_str(cg, "i32");
+        }
+        emit_str(cg, " %t");
+        emit_i64(cg, bits);
+        emit_str(cg, " to i64\n");
+        emit_str(cg, "    %t");
+        emit_i64(cg, dest_reg);
+        emit_str(cg, " = add i64 0, %t");
+        emit_i64(cg, widen);
+        emit_str(cg, "\n");
+        return;
+    }
+    emit_str(cg, "    %t");
+    emit_i64(cg, dest_reg);
+    emit_str(cg, " = add i64 0, %t");
+    emit_i64(cg, src_reg);
+    emit_str(cg, "\n");
+}
+
 fn emit_tir_inst(cg: &mut Codegen, inst: *mut TirInst) {
     if inst == (0 as *mut TirInst) {
         return;
     }
     let kind = inst.kind;
 
+    if kind == tir_inst_addr_var() {
+        emit_str(cg, "    %t");
+        emit_i64(cg, inst.sym);
+        emit_str(cg, " = ptrtoint ptr %v_");
+        emit_sym(cg, inst.int_val);
+        emit_str(cg, " to i64\n");
+        return;
+    }
+
+    if kind == tir_inst_addr_field() {
+        let base = emit_tir_op(cg, inst.left);
+        let base_ptr = alloc_reg(cg);
+        emit_str(cg, "    %t");
+        emit_i64(cg, base_ptr);
+        emit_str(cg, " = inttoptr i64 %t");
+        emit_i64(cg, base);
+        emit_str(cg, " to ptr\n");
+        let gep = alloc_reg(cg);
+        emit_str(cg, "    %t");
+        emit_i64(cg, gep);
+        emit_str(cg, " = getelementptr inbounds i64, ptr %t");
+        emit_i64(cg, base_ptr);
+        emit_str(cg, ", i64 ");
+        emit_i64(cg, inst.op);
+        emit_str(cg, "\n");
+        emit_str(cg, "    %t");
+        emit_i64(cg, inst.sym);
+        emit_str(cg, " = ptrtoint ptr %t");
+        emit_i64(cg, gep);
+        emit_str(cg, " to i64\n");
+        return;
+    }
+
+    if kind == tir_inst_addr_index() {
+        let base = emit_tir_op(cg, inst.left);
+        let idx = emit_tir_op(cg, inst.right);
+        let base_ptr = alloc_reg(cg);
+        emit_str(cg, "    %t");
+        emit_i64(cg, base_ptr);
+        emit_str(cg, " = inttoptr i64 %t");
+        emit_i64(cg, base);
+        emit_str(cg, " to ptr\n");
+        let gep = alloc_reg(cg);
+        if inst.op == 1 {
+            emit_str(cg, "    %t");
+            emit_i64(cg, gep);
+            emit_str(cg, " = getelementptr inbounds i8, ptr %t");
+            emit_i64(cg, base_ptr);
+            emit_str(cg, ", i64 %t");
+            emit_i64(cg, idx);
+            emit_str(cg, "\n");
+        } else {
+            emit_str(cg, "    %t");
+            emit_i64(cg, gep);
+            emit_str(cg, " = getelementptr inbounds i64, ptr %t");
+            emit_i64(cg, base_ptr);
+            emit_str(cg, ", i64 %t");
+            emit_i64(cg, idx);
+            emit_str(cg, "\n");
+        }
+        emit_str(cg, "    %t");
+        emit_i64(cg, inst.sym);
+        emit_str(cg, " = ptrtoint ptr %t");
+        emit_i64(cg, gep);
+        emit_str(cg, " to i64\n");
+        return;
+    }
+
+    if kind == tir_inst_cast() {
+        let src = emit_tir_op(cg, inst.left);
+        let interner_ref = cg.cg_interner as &Interner;
+        let target = interner_lookup(interner_ref, inst.int_val);
+        emit_cast_value(cg, src, target, inst.sym);
+        return;
+    }
+
     if kind == tir_inst_assign() {
+        if inst.op == 100 {
+            let src = emit_tir_op(cg, inst.left);
+            let interner_ref = cg.cg_interner as &Interner;
+            let target = interner_lookup(interner_ref, inst.int_val);
+            emit_cast_value(cg, src, target, inst.sym);
+            return;
+        }
+        if inst.op == 101 {
+            emit_str(cg, "    %t");
+            emit_i64(cg, inst.sym);
+            emit_str(cg, " = ptrtoint ptr %v_");
+            emit_sym(cg, inst.int_val);
+            emit_str(cg, " to i64\n");
+            return;
+        }
+        if inst.op == 102 {
+            let base = emit_tir_op(cg, inst.left);
+            let base_ptr = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, base_ptr);
+            emit_str(cg, " = inttoptr i64 %t");
+            emit_i64(cg, base);
+            emit_str(cg, " to ptr\n");
+            let gep = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, gep);
+            emit_str(cg, " = getelementptr inbounds i64, ptr %t");
+            emit_i64(cg, base_ptr);
+            emit_str(cg, ", i64 ");
+            emit_i64(cg, inst.int_val);
+            emit_str(cg, "\n");
+            emit_str(cg, "    %t");
+            emit_i64(cg, inst.sym);
+            emit_str(cg, " = ptrtoint ptr %t");
+            emit_i64(cg, gep);
+            emit_str(cg, " to i64\n");
+            return;
+        }
+        if inst.op == 103 {
+            let base = emit_tir_op(cg, inst.left);
+            let idx = emit_tir_op(cg, inst.right);
+            let base_ptr = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, base_ptr);
+            emit_str(cg, " = inttoptr i64 %t");
+            emit_i64(cg, base);
+            emit_str(cg, " to ptr\n");
+            let gep = alloc_reg(cg);
+            if inst.int_val == 1 {
+                emit_str(cg, "    %t");
+                emit_i64(cg, gep);
+                emit_str(cg, " = getelementptr inbounds i8, ptr %t");
+                emit_i64(cg, base_ptr);
+                emit_str(cg, ", i64 %t");
+                emit_i64(cg, idx);
+                emit_str(cg, "\n");
+            } else {
+                emit_str(cg, "    %t");
+                emit_i64(cg, gep);
+                emit_str(cg, " = getelementptr inbounds i64, ptr %t");
+                emit_i64(cg, base_ptr);
+                emit_str(cg, ", i64 %t");
+                emit_i64(cg, idx);
+                emit_str(cg, "\n");
+            }
+            emit_str(cg, "    %t");
+            emit_i64(cg, inst.sym);
+            emit_str(cg, " = ptrtoint ptr %t");
+            emit_i64(cg, gep);
+            emit_str(cg, " to i64\n");
+            return;
+        }
         if inst.op == 0 {
             if inst.left != (0 as *mut TirOperand) {
                 if inst.left.kind == tir_op_int() {

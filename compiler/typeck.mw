@@ -8,6 +8,7 @@ import compiler::ast;
 
 extern "C" {
     fn strcmp(s1: *const u8, s2: *const u8) -> i32;
+    fn strncmp(s1: *const u8, s2: *const u8, n: usize) -> i32;
     fn strlen(s: *const u8) -> usize;
     fn morrow_alloc(size: i64, align: i64) -> *mut u8;
     fn puts(s: *const u8) -> i32;
@@ -161,6 +162,16 @@ pub fn tc_is_refined(t: *mut TcType) -> bool {
         return false;
     }
     t.is_refined == 1
+}
+
+fn tc_is_lvalue_expr(e: *mut AstExpr) -> bool {
+    if e == (0 as *mut AstExpr) {
+        return false;
+    }
+    if e.kind == expr_var() || e.kind == expr_field() || e.kind == expr_index() {
+        return true;
+    }
+    return false;
 }
 
 pub fn tc_min2(a: i64, b: i64) -> i64 {
@@ -394,12 +405,57 @@ fn tc_bare_type_sym(tc: &mut TypeChecker, sym: i64) -> i64 {
     interner_intern(tc.interner as &mut Interner, bare)
 }
 
+// Pointer/reference prefixes are retained in the interned type symbol; the
+// typechecker strips them for the base lookup and wraps the result in ty_ptr or
+// ty_ref. Lengths include the trailing space where the parser emits one.
+fn tc_type_prefix_len(s: String) -> i64 {
+    let p = s as *const u8;
+    if unsafe { strncmp(p, "*mut " as *const u8, 5) } == 0 { return 5; }
+    if unsafe { strncmp(p, "*const " as *const u8, 7) } == 0 { return 7; }
+    if unsafe { strncmp(p, "* " as *const u8, 2) } == 0 { return 2; }
+    if unsafe { strncmp(p, "&mut " as *const u8, 5) } == 0 { return 5; }
+    if unsafe { p[0] } as i64 == 38 { return 1; } // '&'
+    return 0;
+}
+
+fn tc_type_prefix_kind(s: String) -> i64 {
+    if unsafe { (s as *const u8)[0] } as i64 == 42 { // '*'
+        return ty_ptr();
+    }
+    return ty_ref();
+}
+
+fn tc_intern_type_suffix(tc: &mut TypeChecker, s: String, start: i64) -> i64 {
+    let p = s as *const u8;
+    let n = unsafe { strlen(p) } as i64;
+    let len = n - start;
+    if len <= 0 {
+        return 0;
+    }
+    let buf = unsafe { morrow_alloc(len + 1, 1) };
+    let mut i: i64 = 0;
+    while i < len {
+        unsafe { buf[i] = p[start + i]; }
+        i = i + 1;
+    }
+    unsafe { buf[len] = 0 as u8; }
+    interner_intern(tc.interner as &mut Interner, buf as String)
+}
+
 pub fn tc_resolve_type(tc: &mut TypeChecker, types: &HashMap, struct_defs: &HashMap, sym: i64) -> *mut TcType {
     if sym == 0 {
         return alloc_tc_type(tc.arena, ty_unit(), 0);
     }
     let interner_ref = tc.interner as &Interner;
     let s = interner_lookup(interner_ref, sym);
+    let plen = tc_type_prefix_len(s);
+    if plen > 0 {
+        let base_sym = tc_intern_type_suffix(tc, s, plen);
+        let base_ty = tc_resolve_type(tc, types, struct_defs, base_sym);
+        let wrapped = alloc_tc_type(tc.arena, tc_type_prefix_kind(s), base_ty.sym);
+        wrapped.left = base_ty;
+        return wrapped;
+    }
     let val = hashmap_get(types, s);
     if val != 0 - 1 {
         return val as *mut TcType;
@@ -552,6 +608,23 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
             return inner_ty;
         }
         if op == tok_amp() {
+            if !tc_is_lvalue_expr(expr.left) {
+                report_err("Address-of requires a variable, field, or element lvalue", 1, 1);
+                tc.pos = tc.pos + 1;
+            }
+            // Struct/String values are already pointers, and pointer/reference
+            // bindings already hold the referent address used by this compiler's
+            // by-reference calling convention. Taking their address keeps the
+            // existing pointer value; scalar lvalues need the storage address,
+            // which codegen materializes.
+            if inner_ty != (0 as *mut TcType) {
+                if inner_ty.kind == ty_struct() || inner_ty.kind == ty_string() ||
+                   inner_ty.kind == ty_ptr() || inner_ty.kind == ty_ref() {
+                    expr.int_val = 1;
+                } else {
+                    expr.int_val = 0;
+                }
+            }
             return alloc_tc_ref(tc.arena, inner_ty);
         }
         return inner_ty;
@@ -871,6 +944,17 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
                                         }
                                     }
                                 }
+                            } else if probe != (0 as *mut AstExpr) && (probe.kind == expr_field() || probe.kind == expr_index()) {
+                                // `vec_get(&graph.args, i)`: the container is a field
+                                // or an element, so resolve its type recursively rather
+                                // than falling back to the generic parameter.
+                                let cty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, probe);
+                                if cty != (0 as *mut TcType) && cty.sym != 0 {
+                                    let elem = tc_type_arg_sym(tc, cty.sym);
+                                    if elem != 0 {
+                                        return tc_resolve_type(tc, types, struct_defs, elem);
+                                    }
+                                }
                             }
                         }
                     }
@@ -891,7 +975,12 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
     }
 
     if kind == expr_field() {
-        let base_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, expr.left);
+        let mut base_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, expr.left);
+        if base_ty != (0 as *mut TcType) {
+            if (base_ty.kind == ty_ptr() || base_ty.kind == ty_ref()) && base_ty.left != (0 as *mut TcType) {
+                base_ty = base_ty.left;
+            }
+        }
         let field_sym = expr.sym;
         if base_ty != (0 as *mut TcType) && base_ty.sym != 0 {
             // Instantiated names resolve by their bare name for field lookup.
@@ -918,12 +1007,18 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
     if kind == expr_index() {
         let base_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, expr.left);
         let idx_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, expr.right);
+        let mut elem_ty = base_ty;
         if base_ty != (0 as *mut TcType) {
-            if base_ty.kind == ty_byte() {
+            if (base_ty.kind == ty_ptr() || base_ty.kind == ty_ref()) && base_ty.left != (0 as *mut TcType) {
+                elem_ty = base_ty.left;
+            }
+        }
+        if elem_ty != (0 as *mut TcType) {
+            if elem_ty.kind == ty_byte() {
                 expr.op = 1;
                 return alloc_tc_type(tc.arena, ty_byte(), 0);
             }
-            if base_ty.kind == ty_int() || base_ty.kind == ty_struct() || base_ty.kind == ty_ptr() || base_ty.kind == ty_ref() {
+            if elem_ty.kind == ty_int() || elem_ty.kind == ty_struct() || elem_ty.kind == ty_ptr() || elem_ty.kind == ty_ref() {
                 expr.op = 8;
                 return alloc_tc_type(tc.arena, ty_int(), 0);
             }
@@ -1314,6 +1409,11 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
             if expr_ty.right != (0 as *mut TcType) {
                 var_ty.right = expr_ty.right;
             }
+            // Preserve the pointee/pointee-kind for pointer and reference types;
+            // indexing and field access need it to choose stride/layout.
+            if expr_ty.left != (0 as *mut TcType) {
+                var_ty.left = expr_ty.left;
+            }
             if tc_is_refined(expr_ty) {
                 var_ty.int_val = expr_ty.int_val;
                 var_ty.op = expr_ty.op;
@@ -1401,7 +1501,12 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
     }
 
     if kind == stmt_field_assign() {
-        let base_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, stmt.left);
+        let mut base_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, stmt.left);
+        if base_ty != (0 as *mut TcType) {
+            if (base_ty.kind == ty_ptr() || base_ty.kind == ty_ref()) && base_ty.left != (0 as *mut TcType) {
+                base_ty = base_ty.left;
+            }
+        }
         let rhs_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, stmt.expr);
 
         // Region escape check for stores: writing a region-scoped value into a field of
@@ -1465,7 +1570,12 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
     }
 
     if kind == stmt_index_assign() {
-        let base_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, stmt.left);
+        let mut base_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, stmt.left);
+        if base_ty != (0 as *mut TcType) {
+            if (base_ty.kind == ty_ptr() || base_ty.kind == ty_ref()) && base_ty.left != (0 as *mut TcType) {
+                base_ty = base_ty.left;
+            }
+        }
         tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, stmt.right);
         let rhs_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, stmt.expr);
 
@@ -2033,17 +2143,18 @@ pub fn typecheck_program(prog: *mut AstProgram, interner: *mut Interner, arena: 
         j = j + 1;
     }
 
-    // Register functions (skip generic templates — they are expanded by monomorphize_program)
+    // Register functions by source name. Generic templates are also registered:
+    // their bodies are still checked only through concrete clones, but keeping
+    // the template name resolvable preserves the shallow-generic calling model
+    // used by std/collections (`vec_get(&v, i)` without a turbofish).
     let fns_len = prog.functions.len;
     let mut k: i64 = 0;
     while k < fns_len {
         let f = vec_get(&prog.functions, k);
-        if f.type_param_sym == 0 {
-            let sym = f.name_sym;
-            let interner_ref = interner as &Interner;
-            let s = interner_lookup(interner_ref, sym);
-            hashmap_insert(&mut fn_defs, s, f as i64);
-        }
+        let sym = f.name_sym;
+        let interner_ref = interner as &Interner;
+        let s = interner_lookup(interner_ref, sym);
+        hashmap_insert(&mut fn_defs, s, f as i64);
         k = k + 1;
     }
 

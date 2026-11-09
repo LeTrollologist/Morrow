@@ -36,6 +36,7 @@ and are tracked in [Phase 15](#phase-15-correctness--trust-remediation-v250--pos
 | Compiler implementation | Rust crates (`tungsten-*`) | `compiler/*.mw`, 3-stage fixed point verified by the local release pipeline (no CI) |
 | Regions (`region r { … }`) | Region inference in `tungsten-typeck` | Implemented, value-yielding; bulk teardown at scope exit |
 | Region escape analysis | Borrow checker in stage-0 | **Partial (v2.4.7)**: tagging from pointers/refs, region-allocator (`*_in`) results and region-expression values; rejects direct returns, outer-scope assignments, and struct-field or element stores into outer-scope values. Indirect flows through calls are **not** detected (§4 of SYNTAX) |
+| Pointers / references / casts | Native pointer types + C ABI | ✅ **Fixed (2026-11-09 audit C-03):** pointer/ref spelling survives parsing, `&lvalue` for scalars lowers to storage, `*mut Struct` fields and `u8` pointee indexing use correct layout/stride, and narrow casts truncate/sign-extend. Generic argument identity still normalizes pointer spelling; `&` on an existing pointer binding keeps its value. `ffi_demo` exits 0. |
 | Refinement types | Linear + relational refinements, SMT intervals | **Partial**: literal bounds, divisor-span rejection, argument/return refinement checks; branch-local path narrowing is implemented (`typeck.mw`), but there are no variable-range proofs and no interprocedural narrowing (**2026-11-08 audit:** the docs' “no narrowing” claim is stale; see audit H-08) |
 | Generics / monomorphization | Hindley-Milner-style unification | Implemented: explicit turbofish, call-site monomorphization (`tests/generics_test.mw`) |
 | Algebraic effects | Effect VM + delimited continuations | Implemented: `effect`, `yields`, `perform`, `handle … with`, `resume`; one arm form (`fn op(k, args)`), all ops required |
@@ -762,8 +763,10 @@ region-escape rules depend on those kinds.
 > `compiler/fmt.mw` (comments/parse errors/token-stream changes are refused; `let`/
 > `var`/`->` preserved; temp+backup replace; regression tests). C-02 is closed by
 > dynamic effect dispatch in `compiler/codegen.mw` (the TIR lexical rewrite is gone;
-> user handlers win; IO defaults only for `String`; callee-handler tests added). Full
-> lossless printer coverage remains P0-1.
+> user handlers win; IO defaults only for `String`; callee-handler tests added). C-03
+> is closed by pointer/reference preservation, real scalar address-of, and typed
+> casts; `ffi_demo` runs and invalid `&rvalue` is diagnosed. Full lossless printer
+> coverage remains P0-1.
 
 ### 15.1 Exit criteria for v2.5.0
 
@@ -794,7 +797,7 @@ region-escape rules depend on those kinds.
 |---|---|---|---|
 | **P0-1** | **Data-loss guard landed 2026-11-08.** Remaining: make the printer lossless for imports, `effect`, `pub`, `yields`, comments, and pointer/ref syntax instead of refusing those files. Keep the parse-error and token-stream gates, and keep the temp+backup write. | `forge fmt` on every `examples/*.mw` and `compiler/*.mw` yields a file that re-parses, re-typechecks, and preserves comments/declarations; invalid input leaves the file untouched. | C-01 |
 | **P0-2** | **Done 2026-11-09.** Remove the lexical, signature-blind built-in rewrite in `tir.mw`; install static default frames consulted only after the dynamic handler stack, gated on the canonical effect signatures (FS six ops, Process `spawn`, IO `print(String)`). | Callee-under-handler tests for `IO.print`, `FS.read_file`, and `Process.spawn`; `FS.read_file` mock returns `MOCKED`; `IO.print(42)` invokes the handler; `generics_and_relational.mw` runs; defaults still work without a handler. | C-02 |
-| **P0-3** | Represent pointer/reference/cast semantics: `&lvalue` lowers to the alloca address; `as` performs real int/pointer conversions; or reject unsupported forms with a clear diagnostic. | `&mut counter` + `ptr[0] = 100` prints 100; `ffi_demo.exe` exits 0; a cast matrix for `i8/u8/i16/u16/i32/u32/i64/u64/ptr` matches the documented rules. | C-03, H-07 |
+| **P0-3** | **Done 2026-11-09.** Preserve pointer/reference types; lower scalar `&lvalue` to storage; type-directed integer casts; diagnose `&rvalue`. | `&mut counter` + `ptr[0] = 100` prints 100; `ffi_demo.exe` exits 0; cast matrix for `i8/u8/i16/u16/i32/u32` truncates/sign-extends; pointer fields and byte indexing work. | C-03, H-07 |
 | **P0-4** | Run examples in the release gate and fix the package's runtime dependencies: execute each runnable example with a timeout (loopback for `Net`), fail on abnormal exit, ship `sqlite3.dll` (or static-link SQLite), and check PE imports against the package. | Pipeline fails if any runnable example exits non-zero; all runnable examples exit 0 (`wasm_sample` behavior defined, `player` GUI skipped); `sqlite_benchmark`/`web_service` start; every non-system DLL import is present in `dist/`. | H-05 |
 | **P0-5** | Make the test harness honest: `assert_true` exits non-zero; remove the 10× retry of assertion failures; add negative-control tests (deliberately fail) for each suite family; add formatter golden tests and known-answer crypto vectors. | A deliberately failing suite fails `forge test` and the local gate; no assertion is retried; a broken invariant in the formal suite fails the gate. | H-06 |
 

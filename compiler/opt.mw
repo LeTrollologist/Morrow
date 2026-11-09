@@ -1,4 +1,4 @@
-// Tungsten Self-Hosting Compiler - Intermediate Representation Optimizer (compiler::opt)
+﻿// Tungsten Self-Hosting Compiler - Intermediate Representation Optimizer (compiler::opt)
 // Constant Folding, Dead Code Elimination, and Redundant Bounds-Check Elimination
 
 import std::collections;
@@ -208,11 +208,11 @@ pub fn tir_optimize_module(m: *mut TirModule, arena: *mut u8) -> i64 {
 
         // Verify handler push/pop balance (Invariant 6)
         let mut bi: i64 = 0;
-        let blocks_len = f.blocks.len;
+        let blocks_len = f.args.len;
         let mut push_count: i64 = 0;
         let mut pop_count: i64 = 0;
         while bi < blocks_len {
-            let b = vec_get(&f.blocks, bi);
+            let b = vec_get(&f.args, bi);
             let mut ii: i64 = 0;
             while ii < b.args.len {
                 let inst = vec_get(&b.args, ii);

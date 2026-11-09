@@ -2,6 +2,43 @@
 // and println with a single {} placeholder.
 import std::test;
 
+extern "C" {
+    fn morrow_alloc(size: usize, align: usize) -> *mut u8;
+    fn strlen(s: *const u8) -> usize;
+}
+
+struct Pair {
+    x: i64,
+    y: i64,
+}
+
+fn pointer_write_read() -> i64 {
+    let mut counter = 42;
+    let p: *mut i64 = &mut counter;
+    p[0] = 100;
+    counter
+}
+
+fn pointer_field_roundtrip() -> i64 {
+    let mut p = Pair { x: 1, y: 2 };
+    let q: *mut Pair = &mut p;
+    q.x = 10;
+    q.y = 20;
+    p.x * 100 + p.y
+}
+
+fn pointer_byte_roundtrip() -> i64 {
+    let buf = unsafe { morrow_alloc(4, 1) as *mut u8 };
+    buf[0] = 72; // 'H'
+    buf[1] = 105; // 'i'
+    buf[2] = 0;
+    if unsafe { strlen(buf as *const u8) } == 2 {
+        return 1;
+    }
+    0
+}
+
+
 fn count_with_continue() -> i64 {
     let mut i: i64 = 0;
     let mut sum: i64 = 0;
@@ -29,6 +66,15 @@ fn main() -> i64 {
 
     let p: *mut u8 = null;
     assert_eq(p as i64, 0, "null is the zero pointer constant");
+
+    assert_eq(pointer_write_read(), 100, "&mut scalar returns real storage");
+    assert_eq(pointer_field_roundtrip(), 1020, "pointer field stores use struct offsets");
+    assert_eq(pointer_byte_roundtrip(), 1, "u8 pointee indexing uses byte stride");
+
+    assert_eq((300 as u8) as i64, 44, "u8 cast truncates");
+    assert_eq(((0 - 1) as u8) as i64, 255, "u8 cast wraps negative values");
+    assert_eq((200 as i8) as i64, 0 - 56, "i8 cast sign-extends");
+    assert_eq((70000 as u16) as i64, 4464, "u16 cast truncates");
 
     assert_eq(count_with_continue(), 18, "continue skips the rest of an iteration");
 
