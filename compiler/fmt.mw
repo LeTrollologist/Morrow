@@ -14,6 +14,8 @@ extern "C" {
     fn strcmp(s1: *const u8, s2: *const u8) -> i32;
     fn puts(s: *const u8) -> i32;
     fn fflush(f: *const u8) -> i32;
+    fn rename(oldpath: *const u8, newpath: *const u8) -> i32;
+    fn remove(path: *const u8) -> i32;
 }
 
 pub fn fmt_append_str(buf: &mut StringBuffer, s: String) {
@@ -42,6 +44,37 @@ pub fn fmt_indent(buf: &mut StringBuffer, level: i64) {
     let mut i: i64 = 0;
     while i < level {
         fmt_append_str(buf, "    ");
+        i = i + 1;
+    }
+}
+
+// Re-escape a decoded string literal so the emitted source tokenizes back to the
+// same content. Only quote/backslash/newline/CR/tab need escapes; other bytes are
+// emitted literally (the lexer accepts them inside a string).
+fn fmt_escape_source_string(buf: &mut StringBuffer, s: String) {
+    let p = s as *const u8;
+    let len = unsafe { strlen(p) } as i64;
+    let mut i: i64 = 0;
+    while i < len {
+        let b = unsafe { p[i] } as i64;
+        if b == 34 { // '"'
+            string_buffer_push_byte(buf, 92 as u8);
+            string_buffer_push_byte(buf, 34 as u8);
+        } else if b == 92 { // '\\'
+            string_buffer_push_byte(buf, 92 as u8);
+            string_buffer_push_byte(buf, 92 as u8);
+        } else if b == 10 { // '\n'
+            string_buffer_push_byte(buf, 92 as u8);
+            string_buffer_push_byte(buf, 110 as u8);
+        } else if b == 13 { // '\r'
+            string_buffer_push_byte(buf, 92 as u8);
+            string_buffer_push_byte(buf, 114 as u8);
+        } else if b == 9 { // '\t'
+            string_buffer_push_byte(buf, 92 as u8);
+            string_buffer_push_byte(buf, 116 as u8);
+        } else {
+            string_buffer_push_byte(buf, b as u8);
+        }
         i = i + 1;
     }
 }
@@ -75,7 +108,7 @@ pub fn fmt_expr(buf: &mut StringBuffer, expr: *mut AstExpr, interner: &Interner,
 
     if expr.kind == expr_str() {
         string_buffer_push_byte(buf, 34 as u8); // '"'
-        fmt_append_str(buf, expr.str_val);
+        fmt_escape_source_string(buf, expr.str_val);
         string_buffer_push_byte(buf, 34 as u8); // '"'
         return;
     }
@@ -115,6 +148,8 @@ pub fn fmt_expr(buf: &mut StringBuffer, expr: *mut AstExpr, interner: &Interner,
     if expr.kind == expr_unary() {
         if expr.op == tok_bang() {
             fmt_append_str(buf, "!");
+        } else if expr.op == tok_amp() {
+            fmt_append_str(buf, "&");
         } else {
             fmt_append_str(buf, "-");
         }
@@ -161,7 +196,11 @@ pub fn fmt_stmt(buf: &mut StringBuffer, stmt: *mut AstStmt, interner: &Interner,
 
     if stmt.kind == stmt_let() {
         fmt_indent(buf, level);
-        fmt_append_str(buf, "var ");
+        if stmt.is_mut == 1 {
+            fmt_append_str(buf, "var ");
+        } else {
+            fmt_append_str(buf, "let ");
+        }
         let var_name = interner_lookup(interner, stmt.sym);
         fmt_append_str(buf, var_name);
         fmt_append_str(buf, " = ");
@@ -314,9 +353,23 @@ pub fn fmt_fn(buf: &mut StringBuffer, f: *mut AstFn, interner: &Interner, arena:
     }
     fmt_append_str(buf, ")");
     if f.ret_ty_sym != 0 {
-        fmt_append_str(buf, ": ");
+        fmt_append_str(buf, " -> ");
         let rty = interner_lookup(interner, f.ret_ty_sym);
         fmt_append_str(buf, rty);
+    }
+    if f.yields_effects.len > 0 {
+        fmt_append_str(buf, " yields [");
+        let mut yi: i64 = 0;
+        while yi < f.yields_effects.len {
+            if yi > 0 {
+                fmt_append_str(buf, ", ");
+            }
+            let eff = vec_get(&f.yields_effects, yi);
+            let eff_name = interner_lookup(interner, eff);
+            fmt_append_str(buf, eff_name);
+            yi = yi + 1;
+        }
+        fmt_append_str(buf, "]");
     }
     fmt_append_str(buf, " {\n");
 
@@ -375,7 +428,7 @@ pub fn fmt_extern_fn(buf: &mut StringBuffer, ef: *mut AstExternFn, interner: &In
     }
     fmt_append_str(buf, ")");
     if ef.ret_ty_sym != 0 {
-        fmt_append_str(buf, ": ");
+        fmt_append_str(buf, " -> ");
         let rty = interner_lookup(interner, ef.ret_ty_sym);
         fmt_append_str(buf, rty);
     }
@@ -405,7 +458,7 @@ pub fn fmt_program(prog: *mut AstProgram, interner: &Interner, arena: *mut u8) -
         fmt_append_str(&mut buf, " = ");
         let base_str = interner_lookup(interner, ta.ty_sym);
         fmt_append_str(&mut buf, base_str);
-        if ta.is_refined == 1 {
+        if ta.op >= 0 {
             fmt_append_str(&mut buf, "[");
             fmt_append_i64(&mut buf, ta.int_val);
             fmt_append_str(&mut buf, "..");
@@ -434,6 +487,158 @@ pub fn fmt_program(prog: *mut AstProgram, interner: &Interner, arena: *mut u8) -
     string_as_ptr(&buf) as String
 }
 
+// ---------------------------------------------------------------------------
+// Safety gates for the source-rewriting path.
+//
+// The AST does not retain comments, pointer/reference spelling, struct-literal
+// field names, `pub`, generic parameters, or effect declarations. Rather than
+// silently dropping them, `forge fmt` refuses to write a file unless the
+// formatted output has the same token stream as the input (ignoring only
+// semicolons and trailing commas) and the input contains no comments.
+// ---------------------------------------------------------------------------
+
+// Comments are not represented in the AST and would be lost by the printer.
+// Track string literals so `//` inside a string is not mistaken for a comment.
+fn fmt_source_has_comments(src: String) -> bool {
+    let p = src as *const u8;
+    let len = unsafe { strlen(p) } as i64;
+    let mut i: i64 = 0;
+    let mut in_string = false;
+    while i < len {
+        let c = unsafe { p[i] } as i64;
+        if in_string {
+            if c == 92 && i + 1 < len { // backslash escape
+                i = i + 2;
+            } else if c == 34 { // closing quote
+                in_string = false;
+                i = i + 1;
+            } else {
+                i = i + 1;
+            }
+        } else if c == 34 { // opening quote
+            in_string = true;
+            i = i + 1;
+        } else if c == 47 && i + 1 < len && unsafe { p[i + 1] } as i64 == 47 {
+            return true; // //
+        } else if c == 47 && i + 1 < len && unsafe { p[i + 1] } as i64 == 42 {
+            return true; // /*
+        } else {
+            i = i + 1;
+        }
+    }
+    false
+}
+
+fn fmt_token_is_trailing_comma(tokens: &Vec<*mut Token>, i: i64) -> bool {
+    let t = vec_get(tokens, i);
+    if t.kind != tok_comma() {
+        return false;
+    }
+    let n = i + 1;
+    if n >= tokens.len {
+        return false;
+    }
+    let nt = vec_get(tokens, n);
+    if nt.kind == tok_rbrace() || nt.kind == tok_rparen() || nt.kind == tok_rbracket() {
+        return true;
+    }
+    false
+}
+
+// Semicolons are separators, and a trailing comma before a closer is not
+// semantic. Everything else must match exactly: a dropped `import`, `effect`,
+// `pub`, struct-literal field, `perform`, or pointer token is a refusal.
+fn fmt_tokens_equivalent(a: &Vec<*mut Token>, b: &Vec<*mut Token>) -> bool {
+    let mut i: i64 = 0;
+    let mut j: i64 = 0;
+    loop {
+        while i < a.len {
+            let ta = vec_get(a, i);
+            if ta.kind == tok_semicolon() || fmt_token_is_trailing_comma(a, i) {
+                i = i + 1;
+            } else {
+                break;
+            }
+        }
+        while j < b.len {
+            let tb = vec_get(b, j);
+            if tb.kind == tok_semicolon() || fmt_token_is_trailing_comma(b, j) {
+                j = j + 1;
+            } else {
+                break;
+            }
+        }
+        if i >= a.len || j >= b.len {
+            return i >= a.len && j >= b.len;
+        }
+        let ta = vec_get(a, i);
+        let tb = vec_get(b, j);
+        if ta.kind != tb.kind {
+            return false;
+        }
+        if ta.kind == tok_int() {
+            if ta.int_val != tb.int_val {
+                return false;
+            }
+        } else {
+            if unsafe { strcmp(ta.str_val as *const u8, tb.str_val as *const u8) } != 0 {
+                return false;
+            }
+        }
+        i = i + 1;
+        j = j + 1;
+    }
+}
+
+fn fmt_suffix_path(path: String, suffix: String, arena: *mut u8) -> String {
+    let mut b = string_buffer_new_in(arena);
+    fmt_append_str(&mut b, path);
+    fmt_append_str(&mut b, suffix);
+    string_buffer_push_byte(&mut b, 0 as u8);
+    string_as_ptr(&b) as String
+}
+
+// Replace `src_path` with `content` without ever destroying the only copy:
+// write a temp file, move the original to a backup, install the temp, then
+// delete the backup. If the install fails, restore the backup.
+fn fmt_replace_file(src_path: String, content: String, arena: *mut u8) -> bool yields [FS] {
+    let tmp_path = fmt_suffix_path(src_path, ".fmt.tmp", arena);
+    let bak_path = fmt_suffix_path(src_path, ".fmt.bak", arena);
+
+    if !fs_write_string(tmp_path, content) {
+        return false;
+    }
+    // Never delete an existing backup: it may be the only copy left by an
+    // interrupted earlier run. Refuse and let the user inspect it.
+    if fs_exists(bak_path) {
+        unsafe { remove(tmp_path as *const u8); }
+        return false;
+    }
+
+    let had_src = fs_exists(src_path);
+    if had_src {
+        let moved = unsafe { rename(src_path as *const u8, bak_path as *const u8) };
+        if moved != 0 {
+            unsafe { remove(tmp_path as *const u8); }
+            return false;
+        }
+    }
+
+    let installed = unsafe { rename(tmp_path as *const u8, src_path as *const u8) };
+    if installed != 0 {
+        if had_src {
+            unsafe { rename(bak_path as *const u8, src_path as *const u8); }
+        }
+        unsafe { remove(tmp_path as *const u8); }
+        return false;
+    }
+
+    if had_src {
+        unsafe { remove(bak_path as *const u8); }
+    }
+    true
+}
+
 pub fn format_file_source(src_path: String, check_only: bool, arena: *mut u8) -> i64 yields [FS, Diagnostics, IO] {
     let src = fs_read_to_string_in(src_path, arena);
     let src_len = unsafe { strlen(src as *const u8) } as i64;
@@ -442,12 +647,21 @@ pub fn format_file_source(src_path: String, check_only: bool, arena: *mut u8) ->
         return 1;
     }
 
+    diag_reset();
     let mut interner = interner_new_in(arena);
     let tokens = tokenize(src, &mut interner, arena);
+    if diag_has_errors() {
+        report_err("Cannot format: lexical errors; no changes written", 1, 1);
+        return 1;
+    }
     let prog = parse_program(tokens, &mut interner, arena);
+    if diag_has_errors() {
+        report_err("Cannot format: parse errors; no changes written", 1, 1);
+        return 1;
+    }
     let formatted = fmt_program(prog, &interner, arena);
 
-    let is_same = unsafe { strcmp(src as *const u8, formatted as *const u8) == 0 };
+    let is_same = unsafe { strcmp(src as *const u8, formatted as *const u8) } == 0;
     if is_same {
         if !check_only {
             unsafe {
@@ -458,17 +672,53 @@ pub fn format_file_source(src_path: String, check_only: bool, arena: *mut u8) ->
         return 0;
     }
 
+    // Validate the candidate before touching the file: it must tokenize, and
+    // its token stream must match the original.
+    let has_comments = fmt_source_has_comments(src);
+    let mut finterner = interner_new_in(arena);
+    let ftokens = tokenize(formatted, &mut finterner, arena);
+    let formatter_output_broken = diag_has_errors();
+    let token_safe = !formatter_output_broken && fmt_tokens_equivalent(&tokens, &ftokens);
+    if formatter_output_broken {
+        diag_reset();
+    } else {
+        // The candidate must also parse: ignoring semicolons in the token
+        // comparison is only safe if the emitted statements are still valid.
+        let _fprog = parse_program(ftokens, &mut finterner, arena);
+    }
+    let formatter_parse_broken = diag_has_errors();
+    if formatter_parse_broken {
+        diag_reset();
+    }
+    let safe = !has_comments && token_safe && !formatter_parse_broken;
+
     if check_only {
         unsafe {
-            puts("File is unformatted" as *const u8);
+            if safe {
+                puts("File is unformatted" as *const u8);
+            } else {
+                puts("File is unformatted and cannot be formatted safely" as *const u8);
+            }
             fflush(0 as *const u8);
         }
         return 1;
     }
 
-    let ok_write = fs_write_string(src_path, formatted);
-    if !ok_write {
-        report_err("Failed to write formatted file", 1, 1);
+    if !safe {
+        if has_comments {
+            report_err("Cannot format safely: comments would be lost; no changes written", 1, 1);
+        } else if formatter_output_broken {
+            report_err("Cannot format safely: formatter produced invalid tokens; no changes written", 1, 1);
+        } else if formatter_parse_broken {
+            report_err("Cannot format safely: formatter produced unparsable output; no changes written", 1, 1);
+        } else {
+            report_err("Cannot format safely: declarations or expressions would change; no changes written", 1, 1);
+        }
+        return 1;
+    }
+
+    if !fmt_replace_file(src_path, formatted, arena) {
+        report_err("Failed to replace formatted file; original preserved", 1, 1);
         return 1;
     }
 

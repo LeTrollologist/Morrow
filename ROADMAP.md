@@ -45,10 +45,10 @@ and are tracked in [Phase 15](#phase-15-correctness--trust-remediation-v250--pos
 | CodeView/PDB debug info, LTO, section GC | **Yes** (stage-0 codegen) | **Absent** — no debug metadata or LTO flags are emitted |
 | Package manager (`Forge.toml`, `Forge.lock`) | Rust `forge` crate | Implemented in Morrow: SemVer subset, deterministic lockfile, `forge add/resolve/lock` |
 | Language server | `tungsten-lsp` (stage-0) | Implemented: `morrow-lsp 0.3.0` over stdio JSON-RPC (`tests/lsp_test.mw`) |
-| Formatter | `forge fmt` (stage-0) | ⚠️ **Not shippable as-is (2026-11-08 audit C-01):** idempotent, but drops imports/`effect`/`pub`/`yields`/comments and can write invalid or partial files. Blocked by Phase 15 P0-1; do not run it on a working tree until fixed. |
+| Formatter | `forge fmt` (stage-0) | ⚠️ **Data-loss guard in place (2026-11-08 audit C-01):** refuses comments, parse errors, and any file whose token stream would change; preserves `let`/`var`/`->`; writes via temp+backup. Full lossless printing of imports/`effect`/`pub`/`yields`/pointers remains Phase 15 P0-1; such files are refused, not corrupted. |
 | Cross-compilation | Windows + Linux | Implemented: `x86_64-pc-windows-gnu`, `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `wasm32-unknown-unknown` (artifact magic verified) |
 | `enum` / `match`, floats, closures, `if`-expressions | Absent | **Absent** |
-| Built-in effect handlers (`Process`/`FS`/`IO`) | Native in stage-0 runtime | ⚠️ **Partially implemented, semantically wrong (2026-11-08 audit C-02):** default thunks fire when no handler is in the *same function*, but this is a lexical, signature-blind rewrite, so handlers around a callee are bypassed (`FS.read_file` reads the real file; `IO.print(i64)` becomes `puts((char*)i64)`). Phase 15 P0-2. |
+| Built-in effect handlers (`Process`/`FS`/`IO`) | Native in stage-0 runtime | ✅ **Fixed (2026-11-09 audit C-02):** every `perform` is dynamic; static default frames are consulted only after the user handler stack, so handlers around callees win. Defaults are gated on canonical signatures (FS's six ops, Process `spawn`, IO `print(String)`). Regression tests in `tests/effects_test.mw`. |
 
 ### How "current" status is verified
 
@@ -551,7 +551,7 @@ authoritative comparison.
 ### Parser: struct-field progress guarantee (v2.4.0)
 `parse_struct`'s field loop called `expect(ident)` → `expect(':')` → `parse_type` without guaranteeing that any of them consumed a token. A malformed field (`p: i64;`, i.e. `;` instead of `,`) therefore spun forever emitting an unbounded stream of identical diagnostics — it presented as a hang/OOM in `forge check`. The loop now records its start position, and if a full iteration makes no progress it reports a malformed-field diagnostic and consumes one token, so parsing always terminates.
 
-### Phase 14.4: Built-in Effect Handlers ⚠️ (v2.3.0, reopened by the 2026-11-08 audit)
+### Phase 14.4: Built-in Effect Handlers ✅ (v2.3.0; dynamic dispatch repaired 2026-11-09)
 - **Built-in effect handlers** for `Process`, `FS`, and `IO`:
   - `compiler/typeck.mw`: `tc_is_effect_covered` treats built-in effect names (`Process`, `FS`, `IO`, `Time`) as permanently covered. `IO.read_line` requires an explicit yields contract or user handler.
   - `compiler/tir.mw`: `lower_ast_expr_to_tir` lowers `perform` on built-in effects directly to `tir_inst_call` on existing runtime thunks (`@morrow_process_exec`, `@morrow_fs_*`, `puts`) when no user handler encloses the `perform` lexically. When user handlers are present, delimited continuation unwinding is preserved and takes precedence.
@@ -566,6 +566,11 @@ authoritative comparison.
     `IO.print(i64)` becomes `puts((char*)i64)`. The existing “default handler”
     design must be replaced by dynamic frames (or a signature-aware fallback), not
     extended. Tracked as Phase 15 P0-2.
+  - **Repair (2026-11-09):** the lexical rewrite was removed. `perform` always lowers
+    to `tir_inst_effect_perform`; `morrow_effect_find_handler` searches the user
+    handler stack first, then returns a static default frame for `FS`, `Process`, or
+    `IO` (the IO default is installed only for the standard `String` operation).
+    Callee-handler regression tests are in `tests/effects_test.mw`.
 - **Open items**:
   - **Indirect region escapes** (`take(&v)` where `take` stores or returns the value): needs interprocedural analysis; see Phase 14.3.
 
@@ -752,6 +757,13 @@ region-escape rules depend on those kinds.
 > **Coverage:** every audit finding (C-01–C-03, H-01–H-09, M-01–M-09, L-01–L-02)
 > is tracked below; the `Audit ref` column is the cross-check (H-07 is split across
 > P0-3 and P1-5 because pointer casts and integer widths share a representation fix).
+>
+> **Progress (2026-11-09):** C-01's data-loss path is closed by a safety gate in
+> `compiler/fmt.mw` (comments/parse errors/token-stream changes are refused; `let`/
+> `var`/`->` preserved; temp+backup replace; regression tests). C-02 is closed by
+> dynamic effect dispatch in `compiler/codegen.mw` (the TIR lexical rewrite is gone;
+> user handlers win; IO defaults only for `String`; callee-handler tests added). Full
+> lossless printer coverage remains P0-1.
 
 ### 15.1 Exit criteria for v2.5.0
 
@@ -780,8 +792,8 @@ region-escape rules depend on those kinds.
 
 | ID | Work item | Acceptance test | Audit ref |
 |---|---|---|---|
-| **P0-1** | Make the formatter lossless or remove it. Preserve imports, `effect`, `pub`, `yields`, comments, and pointer/ref syntax; refuse to write when `diag_has_errors()`; write via temp file + rename only after the output re-parses and re-typechecks. | `forge fmt` on every `examples/*.mw` and `compiler/*.mw` yields a file that re-parses, re-typechecks, and preserves comments/declarations; invalid input leaves the file untouched. | C-01 |
-| **P0-2** | Replace the lexical, signature-blind built-in rewrite in `tir.mw` with real dynamic dispatch: install default handler frames in `main` (or fall back only when no frame exists, after checking the op signature). A handler around a callee must win. | Callee-under-handler tests for `IO.print`, `FS.read_file`, and `Process.spawn`; `FS.read_file` mock returns `MOCKED`; `IO.print(42)` invokes the handler; `generics_and_relational.mw` runs; defaults still work without a handler. | C-02 |
+| **P0-1** | **Data-loss guard landed 2026-11-08.** Remaining: make the printer lossless for imports, `effect`, `pub`, `yields`, comments, and pointer/ref syntax instead of refusing those files. Keep the parse-error and token-stream gates, and keep the temp+backup write. | `forge fmt` on every `examples/*.mw` and `compiler/*.mw` yields a file that re-parses, re-typechecks, and preserves comments/declarations; invalid input leaves the file untouched. | C-01 |
+| **P0-2** | **Done 2026-11-09.** Remove the lexical, signature-blind built-in rewrite in `tir.mw`; install static default frames consulted only after the dynamic handler stack, gated on the canonical effect signatures (FS six ops, Process `spawn`, IO `print(String)`). | Callee-under-handler tests for `IO.print`, `FS.read_file`, and `Process.spawn`; `FS.read_file` mock returns `MOCKED`; `IO.print(42)` invokes the handler; `generics_and_relational.mw` runs; defaults still work without a handler. | C-02 |
 | **P0-3** | Represent pointer/reference/cast semantics: `&lvalue` lowers to the alloca address; `as` performs real int/pointer conversions; or reject unsupported forms with a clear diagnostic. | `&mut counter` + `ptr[0] = 100` prints 100; `ffi_demo.exe` exits 0; a cast matrix for `i8/u8/i16/u16/i32/u32/i64/u64/ptr` matches the documented rules. | C-03, H-07 |
 | **P0-4** | Run examples in the release gate and fix the package's runtime dependencies: execute each runnable example with a timeout (loopback for `Net`), fail on abnormal exit, ship `sqlite3.dll` (or static-link SQLite), and check PE imports against the package. | Pipeline fails if any runnable example exits non-zero; all runnable examples exit 0 (`wasm_sample` behavior defined, `player` GUI skipped); `sqlite_benchmark`/`web_service` start; every non-system DLL import is present in `dist/`. | H-05 |
 | **P0-5** | Make the test harness honest: `assert_true` exits non-zero; remove the 10× retry of assertion failures; add negative-control tests (deliberately fail) for each suite family; add formatter golden tests and known-answer crypto vectors. | A deliberately failing suite fails `forge test` and the local gate; no assertion is retried; a broken invariant in the formal suite fails the gate. | H-06 |

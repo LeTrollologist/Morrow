@@ -149,6 +149,9 @@ pub struct AstStmt {
     left: *mut AstExpr,
     right: *mut AstExpr,
     handler: *mut AstHandler,
+    // 1 for `var`, 0 for `let`. Kept on the statement so the formatter can
+    // round-trip the declaration keyword (both share stmt_let()).
+    is_mut: i64,
 }
 
 pub struct AstField {
@@ -534,6 +537,7 @@ pub fn alloc_stmt_let(arena: *mut u8, sym: i64, expr: *mut AstExpr) -> *mut AstS
         p.left = null_expr;
         p.right = null_expr;
         p.handler = 0 as *mut AstHandler;
+        p.is_mut = 0;
     }
     p
 }

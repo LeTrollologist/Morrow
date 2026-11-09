@@ -580,6 +580,10 @@ pub fn parse_stmt(p: &mut Parser) -> *mut AstStmt yields [Diagnostics] {
     }
 
     if kind == tok_kw_let() || kind == tok_kw_var() {
+        let mut is_mut: i64 = 0;
+        if kind == tok_kw_var() {
+            is_mut = 1;
+        }
         advance(p); // consume let or var
         if check(p, tok_kw_mut()) {
             advance(p); // consume mut
@@ -597,7 +601,9 @@ pub fn parse_stmt(p: &mut Parser) -> *mut AstStmt yields [Diagnostics] {
             init_expr = alloc_expr_cast(p.arena, init_expr, ty_sym);
         }
         expect(p, tok_semicolon(), "Expected ';' after variable declaration");
-        return alloc_stmt_let(p.arena, sym, init_expr);
+        let stmt = alloc_stmt_let(p.arena, sym, init_expr);
+        stmt.is_mut = is_mut;
+        return stmt;
     }
 
     if kind == tok_kw_return() {

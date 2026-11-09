@@ -186,7 +186,7 @@ Morrow/
 │   ├── opt.mw             # Constant folding, DCE, and bounds elimination passes
 │   ├── smt.mw             # SMT-LIB2 solver bridge (QF_NIA / QF_LIA query generator)
 │   ├── codegen.mw         # Multi-target LLVM IR emitter, runtime thunks, and ABI bridge
-│   ├── fmt.mw             # Canonical, idempotent pretty-printer
+│   ├── fmt.mw             # Safety-gated pretty-printer (refuses unsupported files)
 │   ├── package.mw         # Forge.toml manifest parser, SemVer, and Forge.lock solver
 │   ├── json.mw            # Pure Morrow JSON serializer and deserializer
 │   ├── lsp.mw             # Language Server Protocol stdio RPC engine
@@ -212,7 +212,7 @@ Morrow/
 ├── tests/                 # Pure Morrow Test Suites (21 Native Suites)
 │   ├── typeck_refinements.mw # Type checking and interval bounds verification
 │   ├── tir_optimizer.mw   # SSA constant folding and optimization passes
-│   ├── formatter_tests.mw # Pretty-printer output and idempotency check
+│   ├── formatter_tests.mw # Pretty-printer output, idempotency, and safety gates
 │   ├── package_tests.mw   # SemVer, caret constraints, and Forge.lock generation
 │   ├── package_negative_test.mw # Cycle detection, conflict rejection, and closure invariants
 │   ├── bootstrap_tests.mw # Recursion, arithmetic, and control flow sanity
@@ -334,18 +334,23 @@ Perform instantaneous lexical, syntactical, refinement interval, and region esca
 .\bin\forge.exe check examples\player.mw
 ```
 
-### 6. Canonical Code Formatting (`forge fmt`)
+### 6. Safety-Gated Code Formatting (`forge fmt`)
 ```powershell
-# Format code in place
-.\bin\forge.exe fmt examples\bootstrap_sample.mw
+# Format a comment-free file in the supported subset, in place
+.\bin\forge.exe fmt path\to\file.mw
 
-# Validate formatting in CI
-.\bin\forge.exe fmt --check examples\bootstrap_sample.mw
+# Check whether a file is already canonical (no write)
+.\bin\forge.exe fmt --check path\to\file.mw
 ```
 The formatter is idempotent (formatting twice is a no-op, and `--check` passes on
-its own output). Note that the repository's existing sources are not yet written in
-that canonical style, so running `--check` across the tree reports every file as
-unformatted — format files before enabling `--check` as a CI gate.
+its own output). It is safety-gated: because the AST does not retain comments,
+imports, `effect` declarations, `pub`, `yields`, pointer/reference spelling, or
+struct-literal field names, `forge fmt` refuses those files with a diagnostic and
+leaves them unchanged rather than dropping declarations. The repository's existing
+sources are not written in the current canonical style, so `--check` across the tree
+reports every file as unformatted — format only files in the supported subset before
+enabling `--check` as a CI gate. Full lossless formatting is tracked as Phase 15
+P0-1 in [`ROADMAP.md`](ROADMAP.md).
 
 ### 7. Self-Compiling the Compiler (Fixed-Point Bootstrap Loop)
 Recompile the entire Morrow compiler using its own binary:

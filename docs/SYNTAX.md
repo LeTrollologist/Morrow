@@ -782,9 +782,13 @@ Implemented but weaker than older drafts claimed:
   first.
 - **`forge check`**: runs the full typechecker (including callee existence/arity)
   but does not link, so a missing C symbol is only caught by `forge build`.
-- **`forge fmt --check`**: the formatter is idempotent, but the repository's own
-  sources are not formatted in its canonical style, so running `--check` over the
-  tree reports every file as unformatted. Format before enforcing it in CI.
+- **`forge fmt`**: safety-gated. The printer is idempotent for the subset it
+  supports, but it does not retain comments, imports, `effect` declarations, `pub`,
+  `yields`, pointer/reference spelling, or struct-literal field names. `forge fmt`
+  refuses those files with a diagnostic and leaves them byte-for-byte unchanged; it
+  never writes after a parse error. Full canonical formatting is tracked as Phase 15
+  P0-1 in [`ROADMAP.md`](../ROADMAP.md); the repository's own sources are not formatted
+  in the current canonical style, so `--check` reports them as unformatted.
 - **Debug information / LTO**: no CodeView/PDB emission, no LTO or
   function-section GC (older roadmap entries marked these done — they are not).
 - **`std::process`**: `process_exec` and `command_new` / `command_arg` /

@@ -12,6 +12,7 @@ import std::collections;
 
 extern "C" {
     fn puts(s: *const u8) -> i32;
+    fn strcmp(s1: *const u8, s2: *const u8) -> i32;
 }
 
 fn tprint(msg: String) {
@@ -47,6 +48,21 @@ effect ShadowEff {
 
 effect MathEff {
     fn add3(a: i64, b: i64, c: i64) -> i64;
+}
+
+// Built-in names are used intentionally: these tests pin dynamic dispatch over
+// the former TIR lexical rewrite (a handler around a callee must win even for
+// IO/FS/Process-shaped effects).
+effect IO {
+    fn print(msg: i64) -> i64;
+}
+
+effect FS {
+    fn read_file(path: String) -> String;
+}
+
+effect Process {
+    fn spawn(cmd: String, args: String) -> i64;
 }
 
 // ===========================================================================
@@ -293,6 +309,59 @@ fn test_deep_abort() -> i64 {
 }
 
 // ===========================================================================
+// Test 9: Built-in-name handlers must dispatch dynamically from a callee.
+// Regression for the former TIR lexical rewrite of IO/FS/Process.
+// ===========================================================================
+
+fn callee_io(x: i64) -> i64 yields [IO] {
+    perform IO.print(x);
+}
+
+fn callee_fs() -> String yields [FS] {
+    perform FS.read_file("definitely_missing_effect_test.txt");
+}
+
+fn callee_process() -> i64 yields [Process] {
+    perform Process.spawn("definitely_not_run", "arg");
+}
+
+fn test_builtin_name_handlers_from_callee() -> i64 {
+    let r_io = handle {
+        callee_io(42)
+    } with IO {
+        fn print(k, msg: i64) {
+            resume(k, 7);
+        }
+    };
+    if r_io != 7 {
+        return 1;
+    }
+
+    let s_fs = handle {
+        callee_fs()
+    } with FS {
+        fn read_file(k, path: String) {
+            resume(k, "MOCKED");
+        }
+    };
+    if unsafe { strcmp(s_fs as *const u8, "MOCKED" as *const u8) } != 0 {
+        return 2;
+    }
+
+    let r_proc = handle {
+        callee_process()
+    } with Process {
+        fn spawn(k, cmd: String, args: String) {
+            resume(k, 42);
+        }
+    };
+    if r_proc != 42 {
+        return 3;
+    }
+    return 0;
+}
+
+// ===========================================================================
 // Main Test Runner
 // ===========================================================================
 
@@ -352,6 +421,13 @@ fn main() -> i64 {
         return r8;
     }
     tprint("  test deep abort unwinding ... ok\0");
+
+    let r9 = test_builtin_name_handlers_from_callee();
+    if r9 != 0 {
+        tprint("FAILED: test_builtin_name_handlers_from_callee\0");
+        return r9;
+    }
+    tprint("  test built-in-name handlers from callee ... ok\0");
 
     tprint("All Algebraic Effects Tests Passed (100% OK)\0");
     return 0;

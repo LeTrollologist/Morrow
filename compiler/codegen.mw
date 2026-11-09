@@ -4335,6 +4335,94 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
     }
 
     // Algebraic Effect Runtime Helpers - Morrow Canonical
+    //
+    // Default handlers for the built-in effects are static frames installed in
+    // the lookup path (not lexically rewritten in TIR). A user handler always
+    // matches first; the default only answers when no dynamic handler exists.
+    let inr_mut = unsafe { (cg.cg_interner as *mut Interner) as &mut Interner };
+    let fs_eff_sym = interner_intern(inr_mut, "FS");
+    let process_eff_sym = interner_intern(inr_mut, "Process");
+    let io_eff_sym = interner_intern(inr_mut, "IO");
+    let fs_read_sym = interner_intern(inr_mut, "read_file");
+    let fs_read_in_sym = interner_intern(inr_mut, "read_file_in");
+    let fs_write_sym = interner_intern(inr_mut, "write_file");
+    let fs_exists_sym = interner_intern(inr_mut, "file_exists");
+    let fs_size_sym = interner_intern(inr_mut, "file_size");
+    let fs_delete_sym = interner_intern(inr_mut, "delete_file");
+    let process_spawn_sym = interner_intern(inr_mut, "spawn");
+    let io_print_sym = interner_intern(inr_mut, "print");
+
+    // Defaults are installed only for the standard effect signatures. A
+    // user-defined `IO.print(i64)` must go to a user handler (or be reported as
+    // unhandled), never to puts((char*)int); a custom `FS` without the six
+    // standard operations must not silently inherit filesystem defaults.
+    let mut has_fs_default = false;
+    let mut has_process_default = false;
+    let mut has_io_default = false;
+    let mut dei: i64 = 0;
+    while dei < prog_ptr.effects.len {
+        let deff = vec_get(&prog_ptr.effects, dei);
+        if deff.name_sym == fs_eff_sym {
+            let mut fs_mask: i64 = 0;
+            let mut doi: i64 = 0;
+            while doi < deff.ops.len {
+                let dop = vec_get(&deff.ops, doi);
+                if dop.name_sym == fs_read_sym { fs_mask = fs_mask + 1; }
+                if dop.name_sym == fs_read_in_sym { fs_mask = fs_mask + 2; }
+                if dop.name_sym == fs_write_sym { fs_mask = fs_mask + 4; }
+                if dop.name_sym == fs_exists_sym { fs_mask = fs_mask + 8; }
+                if dop.name_sym == fs_size_sym { fs_mask = fs_mask + 16; }
+                if dop.name_sym == fs_delete_sym { fs_mask = fs_mask + 32; }
+                doi = doi + 1;
+            }
+            if fs_mask == 63 {
+                has_fs_default = true;
+            }
+        }
+        if deff.name_sym == process_eff_sym {
+            let mut doi: i64 = 0;
+            while doi < deff.ops.len {
+                let dop = vec_get(&deff.ops, doi);
+                if dop.name_sym == process_spawn_sym && dop.params.len == 2 {
+                    let pp0 = vec_get(&dop.params, 0);
+                    let pp1 = vec_get(&dop.params, 1);
+                    let pt0 = interner_lookup(interner, pp0.ty_sym);
+                    let pt1 = interner_lookup(interner, pp1.ty_sym);
+                    if unsafe { strcmp(pt0 as *const u8, "String" as *const u8) } == 0 &&
+                       unsafe { strcmp(pt1 as *const u8, "String" as *const u8) } == 0 {
+                        has_process_default = true;
+                    }
+                }
+                doi = doi + 1;
+            }
+        }
+        if deff.name_sym == io_eff_sym {
+            let mut doi: i64 = 0;
+            while doi < deff.ops.len {
+                let dop = vec_get(&deff.ops, doi);
+                if dop.name_sym == io_print_sym && dop.params.len == 1 {
+                    let dp = vec_get(&dop.params, 0);
+                    let dtn = interner_lookup(interner, dp.ty_sym);
+                    if unsafe { strcmp(dtn as *const u8, "String" as *const u8) } == 0 {
+                        has_io_default = true;
+                    }
+                }
+                doi = doi + 1;
+            }
+        }
+        dei = dei + 1;
+    }
+
+    emit_str(&mut cg, "@morrow_default_FS_frame = internal global %MorrowHandlerFrame { ptr null, i64 ");
+    emit_i64(&mut cg, fs_eff_sym);
+    emit_str(&mut cg, ", ptr @__default_dispatch_FS, [64 x i64] zeroinitializer, i64 0 }\n");
+    emit_str(&mut cg, "@morrow_default_Process_frame = internal global %MorrowHandlerFrame { ptr null, i64 ");
+    emit_i64(&mut cg, process_eff_sym);
+    emit_str(&mut cg, ", ptr @__default_dispatch_Process, [64 x i64] zeroinitializer, i64 0 }\n");
+    emit_str(&mut cg, "@morrow_default_IO_frame = internal global %MorrowHandlerFrame { ptr null, i64 ");
+    emit_i64(&mut cg, io_eff_sym);
+    emit_str(&mut cg, ", ptr @__default_dispatch_IO, [64 x i64] zeroinitializer, i64 0 }\n\n");
+
     emit_str(&mut cg, "define void @morrow_effect_push_frame(ptr %frame, i64 %effect_sym, ptr %dispatch_fn) {\nentry:\n");
     emit_str(&mut cg, "    %prev = load ptr, ptr @morrow_top_handler_frame\n");
     emit_str(&mut cg, "    store ptr %prev, ptr %frame\n");
@@ -4364,7 +4452,35 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
     emit_str(&mut cg, "    %match = icmp eq i64 %cur_eff, %effect_sym\n");
     emit_str(&mut cg, "    br i1 %match, label %found, label %check_next\ncheck_next:\n");
     emit_str(&mut cg, "    %next = load ptr, ptr %p\n");
-    emit_str(&mut cg, "    br label %loop\nfound:\n    ret ptr %p\nnot_found:\n    ret ptr null\n}\n\n");
+    emit_str(&mut cg, "    br label %loop\nfound:\n    ret ptr %p\n");
+    emit_str(&mut cg, "not_found:\n");
+    if has_fs_default {
+        emit_str(&mut cg, "    %is_fs = icmp eq i64 %effect_sym, ");
+        emit_i64(&mut cg, fs_eff_sym);
+        emit_str(&mut cg, "\n    br i1 %is_fs, label %ret_fs, label %check_process\n");
+        emit_str(&mut cg, "ret_fs:\n    ret ptr @morrow_default_FS_frame\n");
+    } else {
+        emit_str(&mut cg, "    br label %check_process\n");
+    }
+    emit_str(&mut cg, "check_process:\n");
+    if has_process_default {
+        emit_str(&mut cg, "    %is_process = icmp eq i64 %effect_sym, ");
+        emit_i64(&mut cg, process_eff_sym);
+        emit_str(&mut cg, "\n    br i1 %is_process, label %ret_process, label %check_io\n");
+        emit_str(&mut cg, "ret_process:\n    ret ptr @morrow_default_Process_frame\n");
+    } else {
+        emit_str(&mut cg, "    br label %check_io\n");
+    }
+    emit_str(&mut cg, "check_io:\n");
+    if has_io_default {
+        emit_str(&mut cg, "    %is_io = icmp eq i64 %effect_sym, ");
+        emit_i64(&mut cg, io_eff_sym);
+        emit_str(&mut cg, "\n    br i1 %is_io, label %ret_io, label %not_default\n");
+        emit_str(&mut cg, "ret_io:\n    ret ptr @morrow_default_IO_frame\n");
+    } else {
+        emit_str(&mut cg, "    br label %not_default\n");
+    }
+    emit_str(&mut cg, "not_default:\n    ret ptr null\n}\n\n");
 
     emit_str(&mut cg, "define i64 @morrow_continuation_resume(ptr %cont, i64 %val) {\nentry:\n");
     emit_str(&mut cg, "    %gep_resumed = getelementptr inbounds i8, ptr %cont, i64 528\n");
@@ -4374,6 +4490,114 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
     emit_str(&mut cg, "    %gep_jbuf = getelementptr inbounds i8, ptr %cont, i64 8\n");
     emit_str(&mut cg, "    call void @morrow_longjmp(ptr %gep_jbuf, i32 1)\n");
     emit_str(&mut cg, "    ret i64 0\n}\n\n");
+
+    // Default dispatch functions. They are reached only when
+    // morrow_effect_find_handler finds no user frame. Each one performs the
+    // real runtime operation and resumes the continuation with its result.
+    emit_str(&mut cg, "define i64 @__default_dispatch_FS(i64 %op_sym, ptr %cont, ptr %args) {\nentry:\n");
+    emit_str(&mut cg, "    switch i64 %op_sym, label %not_found [\n");
+    emit_str(&mut cg, "      i64 ");
+    emit_i64(&mut cg, fs_read_sym);
+    emit_str(&mut cg, ", label %op_read\n      i64 ");
+    emit_i64(&mut cg, fs_read_in_sym);
+    emit_str(&mut cg, ", label %op_read_in\n      i64 ");
+    emit_i64(&mut cg, fs_write_sym);
+    emit_str(&mut cg, ", label %op_write\n      i64 ");
+    emit_i64(&mut cg, fs_exists_sym);
+    emit_str(&mut cg, ", label %op_exists\n      i64 ");
+    emit_i64(&mut cg, fs_size_sym);
+    emit_str(&mut cg, ", label %op_size\n      i64 ");
+    emit_i64(&mut cg, fs_delete_sym);
+    emit_str(&mut cg, ", label %op_delete\n    ]\n");
+
+    emit_str(&mut cg, "op_read:\n");
+    emit_str(&mut cg, "    %rp0p = getelementptr inbounds i64, ptr %args, i64 0\n");
+    emit_str(&mut cg, "    %rp0 = load i64, ptr %rp0p\n");
+    emit_str(&mut cg, "    %rpath = inttoptr i64 %rp0 to ptr\n");
+    emit_str(&mut cg, "    %rr = call ptr @morrow_fs_read_file_in(ptr %rpath, ptr null)\n");
+    emit_str(&mut cg, "    %rri = ptrtoint ptr %rr to i64\n");
+    emit_str(&mut cg, "    %rx = call i64 @morrow_continuation_resume(ptr %cont, i64 %rri)\n");
+    emit_str(&mut cg, "    ret i64 %rx\n");
+
+    emit_str(&mut cg, "op_read_in:\n");
+    emit_str(&mut cg, "    %ip0p = getelementptr inbounds i64, ptr %args, i64 0\n");
+    emit_str(&mut cg, "    %ip0 = load i64, ptr %ip0p\n");
+    emit_str(&mut cg, "    %ipath = inttoptr i64 %ip0 to ptr\n");
+    emit_str(&mut cg, "    %ip1p = getelementptr inbounds i64, ptr %args, i64 1\n");
+    emit_str(&mut cg, "    %ip1 = load i64, ptr %ip1p\n");
+    emit_str(&mut cg, "    %iarena = inttoptr i64 %ip1 to ptr\n");
+    emit_str(&mut cg, "    %ir = call ptr @morrow_fs_read_file_in(ptr %ipath, ptr %iarena)\n");
+    emit_str(&mut cg, "    %iri = ptrtoint ptr %ir to i64\n");
+    emit_str(&mut cg, "    %ix = call i64 @morrow_continuation_resume(ptr %cont, i64 %iri)\n");
+    emit_str(&mut cg, "    ret i64 %ix\n");
+
+    emit_str(&mut cg, "op_write:\n");
+    emit_str(&mut cg, "    %wp0p = getelementptr inbounds i64, ptr %args, i64 0\n");
+    emit_str(&mut cg, "    %wp0 = load i64, ptr %wp0p\n");
+    emit_str(&mut cg, "    %wpath = inttoptr i64 %wp0 to ptr\n");
+    emit_str(&mut cg, "    %wp1p = getelementptr inbounds i64, ptr %args, i64 1\n");
+    emit_str(&mut cg, "    %wp1 = load i64, ptr %wp1p\n");
+    emit_str(&mut cg, "    %wcontent = inttoptr i64 %wp1 to ptr\n");
+    emit_str(&mut cg, "    %wr = call i1 @morrow_fs_write_file(ptr %wpath, ptr %wcontent)\n");
+    emit_str(&mut cg, "    %wri = zext i1 %wr to i64\n");
+    emit_str(&mut cg, "    %wx = call i64 @morrow_continuation_resume(ptr %cont, i64 %wri)\n");
+    emit_str(&mut cg, "    ret i64 %wx\n");
+
+    emit_str(&mut cg, "op_exists:\n");
+    emit_str(&mut cg, "    %ep0p = getelementptr inbounds i64, ptr %args, i64 0\n");
+    emit_str(&mut cg, "    %ep0 = load i64, ptr %ep0p\n");
+    emit_str(&mut cg, "    %epath = inttoptr i64 %ep0 to ptr\n");
+    emit_str(&mut cg, "    %er = call i1 @morrow_fs_file_exists(ptr %epath)\n");
+    emit_str(&mut cg, "    %eri = zext i1 %er to i64\n");
+    emit_str(&mut cg, "    %ex = call i64 @morrow_continuation_resume(ptr %cont, i64 %eri)\n");
+    emit_str(&mut cg, "    ret i64 %ex\n");
+
+    emit_str(&mut cg, "op_size:\n");
+    emit_str(&mut cg, "    %zp0p = getelementptr inbounds i64, ptr %args, i64 0\n");
+    emit_str(&mut cg, "    %zp0 = load i64, ptr %zp0p\n");
+    emit_str(&mut cg, "    %zpath = inttoptr i64 %zp0 to ptr\n");
+    emit_str(&mut cg, "    %zr = call i64 @morrow_fs_file_size(ptr %zpath)\n");
+    emit_str(&mut cg, "    %zx = call i64 @morrow_continuation_resume(ptr %cont, i64 %zr)\n");
+    emit_str(&mut cg, "    ret i64 %zx\n");
+
+    emit_str(&mut cg, "op_delete:\n");
+    emit_str(&mut cg, "    %dp0p = getelementptr inbounds i64, ptr %args, i64 0\n");
+    emit_str(&mut cg, "    %dp0 = load i64, ptr %dp0p\n");
+    emit_str(&mut cg, "    %dpath = inttoptr i64 %dp0 to ptr\n");
+    emit_str(&mut cg, "    %dr = call i1 @morrow_fs_delete_file(ptr %dpath)\n");
+    emit_str(&mut cg, "    %dri = zext i1 %dr to i64\n");
+    emit_str(&mut cg, "    %dx = call i64 @morrow_continuation_resume(ptr %cont, i64 %dri)\n");
+    emit_str(&mut cg, "    ret i64 %dx\n");
+    emit_str(&mut cg, "not_found:\n    ret i64 0\n}\n\n");
+
+    emit_str(&mut cg, "define i64 @__default_dispatch_Process(i64 %op_sym, ptr %cont, ptr %args) {\nentry:\n");
+    emit_str(&mut cg, "    switch i64 %op_sym, label %not_found [ i64 ");
+    emit_i64(&mut cg, process_spawn_sym);
+    emit_str(&mut cg, ", label %op_spawn ]\n");
+    emit_str(&mut cg, "op_spawn:\n");
+    emit_str(&mut cg, "    %pp0p = getelementptr inbounds i64, ptr %args, i64 0\n");
+    emit_str(&mut cg, "    %pp0 = load i64, ptr %pp0p\n");
+    emit_str(&mut cg, "    %pcmd = inttoptr i64 %pp0 to ptr\n");
+    emit_str(&mut cg, "    %pp1p = getelementptr inbounds i64, ptr %args, i64 1\n");
+    emit_str(&mut cg, "    %pp1 = load i64, ptr %pp1p\n");
+    emit_str(&mut cg, "    %pargs = inttoptr i64 %pp1 to ptr\n");
+    emit_str(&mut cg, "    %pr = call i64 @morrow_process_exec(ptr %pcmd, ptr %pargs)\n");
+    emit_str(&mut cg, "    %px = call i64 @morrow_continuation_resume(ptr %cont, i64 %pr)\n");
+    emit_str(&mut cg, "    ret i64 %px\n");
+    emit_str(&mut cg, "not_found:\n    ret i64 0\n}\n\n");
+
+    emit_str(&mut cg, "define i64 @__default_dispatch_IO(i64 %op_sym, ptr %cont, ptr %args) {\nentry:\n");
+    emit_str(&mut cg, "    switch i64 %op_sym, label %not_found [ i64 ");
+    emit_i64(&mut cg, io_print_sym);
+    emit_str(&mut cg, ", label %op_print ]\n");
+    emit_str(&mut cg, "op_print:\n");
+    emit_str(&mut cg, "    %op0p = getelementptr inbounds i64, ptr %args, i64 0\n");
+    emit_str(&mut cg, "    %op0 = load i64, ptr %op0p\n");
+    emit_str(&mut cg, "    %omsg = inttoptr i64 %op0 to ptr\n");
+    emit_str(&mut cg, "    %oignored = call i32 @puts(ptr %omsg)\n");
+    emit_str(&mut cg, "    %ox = call i64 @morrow_continuation_resume(ptr %cont, i64 0)\n");
+    emit_str(&mut cg, "    ret i64 %ox\n");
+    emit_str(&mut cg, "not_found:\n    ret i64 0\n}\n\n");
 
     // Dual-Symbol Forwarding Aliases for Tungsten Compatibility Bridge
     emit_str(&mut cg, "define void @tungsten_println_i64(i64 %n) {\n");

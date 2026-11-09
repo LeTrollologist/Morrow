@@ -1,16 +1,110 @@
 // Pure Tungsten Test Suite: Formatter & Canonical Style
 import std.test;
+import std.fs;
+import std.effects;
 import compiler.fmt;
 import compiler.interner;
 import compiler.ast;
 import compiler.lexer;
 import compiler.parser;
 
-fn main() yields [Diagnostics] {
+extern "C" {
+    fn strlen(s: *const u8) -> usize;
+    fn strstr(haystack: *const u8, needle: *const u8) -> *const u8;
+}
+
+fn contains(haystack: String, needle: String) -> bool {
+    let p = unsafe { strstr(haystack as *const u8, needle as *const u8) };
+    (p as usize) != 0
+}
+
+// A comment-free file in the supported subset must be formatted, and the
+// declaration keywords/return arrow must survive the round trip.
+fn test_safe_file(arena: *mut u8) -> i64 yields [FS, Diagnostics, IO] {
+    let path = "target/fmt_safe.mw";
+    let src = "fn add(a: i64, b: i64) -> i64 {\n    let x = a + b;\n    return x;\n}\n\nfn main() -> i64 {\n    var y = 1;\n    y = y + 1;\n    add(y, 2)\n}\n";
+
+    assert(fs_write_string(path, src), "write safe formatter case");
+    let rc = format_file_source(path, false, arena);
+    assert_eq(rc, 0, "safe file formats");
+
+    let out = fs_read_to_string_in(path, arena);
+    assert(contains(out, "let x"), "let keyword preserved");
+    assert(contains(out, "var y"), "var keyword preserved");
+    assert(contains(out, "-> i64"), "return arrow preserved");
+
+    assert_eq(format_file_source(path, true, arena), 0, "formatted file is canonical");
+    assert(!fs_exists("target/fmt_safe.mw.fmt.tmp"), "no temp file left behind");
+    assert(!fs_exists("target/fmt_safe.mw.fmt.bak"), "no backup file left behind");
+    fs_delete(path);
+    0
+}
+
+// Comments are not represented in the AST. The formatter must refuse instead
+// of silently dropping them.
+fn test_comments_refused(arena: *mut u8) -> i64 yields [FS, Diagnostics, IO] {
+    let path = "target/fmt_comments.mw";
+    let src = "// keep me\nfn main() -> i64 {\n    0\n}\n";
+
+    assert(fs_write_string(path, src), "write comment formatter case");
+    let rc = format_file_source(path, false, arena);
+    assert(rc != 0, "comment file refused");
+    let out = fs_read_to_string_in(path, arena);
+    assert_str_eq(out, src, "comment file unchanged");
+    fs_delete(path);
+    0
+}
+
+// A parse error must never produce a rewritten file.
+fn test_parse_error_refused(arena: *mut u8) -> i64 yields [FS, Diagnostics, IO] {
+    let path = "target/fmt_invalid.mw";
+    let src = "fn broken( {\n    0\n}\n";
+
+    assert(fs_write_string(path, src), "write invalid formatter case");
+    let rc = format_file_source(path, false, arena);
+    assert(rc != 0, "invalid file refused");
+    let out = fs_read_to_string_in(path, arena);
+    assert_str_eq(out, src, "invalid file unchanged");
+    fs_delete(path);
+    0
+}
+
+// The formatter has no effect-declaration printer; dropping the declaration
+// would change the token stream, so the safety gate must refuse.
+fn test_effect_refused(arena: *mut u8) -> i64 yields [FS, Diagnostics, IO] {
+    let path = "target/fmt_effect.mw";
+    let src = "effect E {\n    fn op(x: i64) -> i64;\n}\n\nfn main() -> i64 {\n    0\n}\n";
+
+    assert(fs_write_string(path, src), "write effect formatter case");
+    let rc = format_file_source(path, false, arena);
+    assert(rc != 0, "effect declaration refused");
+    let out = fs_read_to_string_in(path, arena);
+    assert_str_eq(out, src, "effect declaration unchanged");
+    fs_delete(path);
+    0
+}
+
+// Struct-literal field names are not stored in the AST; the printer emits
+// `Name { }`. The token-stream guard must catch the loss and refuse.
+fn test_struct_literal_refused(arena: *mut u8) -> i64 yields [FS, Diagnostics, IO] {
+    let path = "target/fmt_struct.mw";
+    let src = "struct P {\n    x: i64,\n}\n\nfn main() -> i64 {\n    let p = P { x: 1 };\n    p.x\n}\n";
+
+    assert(fs_write_string(path, src), "write struct formatter case");
+    let rc = format_file_source(path, false, arena);
+    assert(rc != 0, "struct literal refused");
+    let out = fs_read_to_string_in(path, arena);
+    assert_str_eq(out, src, "struct literal unchanged");
+    fs_delete(path);
+    0
+}
+
+fn main() yields [Diagnostics, FS, IO] {
     test_print("=== Running Formatter Test Suite ===");
 
     region test_reg {
-        var code = "fn add(a: i64, b: i64): i64 { return a + b; }\n";
+        // Original idempotency check.
+        var code = "fn add(a: i64, b: i64) -> i64 { return a + b; }\n";
         var interner = interner_new_in(test_reg);
         var tokens = tokenize(code, &mut interner, test_reg);
         var prog = parse_program(tokens, &mut interner, test_reg);
@@ -18,13 +112,18 @@ fn main() yields [Diagnostics] {
 
         assert(unsafe { strlen(formatted1 as *const u8) } > 0, "Formatter produced output");
 
-        // Format again to verify idempotency: fmt(fmt(x)) == fmt(x)
         var interner2 = interner_new_in(test_reg);
         var tokens2 = tokenize(formatted1, &mut interner2, test_reg);
         var prog2 = parse_program(tokens2, &mut interner2, test_reg);
         var formatted2 = fmt_program(prog2, &interner2, test_reg);
-
         assert_str_eq(formatted1, formatted2, "Formatter idempotency check (fmt(fmt(x)) == fmt(x))");
+
+        // Safety gates: never write a file the printer cannot represent.
+        let r1 = test_safe_file(test_reg);
+        let r2 = test_comments_refused(test_reg);
+        let r3 = test_parse_error_refused(test_reg);
+        let r4 = test_effect_refused(test_reg);
+        let r5 = test_struct_literal_refused(test_reg);
     }
 
     test_print("All formatter tests passed!");
