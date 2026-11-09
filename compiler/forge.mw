@@ -28,6 +28,8 @@ extern "C" {
     fn Sleep(dwMilliseconds: i32);
     fn remove(path: *const u8) -> i32;
     fn rename(oldpath: *const u8, newpath: *const u8) -> i32;
+    fn morrow_alloc(size: usize, align: usize) -> *mut u8;
+    fn GetModuleFileNameA(hModule: *mut u8, lpFilename: *mut u8, nSize: u32) -> u32;
 }
 
 fn forge_contains(haystack: String, needle: String) -> bool {
@@ -63,10 +65,138 @@ pub fn normalize_path(path: String, arena: *mut u8) -> String {
     string_as_ptr(&buf) as String
 }
 
+// Absolute directory containing the running compiler executable, with a
+// trailing slash. Used so std/ and lib/crt resolve independently of the caller's
+// working directory.
+fn morrow_exe_dir(arena: *mut u8) -> String {
+    let buf = unsafe { morrow_alloc(1024, 1) };
+    let n = unsafe { GetModuleFileNameA(0 as *mut u8, buf, 1024) } as i64;
+    if n <= 0 {
+        return "";
+    }
+    let p = buf as *const u8;
+    let mut end = n;
+    while end > 0 {
+        let c = unsafe { p[end - 1] } as i64;
+        if c == 92 || c == 47 { // '\\' or '/'
+            break;
+        }
+        end = end - 1;
+    }
+    if end == 0 {
+        return "";
+    }
+    let mut sbuf = string_buffer_new_in(arena);
+    string_buffer_push_str(&mut sbuf, p, end);
+    string_buffer_push_byte(&mut sbuf, 0 as u8);
+    string_as_ptr(&sbuf) as String
+}
+
+// Parent of the executable directory (the repository/distribution root), with a
+// trailing slash. `bin/forge.exe` -> `<root>/`; a root-level exe falls back to
+// the executable directory itself in the import search.
+fn morrow_home_dir(arena: *mut u8) -> String {
+    let dir = morrow_exe_dir(arena);
+    let p = dir as *const u8;
+    let n = unsafe { strlen(p) } as i64;
+    if n == 0 {
+        return "";
+    }
+    let mut end = n;
+    while end > 0 {
+        let c = unsafe { p[end - 1] } as i64;
+        if c == 92 || c == 47 {
+            end = end - 1;
+        } else {
+            break;
+        }
+    }
+    while end > 0 {
+        let c = unsafe { p[end - 1] } as i64;
+        if c == 92 || c == 47 {
+            break;
+        }
+        end = end - 1;
+    }
+    if end == 0 {
+        return "";
+    }
+    let mut sbuf = string_buffer_new_in(arena);
+    string_buffer_push_str(&mut sbuf, p, end);
+    string_buffer_push_byte(&mut sbuf, 0 as u8);
+    string_as_ptr(&sbuf) as String
+}
+
+fn path_join(arena: *mut u8, base: String, rel: String) -> String {
+    let mut sbuf = string_buffer_new_in(arena);
+    fmt_append_str(&mut sbuf, base);
+    if unsafe { strlen(base as *const u8) } > 0 {
+        let b = base as *const u8;
+        let bl = unsafe { strlen(b) } as i64;
+        let c = unsafe { b[bl - 1] } as i64;
+        if c != 92 && c != 47 {
+            string_buffer_push_byte(&mut sbuf, 47 as u8);
+        }
+    }
+    fmt_append_str(&mut sbuf, rel);
+    string_buffer_push_byte(&mut sbuf, 0 as u8);
+    string_as_ptr(&sbuf) as String
+}
+
+fn morrow_lib_link_suffix(arena: *mut u8) -> String {
+    let home = morrow_home_dir(arena);
+    let mut sbuf = string_buffer_new_in(arena);
+    if unsafe { strlen(home as *const u8) } > 0 {
+        let crt = path_join(arena, home, "lib/crt/crt2.o");
+        let libdir = path_join(arena, home, "lib/crt");
+        fmt_append_str(&mut sbuf, crt);
+        fmt_append_str(&mut sbuf, " -L");
+        fmt_append_str(&mut sbuf, libdir);
+    } else {
+        fmt_append_str(&mut sbuf, "lib/crt/crt2.o -Llib/crt");
+    }
+    string_buffer_push_byte(&mut sbuf, 0 as u8);
+    string_as_ptr(&sbuf) as String
+}
+
+fn forge_target_supported(t: String) -> bool {
+    unsafe {
+        if strcmp(t as *const u8, "x86_64-pc-windows-gnu" as *const u8) == 0 { return true; }
+        if strcmp(t as *const u8, "x86_64-unknown-linux-gnu" as *const u8) == 0 { return true; }
+        if strcmp(t as *const u8, "aarch64-unknown-linux-gnu" as *const u8) == 0 { return true; }
+        if strcmp(t as *const u8, "wasm32-unknown-unknown" as *const u8) == 0 { return true; }
+    }
+    false
+}
+
 pub fn resolve_import_path(imp: String, arena: *mut u8) -> String yields [FS] {
     let norm = normalize_path(imp, arena);
     if fs_exists(norm) {
         return norm;
+    }
+    // Resolve std/ and compiler/ modules from the toolchain installation, not
+    // the caller's working directory.
+    let home = morrow_home_dir(arena);
+    if unsafe { strlen(home as *const u8) } > 0 {
+        let cand = path_join(arena, home, norm);
+        if fs_exists(cand) {
+            return cand;
+        }
+        let cand_src = path_join(arena, path_join(arena, home, "src"), norm);
+        if fs_exists(cand_src) {
+            return cand_src;
+        }
+    }
+    let exed = morrow_exe_dir(arena);
+    if unsafe { strlen(exed as *const u8) } > 0 {
+        let cand = path_join(arena, exed, norm);
+        if fs_exists(cand) {
+            return cand;
+        }
+        let cand_src = path_join(arena, path_join(arena, exed, "src"), norm);
+        if fs_exists(cand_src) {
+            return cand_src;
+        }
     }
     // Check fallback extension (.mw <-> .tg)
     let p_norm = norm as *const u8;
@@ -857,6 +987,11 @@ pub fn compile_file(src_path: String, out_ll_path: String, out_exe_path: String)
 }
 
 pub fn compile_file_target(src_path: String, out_ll_path: String, out_exe_path: String, target_triple: String) -> i64 yields [FS, Process, Diagnostics, IO] {
+    if !forge_target_supported(target_triple) {
+        forge_print("Error: unsupported target: ");
+        forge_print(target_triple);
+        return 1;
+    }
     let mut exit_code: i64 = 0;
     unsafe {
         CreateDirectoryA("target" as *const u8, 0 as *const u8);
@@ -924,7 +1059,12 @@ pub fn compile_file_target(src_path: String, out_ll_path: String, out_exe_path: 
                         string_buffer_push_str(&mut cmd_args, opt_suffix as *const u8, unsafe { strlen(opt_suffix as *const u8) } as i64);
                     } else {
                         let opt_prefix = "--target=x86_64-pc-windows-gnu -nostartfiles -Wl,--no-insert-timestamp -o ";
-                        let opt_suffix = " lib/crt/crt2.o -Llib/crt -lsqlite3 -lbcrypt -lmingw32 -lmingwex -lmsvcrt -lkernel32 -luser32 -lgdi32 -lwinmm -lws2_32 -lgcc";
+                        let mut suffix_buf = string_buffer_new_in(comp_reg);
+                        fmt_append_str(&mut suffix_buf, " ");
+                        fmt_append_str(&mut suffix_buf, morrow_lib_link_suffix(comp_reg));
+                        fmt_append_str(&mut suffix_buf, " -lsqlite3 -lbcrypt -lmingw32 -lmingwex -lmsvcrt -lkernel32 -luser32 -lgdi32 -lwinmm -lws2_32 -lgcc");
+                        string_buffer_push_byte(&mut suffix_buf, 0 as u8);
+                        let opt_suffix = string_as_ptr(&suffix_buf) as String;
                         string_buffer_push_str(&mut cmd_args, opt_prefix as *const u8, unsafe { strlen(opt_prefix as *const u8) } as i64);
                         string_buffer_push_str(&mut cmd_args, out_exe_path as *const u8, unsafe { strlen(out_exe_path as *const u8) } as i64);
                         string_buffer_push_byte(&mut cmd_args, 32 as u8);
@@ -1365,7 +1505,9 @@ pub fn forge_run_bench(arena: *mut u8) -> i64 yields [FS, Process, Diagnostics, 
             fmt_append_str(&mut c_args_buf, c_exe);
             fmt_append_str(&mut c_args_buf, " ");
             fmt_append_str(&mut c_args_buf, c_src);
-            fmt_append_str(&mut c_args_buf, " lib/crt/crt2.o -Llib/crt -lmingw32 -lmingwex -lmsvcrt -lkernel32 -lgcc");
+            fmt_append_str(&mut c_args_buf, " ");
+            fmt_append_str(&mut c_args_buf, morrow_lib_link_suffix(arena));
+            fmt_append_str(&mut c_args_buf, " -lmingw32 -lmingwex -lmsvcrt -lkernel32 -lgcc");
             string_buffer_push_byte(&mut c_args_buf, 0 as u8);
             let c_args = string_as_ptr(&c_args_buf) as String;
 
@@ -1443,7 +1585,7 @@ pub fn forge_run_new(name: String, arena: *mut u8) -> i64 yields [FS, IO] {
     fs_write_string(toml_path, toml_str);
 
     let mut main_buf = string_buffer_new_in(arena);
-    fmt_append_str(&mut main_buf, "fn main() {\n    // Welcome to Morrow!\n}\n");
+    fmt_append_str(&mut main_buf, "fn main() -> i64 {\n    // Welcome to Morrow!\n    0\n}\n");
     string_buffer_push_byte(&mut main_buf, 0 as u8);
     let main_str = string_as_ptr(&main_buf) as String;
 

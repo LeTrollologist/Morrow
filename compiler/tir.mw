@@ -446,6 +446,7 @@ pub fn lower_ast_expr_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, expr
         let right_op = lower_ast_expr_to_tir(f, cur_block, expr.right, arena);
         let reg = tir_fn_alloc_reg(f);
         let inst = alloc_tir_inst_assign(arena, reg, expr.op, left_op, right_op);
+        unsafe { inst.int_val = expr.int_val; }
         tir_block_push_inst(cur_block, inst);
         return alloc_tir_op_reg(arena, reg);
     }
@@ -472,7 +473,7 @@ pub fn lower_ast_expr_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, expr
                 }
                 if lv.kind == expr_index() {
                     let mut stride = lv.op;
-                    if stride != 1 && stride != 8 {
+                    if stride != 1 && stride != 2 && stride != 4 && stride != 8 {
                         let interner_ref = f.interner as &Interner;
                         stride = determine_index_stride(lv.left, interner_ref);
                     }
@@ -487,6 +488,7 @@ pub fn lower_ast_expr_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, expr
         }
         let inner_op = lower_ast_expr_to_tir(f, cur_block, expr.left, arena);
         let inst = alloc_tir_inst_assign(arena, reg, expr.op, inner_op, 0 as *mut TirOperand);
+        unsafe { inst.int_val = expr.int_val; }
         tir_block_push_inst(cur_block, inst);
         return alloc_tir_op_reg(arena, reg);
     }
@@ -511,13 +513,16 @@ pub fn lower_ast_expr_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, expr
         let base_op = lower_ast_expr_to_tir(f, cur_block, expr.left, arena);
         let reg = tir_fn_alloc_reg(f);
         let inst = alloc_tir_inst_load_field(arena, reg, base_op, expr.op, expr.sym);
+        if expr.op > 0 {
+            unsafe { inst.int_val = expr.int_val; }
+        }
         tir_block_push_inst(cur_block, inst);
         return alloc_tir_op_reg(arena, reg);
     }
 
     if kind == expr_index() {
         let mut stride = expr.op;
-        if stride != 1 && stride != 8 {
+        if stride != 1 && stride != 2 && stride != 4 && stride != 8 {
             let interner_ref = f.interner as &Interner;
             stride = determine_index_stride(expr.left, interner_ref);
         }
@@ -525,6 +530,7 @@ pub fn lower_ast_expr_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, expr
         let idx_op = lower_ast_expr_to_tir(f, cur_block, expr.right, arena);
         let reg = tir_fn_alloc_reg(f);
         let inst = alloc_tir_inst_load_index(arena, reg, base_op, idx_op, stride);
+        unsafe { inst.int_val = expr.int_val; }
         tir_block_push_inst(cur_block, inst);
         return alloc_tir_op_reg(arena, reg);
     }
@@ -692,6 +698,7 @@ pub fn lower_ast_stmt_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, stmt
     if kind == stmt_assign() {
         let rhs = lower_ast_expr_to_tir(f, cur_block, stmt.expr, arena);
         let inst = alloc_tir_inst(arena, tir_inst_store(), stmt.sym, 0, rhs, 0 as *mut TirOperand);
+        unsafe { inst.int_val = stmt.int_val; }
         tir_block_push_inst(cur_block, inst);
         return cur_block;
     }
@@ -718,13 +725,16 @@ pub fn lower_ast_stmt_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, stmt
         let val_op = lower_ast_expr_to_tir(f, cur_block, stmt.expr, arena);
         let offset = stmt.right as i64;
         let inst = alloc_tir_inst_store_field(arena, base_op, offset, stmt.sym, val_op);
+        if offset > 0 {
+            unsafe { inst.int_val = stmt.int_val; }
+        }
         tir_block_push_inst(cur_block, inst);
         return cur_block;
     }
 
     if kind == stmt_index_assign() {
         let mut stride = stmt.sym;
-        if stride != 1 && stride != 8 {
+        if stride != 1 && stride != 2 && stride != 4 && stride != 8 {
             let interner_ref = f.interner as &Interner;
             stride = determine_index_stride(stmt.left, interner_ref);
         }
@@ -732,6 +742,7 @@ pub fn lower_ast_stmt_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, stmt
         let idx_op = lower_ast_expr_to_tir(f, cur_block, stmt.right, arena);
         let val_op = lower_ast_expr_to_tir(f, cur_block, stmt.expr, arena);
         let inst = alloc_tir_inst_store_index(arena, base_op, idx_op, val_op, stride);
+        unsafe { inst.int_val = stmt.int_val; }
         tir_block_push_inst(cur_block, inst);
         return cur_block;
     }

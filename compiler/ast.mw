@@ -152,6 +152,8 @@ pub struct AstStmt {
     // 1 for `var`, 0 for `let`. Kept on the statement so the formatter can
     // round-trip the declaration keyword (both share stmt_let()).
     is_mut: i64,
+    // Encoded integer width/sign for stores (low byte bits, bit 8 signed).
+    int_val: i64,
 }
 
 pub struct AstField {
@@ -538,6 +540,7 @@ pub fn alloc_stmt_let(arena: *mut u8, sym: i64, expr: *mut AstExpr) -> *mut AstS
         p.right = null_expr;
         p.handler = 0 as *mut AstHandler;
         p.is_mut = 0;
+        p.int_val = 0;
     }
     p
 }
@@ -558,6 +561,7 @@ pub fn alloc_stmt_assign(arena: *mut u8, sym: i64, expr: *mut AstExpr) -> *mut A
         p.left = null_expr;
         p.right = null_expr;
         p.handler = 0 as *mut AstHandler;
+        p.int_val = 0;
     }
     p
 }
@@ -578,6 +582,7 @@ pub fn alloc_stmt_field_assign(arena: *mut u8, left: *mut AstExpr, field_sym: i6
         p.left = left;
         p.right = null_expr;
         p.handler = 0 as *mut AstHandler;
+        p.int_val = 0;
     }
     p
 }
@@ -598,6 +603,7 @@ pub fn alloc_stmt_index_assign(arena: *mut u8, left: *mut AstExpr, idx: *mut Ast
         p.left = left;
         p.right = idx;
         p.handler = 0 as *mut AstHandler;
+        p.int_val = 0;
     }
     p
 }

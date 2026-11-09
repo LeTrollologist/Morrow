@@ -1,15 +1,23 @@
 // Syntax feature suite: block comments, hex/underscore literals, null, continue,
 // and println with a single {} placeholder.
 import std::test;
+import std::fs;
+import std::process;
 
 extern "C" {
     fn morrow_alloc(size: usize, align: usize) -> *mut u8;
     fn strlen(s: *const u8) -> usize;
+    fn CreateDirectoryA(path: *const u8, attrs: *const u8) -> i32;
 }
 
 struct Pair {
     x: i64,
     y: i64,
+}
+
+struct Tiny {
+    b: u8,
+    c: i8,
 }
 
 fn pointer_write_read() -> i64 {
@@ -36,6 +44,57 @@ fn pointer_byte_roundtrip() -> i64 {
         return 1;
     }
     0
+}
+
+// The compiler must resolve std/ and lib/crt from its own installation, and
+// `forge new` must produce a project that builds from the project directory.
+fn cwd_independence_checks() -> i64 {
+    unsafe { CreateDirectoryA("target/cwd_test" as *const u8, 0 as *const u8); }
+    let src = "import std::collections;\nfn main() -> i64 {\n    let mut v = vec_new::<i64>();\n    vec_push(&mut v, 7);\n    if vec_get(&v, 0) == 7 { 0 } else { 1 }\n}\n";
+    if !fs_write_string("target/cwd_test/main.mw", src) {
+        return 1;
+    }
+
+    let build_cmd = "/c \"cd /d target/cwd_test && ..\\..\\bin\\forge.exe build main.mw -o app.exe\"";
+    if process_exec("cmd", build_cmd) != 0 {
+        return 2;
+    }
+    if !fs_exists("target/cwd_test/app.exe") {
+        return 3;
+    }
+    if process_exec("target\\cwd_test\\app.exe", "") != 0 {
+        return 4;
+    }
+
+    let new_cmd = "/c \"cd /d target/cwd_test && ..\\..\\bin\\forge.exe new proj\"";
+    if process_exec("cmd", new_cmd) != 0 {
+        return 5;
+    }
+    let new_build = "/c \"cd /d target/cwd_test/proj && ..\\..\\..\\bin\\forge.exe build src/main.mw -o app.exe\"";
+    if process_exec("cmd", new_build) != 0 {
+        return 6;
+    }
+    if process_exec("target\\cwd_test\\proj\\app.exe", "") != 0 {
+        return 7;
+    }
+
+    let bad_target = "/c \"cd /d target/cwd_test && ..\\..\\bin\\forge.exe build main.mw --target bogus -o bad.exe\"";
+    if process_exec("cmd", bad_target) == 0 {
+        return 8;
+    }
+    if fs_exists("target/cwd_test/bad.exe") {
+        return 9;
+    }
+
+    let overflow_src = "fn main() -> i64 { 999999999999999999999999 }\n";
+    if !fs_write_string("target/cwd_test/overflow.mw", overflow_src) {
+        return 10;
+    }
+    let overflow_cmd = "/c \"cd /d target/cwd_test && ..\\..\\bin\\forge.exe check overflow.mw\"";
+    if process_exec("cmd", overflow_cmd) == 0 {
+        return 11;
+    }
+    return 0;
 }
 
 
@@ -75,6 +134,45 @@ fn main() -> i64 {
     assert_eq(((0 - 1) as u8) as i64, 255, "u8 cast wraps negative values");
     assert_eq((200 as i8) as i64, 0 - 56, "i8 cast sign-extends");
     assert_eq((70000 as u16) as i64, 4464, "u16 cast truncates");
+
+    let v8: u8 = 250 + 10;
+    assert_eq(v8 as i64, 4, "u8 storage wraps");
+    var w8: u8 = 250;
+    w8 = w8 + 10;
+    assert_eq(w8 as i64, 4, "u8 assignment wraps");
+    let ua: u8 = 200;
+    let ub: u8 = 100;
+    let uc: u8 = ua + ub;
+    assert_eq(uc as i64, 44, "u8 arithmetic wraps");
+    let si: i8 = 200;
+    assert_eq(si as i64, 0 - 56, "i8 storage sign-extends");
+    assert_eq((si + 10) as i64, 0 - 46, "i8 arithmetic stays signed");
+
+    let tiny = unsafe { morrow_alloc(16, 8) as *mut Tiny };
+    tiny.b = 300;
+    tiny.c = 200;
+    assert_eq(tiny.b as i64, 44, "u8 field storage wraps");
+    assert_eq(tiny.c as i64, 0 - 56, "i8 field storage sign-extends");
+
+    let p16 = unsafe { morrow_alloc(8, 2) as *mut u16 };
+    p16[0] = 65535;
+    p16[1] = 2;
+    assert_eq(p16[0] as i64, 65535, "u16 array element load");
+    assert_eq(p16[1] as i64, 2, "u16 array stride is two bytes");
+    var u16v: u16 = 65535;
+    u16v = u16v + 2;
+    assert_eq(u16v as i64, 1, "u16 assignment wraps");
+
+    let p8i = unsafe { morrow_alloc(2, 1) as *mut i8 };
+    p8i[0] = 0 - 1;
+    assert_eq(p8i[0] as i64, 0 - 1, "i8 array load sign-extends");
+
+    let u64a: u64 = 0 - 1;
+    let u64b: u64 = 1;
+    assert(u64a > u64b, "u64 comparison is unsigned");
+    assert((u64a / 2) > 1000000000 as u64, "u64 division is unsigned");
+
+    assert_eq(cwd_independence_checks(), 0, "compiler is CWD independent");
 
     assert_eq(count_with_continue(), 18, "continue skips the rest of an iteration");
 

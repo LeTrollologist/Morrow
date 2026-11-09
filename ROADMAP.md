@@ -765,8 +765,10 @@ region-escape rules depend on those kinds.
 > dynamic effect dispatch in `compiler/codegen.mw` (the TIR lexical rewrite is gone;
 > user handlers win; IO defaults only for `String`; callee-handler tests added). C-03
 > is closed by pointer/reference preservation, real scalar address-of, and typed
-> casts; `ffi_demo` runs and invalid `&rvalue` is diagnosed. Full lossless printer
-> coverage remains P0-1.
+> casts; `ffi_demo` runs and invalid `&rvalue` is diagnosed. Sized integers now
+> enforce width/sign for arithmetic, storage, loads and comparisons, and the
+> toolchain resolves `std`/`lib/crt` from its executable with validated targets.
+> Full lossless printer coverage remains P0-1.
 
 ### 15.1 Exit criteria for v2.5.0
 
@@ -809,9 +811,9 @@ region-escape rules depend on those kinds.
 | **P1-2** | Region cleanup on all exits: a per-function cleanup path (or region stack) calls `morrow_region_exit` for `return`, `break`, and `continue`. | IR contains a reachable `region_exit` on every exit path; 10k early-return region loops stay under a documented RSS bound. | H-02 |
 | **P1-3** | Runtime traps: null-check the handler frame with an “unhandled effect `<name>`” message; emit a divisor check (or a defined trap with location); reject unhandled effects in `main` at compile time where a default is not intended. | Minimal unhandled-effect program exits with a readable message, not `0xC0000005`; `10 / z` with `z = 0` reports division by zero, not `0xC0000094`. | H-03 |
 | **P1-4** | Process spawning without a shell: `CreateProcessW`/`posix_spawn` with an argv array, real exit-status propagation, and quoting; fix `command_arg` to append. | `-o` paths containing spaces/`&` work literally and execute no injected command; child exit code is propagated; `command_arg` appends. | H-04 |
-| **P1-5** | Integer width semantics: implement truncation/sign extension/comparisons/casts for the declared widths, or remove the unsupported widths from the docs and reject their use; detect literal overflow. | `u8 250 + 10 == 4`, `300 as u8 == 44`, `-1 as u8 == 255`, `i8` load of -1 is -1; over-large literals are rejected. | H-07 |
+| **P1-5** | **Done 2026-11-09.** Integer width semantics: truncate/sign-extend arithmetic, assignments, fields, and index loads/stores; signed/unsigned `div`/`rem` and comparisons; literal overflow diagnostics. | `u8 250 + 10 == 4`, `300 as u8 == 44`, `-1 as u8 == 255`, `i8` load of -1 is -1; over-large literals are rejected. | H-07 |
 | **P1-6** | Documentation truth pass: update README/SYNTAX §14 for `let`, `\0`, narrowing, affine, effects, integer widths; remove “CSPRNG”/“injection-safe”/“standalone” until earned; add the README showcase to the test suite. | README/SYNTAX claims match tests; the README snippet compiles; a grep gate rejects banned security adjectives. | H-08 |
-| **P1-7** | Location-independent toolchain: resolve `lib/crt`/`std` relative to the executable (or embed them), validate `--target` against the supported set, make `forge new` buildable and non-destructive. | Build from a temp directory and a freshly scaffolded project succeeds; `--target bogus` is an error; `forge new` twice does not overwrite. | H-09 |
+| **P1-7** | **Done 2026-11-09 for paths/targets/scaffolding.** Resolve `lib/crt`/`std` from the executable, validate `--target`, make `forge new` buildable. Non-destructive scaffold overwrite remains. | Build from a temp directory and a freshly scaffolded project succeeds; `--target bogus` is an error; `forge new` twice does not overwrite. | H-09 |
 
 ### 15.4 P2 — robustness, API, and process (v2.5.1)
 

@@ -104,6 +104,8 @@ pub fn tokenize(src: String, interner: &mut Interner, arena: *mut u8) -> Vec<*mu
             start_col = col;
             let mut val: i64 = 0;
             let mut is_hex = false;
+            let mut overflowed = false;
+            let max_i64: i64 = 9223372036854775807;
             if c == 48 && idx + 1 < len {
                 let nxt = unsafe { ptr[idx + 1] } as i64;
                 if nxt == 120 || nxt == 88 {
@@ -117,7 +119,13 @@ pub fn tokenize(src: String, interner: &mut Interner, arena: *mut u8) -> Vec<*mu
                 while idx < len && scanning {
                     let hc = unsafe { ptr[idx] } as i64;
                     if is_hex_digit(hc) {
-                        val = val * 16 + hex_value(hc);
+                        let hv = hex_value(hc);
+                        if val > (max_i64 - hv) / 16 {
+                            overflowed = true;
+                            val = 0;
+                        } else {
+                            val = val * 16 + hv;
+                        }
                         idx = idx + 1;
                         col = col + 1;
                     } else if hc == 95 {
@@ -132,7 +140,13 @@ pub fn tokenize(src: String, interner: &mut Interner, arena: *mut u8) -> Vec<*mu
                 while idx < len && scanning {
                     let dc = unsafe { ptr[idx] } as i64;
                     if is_digit(dc) {
-                        val = val * 10 + (dc - 48);
+                        let dv = dc - 48;
+                        if val > (max_i64 - dv) / 10 {
+                            overflowed = true;
+                            val = 0;
+                        } else {
+                            val = val * 10 + dv;
+                        }
                         idx = idx + 1;
                         col = col + 1;
                     } else if dc == 95 {
@@ -142,6 +156,9 @@ pub fn tokenize(src: String, interner: &mut Interner, arena: *mut u8) -> Vec<*mu
                         scanning = false;
                     }
                 }
+            }
+            if overflowed {
+                report_err("Integer literal out of range for i64", line, start_col);
             }
             let tok = alloc_token(arena, tok_int(), 0, val, "", line, start_col);
             vec_push(&mut tokens, tok);

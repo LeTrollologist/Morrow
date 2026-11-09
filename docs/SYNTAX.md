@@ -80,6 +80,14 @@ subset.
 
 Verified: `let a: i8 = 1; let b: u16 = 2; let c: u64 = 3;` compiles and adds.
 
+Sized integers wrap modulo `2^width` on arithmetic and storage. Casts truncate to
+the target width and then sign-extend (`i*`) or zero-extend (`u*`); signed and
+unsigned division/remainder and comparisons are distinguished. `i8`/`i16`/`i32`
+array loads sign-extend and their unsigned counterparts zero-extend. `u64` values
+are carried in the i64 register representation, and struct fields remain 8-byte
+slots whose values are width-normalized rather than packed. Integer literals that
+do not fit in `i64` are rejected.
+
 ### References and pointers
 ```morrow
 &T          // immutable borrow
