@@ -2,7 +2,7 @@
 
 > **Vision:** A systems-level programming language that provides the fearless concurrency and zero-cost abstractions of Rust, while eliminating explicit lifetime annotations through **Region-Based Memory Management**, eliminating the async/await function coloring divide through **Algebraic Effects**, and eliminating runtime bounds panics through **Refinement Types**.
 
-> **Status note (v2.4.17).** Milestones **v0.1–v0.10** describe the archived
+> **Status note (v2.4.18).** Milestones **v0.1–v0.10** describe the archived
 > **Stage-0 Rust** implementation under `archive/stage0-rust/` (crates
 > `tungsten-*`). The shipping **Pure Morrow** compiler (`compiler/*.mw`, binaries
 > in `bin/`) implements a subset of that surface. Features present in the
