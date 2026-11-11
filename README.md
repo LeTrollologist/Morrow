@@ -11,7 +11,7 @@
 <!-- Tier 1: Project Metadata & Quality Assurance Badges -->
 <p align="center">
   <a href="https://github.com/LeTrollologist/Morrow/releases">
-    <img src="https://img.shields.io/badge/Release-v2.4.18_Standalone-6366F1?style=for-the-badge&logo=github&logoColor=white&labelColor=0f172a" alt="Release" />
+    <img src="https://img.shields.io/badge/Release-v2.4.19_Standalone-6366F1?style=for-the-badge&logo=github&logoColor=white&labelColor=0f172a" alt="Release" />
   </a>
   <a href="compiler/">
     <img src="https://img.shields.io/badge/Compiler-Pure_Morrow-8B5CF6?style=for-the-badge&logo=llvm&logoColor=white&labelColor=0f172a" alt="Compiler" />
@@ -85,7 +85,7 @@
 
 ---
 
-## Verified Reality (v2.4.18)
+## Verified Reality (v2.4.19)
 
 This README describes what the released compiler **actually does**. The full,
 tested breakdown lives in [`docs/SYNTAX.md` §14](docs/SYNTAX.md#14-not-implemented--known-limitations); the short version:

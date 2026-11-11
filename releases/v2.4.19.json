@@ -1,0 +1,35 @@
+{
+  "tag": "v2.4.19",
+  "version": "2.4.19",
+  "remote": "https://github.com/LeTrollologist/Morrow.git",
+  "fixed_point": "F31984C0A35A1385E25AD45AB4E6BC394646B5233421C6593FC675626C56264F",
+  "tests": "test result: ok. 28 positive suites, 18 compile-fail suites passed.",
+  "examples": 22,
+  "notes": "release-notes/v2.4.19.md",
+  "assets": [
+    {
+      "name": "forge.exe",
+      "bytes": 602624,
+      "sha256": "BA7BB4BFA7DA1C253B15FAC0DAA6AB94234B7CF0597DD96AF57455A5EFD447C0"
+    },
+    {
+      "name": "Morrow-v2.4.19-win64.zip",
+      "bytes": 7507430,
+      "sha256": "FECA71D74FA034A98C982FA83D6936A70771F33DDB8844CA742959915C18596F"
+    },
+    {
+      "name": "mwc.exe",
+      "bytes": 602624,
+      "sha256": "BA7BB4BFA7DA1C253B15FAC0DAA6AB94234B7CF0597DD96AF57455A5EFD447C0"
+    },
+    {
+      "name": "RELEASE_NOTES.md",
+      "bytes": 2340,
+      "sha256": "3805F74CAF15B2A4D4D0E666D62077A05940395B30F7E94525978A5E9BCDDE05"
+    }
+  ],
+  "published_at": "2026-11-11T06:51:50Z",
+  "republish_count": 0,
+  "recorded_near_commit": "1725ee300a3806336e954923e4725ab9eae15674",
+  "previous_publication": null
+}
