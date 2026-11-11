@@ -1,0 +1,37 @@
+// Runtime diagnostics regression: unhandled effects and division by zero must
+// fail with readable diagnostics and a controlled exit status, not a native crash.
+import std::test;
+import std::fs;
+import std::process;
+
+extern "C" {
+    fn strstr(haystack: *const u8, needle: *const u8) -> *const u8;
+}
+
+fn contains(haystack: String, needle: String) -> bool {
+    let p = unsafe { strstr(haystack as *const u8, needle as *const u8) };
+    return p != (0 as *const u8);
+}
+
+fn main() -> i64 {
+    let dz_src = "fn main() -> i64 { let z: i64 = 0; 10 / z }\n";
+    if !fs_write_string("target/rt_divzero.mw", dz_src) { return 1; }
+    let build_dz = process_exec("cmd", "/c \"bin\\forge.exe build target\\rt_divzero.mw -o target\\rt_divzero.exe > nul 2>&1\"");
+    if build_dz != 0 { return 2; }
+    let run_dz = process_exec("cmd", "/c \"target\\rt_divzero.exe > target\\rt_divzero.out 2>&1\"");
+    if run_dz == 0 { return 3; }
+    let dz_out = fs_read_to_string("target/rt_divzero.out");
+    assert(contains(dz_out, "division by zero"), "division by zero diagnostic");
+
+    let ue_src = "effect Boom { fn explode(x: i64) -> i64; }\nfn main() -> i64 yields [Boom] { perform Boom.explode(1) }\n";
+    if !fs_write_string("target/rt_unhandled.mw", ue_src) { return 4; }
+    let build_ue = process_exec("cmd", "/c \"bin\\forge.exe build target\\rt_unhandled.mw -o target\\rt_unhandled.exe > nul 2>&1\"");
+    if build_ue != 0 { return 5; }
+    let run_ue = process_exec("cmd", "/c \"target\\rt_unhandled.exe > target\\rt_unhandled.out 2>&1\"");
+    if run_ue == 0 { return 6; }
+    let ue_out = fs_read_to_string("target/rt_unhandled.out");
+    assert(contains(ue_out, "unhandled effect"), "unhandled effect diagnostic");
+    assert(contains(ue_out, "Boom"), "unhandled effect names the effect");
+
+    return 0;
+}

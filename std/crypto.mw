@@ -85,15 +85,14 @@ pub fn hex_decode_in(hex_str: String, arena: *mut u8) -> *mut u8 {
 pub fn fnv1a_hash(data: String) -> i64 {
     let ptr = data as *const u8;
     let len = unsafe { strlen(ptr) } as i64;
-    let mut h: i64 = 1469598103934665603;
+    // FNV-1a 64-bit: offset basis 0xcbf29ce484222325, prime 0x100000001b3.
+    // The return value is the signed i64 bit pattern of the standard 64-bit hash.
+    let mut h: i64 = 0 - 3750763034362895579;
     let mut i: i64 = 0;
     while i < len {
         let b = unsafe { ptr[i] } as i64;
-        h = (h + b) * 1099511628211;
+        h = (h ^ b) * 1099511628211;
         i = i + 1;
-    }
-    if h < 0 {
-        return 0 - h;
     }
     h
 }
@@ -116,19 +115,23 @@ pub fn adler32_hash(data: String) -> i64 {
 pub fn crc32_hash(data: String) -> i64 {
     let ptr = data as *const u8;
     let len = unsafe { strlen(ptr) } as i64;
+    // Standard CRC-32 (IEEE 802.3, reflected polynomial 0xEDB88320).
     let mut crc: i64 = 4294967295;
     let mut i: i64 = 0;
     while i < len {
-        let b = unsafe { ptr[i] } as i64;
-        crc = crc + b * 2654435761;
-        let rem = crc - (crc / 4294967296) * 4294967296;
-        if rem < 0 {
-            crc = 0 - rem;
-        } else {
-            crc = rem;
+        crc = crc ^ (unsafe { ptr[i] } as i64);
+        let mut bit: i64 = 0;
+        while bit < 8 {
+            if crc - (crc / 2) * 2 == 1 {
+                crc = (crc / 2) ^ 3988292384;
+            } else {
+                crc = crc / 2;
+            }
+            bit = bit + 1;
         }
         i = i + 1;
     }
+    crc = crc ^ 4294967295;
     crc
 }
 

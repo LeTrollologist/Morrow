@@ -1,0 +1,41 @@
+// README headline example, compiled and executed by the release suite.
+import std.net;
+import std.collections;
+
+type Health = u8[0..100];
+type Port = u16[1..65535];
+
+struct Player {
+    name: String,
+    hp: Health,
+}
+
+effect Database {
+    fn query(sql: String) -> String;
+}
+
+fn fetch_player(id: i64) -> Player yields [Database] {
+    let record = perform Database.query("SELECT name, hp FROM players WHERE id = 1");
+    Player {
+        name: "Arthur",
+        hp: 85 as Health,
+    }
+}
+
+fn process_batch() {
+    region batch_reg {
+        let mut buffer = string_buffer_new_in(batch_reg);
+        string_buffer_push_str(&mut buffer, "Processing region batch...", 26);
+    }
+}
+
+fn main() -> i64 {
+    let p = handle {
+        fetch_player(42)
+    } with Database {
+        fn query(k, sql: String) {
+            resume(k, "Arthur");
+        }
+    };
+    0
+}

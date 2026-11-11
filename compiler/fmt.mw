@@ -92,6 +92,7 @@ pub fn fmt_binop_symbol(buf: &mut StringBuffer, op: i64) {
     if op == tok_gt() { fmt_append_str(buf, ">"); return; }
     if op == tok_gte() { fmt_append_str(buf, ">="); return; }
     if op == tok_and() { fmt_append_str(buf, "&&"); return; }
+    if op == tok_caret() { fmt_append_str(buf, "^"); return; }
     if op == tok_or() { fmt_append_str(buf, "||"); return; }
     fmt_append_str(buf, "<?>");
 }
@@ -548,7 +549,7 @@ fn fmt_token_is_trailing_comma(tokens: &Vec<*mut Token>, i: i64) -> bool {
 // Semicolons are separators, and a trailing comma before a closer is not
 // semantic. Everything else must match exactly: a dropped `import`, `effect`,
 // `pub`, struct-literal field, `perform`, or pointer token is a refusal.
-fn fmt_tokens_equivalent(a: &Vec<*mut Token>, b: &Vec<*mut Token>) -> bool {
+pub fn fmt_tokens_equivalent(a: &Vec<*mut Token>, b: &Vec<*mut Token>) -> bool {
     let mut i: i64 = 0;
     let mut j: i64 = 0;
     loop {

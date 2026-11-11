@@ -12,6 +12,7 @@ extern "C" {
     fn strlen(s: *const u8) -> usize;
     fn morrow_alloc(size: i64, align: i64) -> *mut u8;
     fn puts(s: *const u8) -> i32;
+    fn strstr(haystack: *const u8, needle: *const u8) -> *const u8;
 }
 
 // Human-readable name for a type kind, used only by the argument-kind report.
@@ -111,7 +112,7 @@ pub struct TcType {
 }
 
 pub fn alloc_tc_type(arena: *mut u8, kind: i64, sym: i64) -> *mut TcType {
-    let t = unsafe { morrow_alloc(64, 8) as *mut TcType };
+    let t = unsafe { morrow_alloc(96, 8) as *mut TcType };
     t.kind = kind;
     t.sym = sym;
     t.int_val = 0;
@@ -196,6 +197,202 @@ fn tc_meta(t: *mut TcType, w: i64, s: i64) -> *mut TcType {
         t.signed = s;
     }
     t
+}
+
+fn tc_unknown_leaf_sym(t: *mut TcType) -> i64 {
+    if t == (0 as *mut TcType) {
+        return 0;
+    }
+    if t.kind == ty_unknown() {
+        return t.sym;
+    }
+    if (t.kind == ty_ptr() || t.kind == ty_ref()) && t.left != (0 as *mut TcType) {
+        return tc_unknown_leaf_sym(t.left);
+    }
+    return 0;
+}
+
+fn tc_type_has_unknown(t: *mut TcType) -> bool {
+    if t == (0 as *mut TcType) {
+        return false;
+    }
+    if t.kind == ty_unknown() {
+        return true;
+    }
+    if (t.kind == ty_ptr() || t.kind == ty_ref()) && t.left != (0 as *mut TcType) {
+        return tc_type_has_unknown(t.left);
+    }
+    return false;
+}
+
+fn tc_report_undefined_type(tc: &mut TypeChecker, sym: i64) yields [Diagnostics] {
+    let interner_ref = tc.interner as &Interner;
+    let name = interner_lookup(interner_ref, sym);
+    let msg = tc_compose_callee_msg(tc.arena, "Undefined type: " as String, name);
+    report_err(msg, 1, 1);
+    tc.pos = tc.pos + 1;
+}
+
+fn tc_pointee(t: *mut TcType) -> *mut TcType {
+    if t == (0 as *mut TcType) {
+        return 0 as *mut TcType;
+    }
+    if (t.kind == ty_ptr() || t.kind == ty_ref()) && t.left != (0 as *mut TcType) {
+        return t.left;
+    }
+    return t;
+}
+
+fn tc_type_has_generic_name(tc: &mut TypeChecker, t: *mut TcType) -> bool {
+    if t == (0 as *mut TcType) {
+        return false;
+    }
+    if (t.kind == ty_ptr() || t.kind == ty_ref()) && t.left != (0 as *mut TcType) {
+        if tc_type_has_generic_name(tc, t.left) {
+            return true;
+        }
+    }
+    if t.sym == 0 {
+        return false;
+    }
+    let interner_ref = tc.interner as &Interner;
+    let s = interner_lookup(interner_ref, t.sym);
+    let p = s as *const u8;
+    if unsafe { strcmp(p, "T" as *const u8) } == 0 {
+        return true;
+    }
+    if unsafe { strstr(p, "<T>" as *const u8) } != (0 as *const u8) {
+        return true;
+    }
+    if unsafe { strstr(p, "*mut T" as *const u8) } != (0 as *const u8) {
+        return true;
+    }
+    if unsafe { strstr(p, "&mut T" as *const u8) } != (0 as *const u8) {
+        return true;
+    }
+    return false;
+}
+
+fn tc_types_compatible(p: *mut TcType, a: *mut TcType) -> bool {
+    if p == (0 as *mut TcType) || a == (0 as *mut TcType) {
+        return true;
+    }
+    if p.kind == ty_unknown() || a.kind == ty_unknown() {
+        return true;
+    }
+    if p.kind == a.kind {
+        if p.kind == ty_struct() {
+            if p.sym != 0 && a.sym != 0 {
+                return p.sym == a.sym;
+            }
+            return true;
+        }
+        if p.kind == ty_ptr() || p.kind == ty_ref() {
+            if p.left == (0 as *mut TcType) || a.left == (0 as *mut TcType) {
+                return true;
+            }
+            return tc_types_compatible(tc_pointee(p), tc_pointee(a));
+        }
+        return true;
+    }
+    let p_int = p.kind == ty_int() || p.kind == ty_byte();
+    let a_int = a.kind == ty_int() || a.kind == ty_byte();
+    if p_int && a_int {
+        return true;
+    }
+    if (p.kind == ty_bool() && a_int) || (a.kind == ty_bool() && p_int) {
+        return true;
+    }
+    if (p.kind == ty_ptr() || p.kind == ty_ref()) && (a.kind == ty_int() || a.kind == ty_byte()) {
+        return true;
+    }
+    if (a.kind == ty_ptr() || a.kind == ty_ref()) && (p.kind == ty_int() || p.kind == ty_byte()) {
+        return true;
+    }
+    if (p.kind == ty_ptr() || p.kind == ty_ref()) && (a.kind == ty_ptr() || a.kind == ty_ref()) {
+        return true;
+    }
+    // Function values are passed to C callbacks as raw addresses.
+    if (p_int && a.kind == ty_fn()) || (a_int && p.kind == ty_fn()) {
+        return true;
+    }
+    if (p.kind == ty_ptr() || p.kind == ty_ref()) {
+        if a.kind == ty_fn() {
+            return true;
+        }
+    }
+    // C strings: String and *const u8 are interchangeable at the boundary.
+    if p.kind == ty_string() {
+        let ap = tc_pointee(a);
+        if ap != (0 as *mut TcType) && ap.kind == ty_byte() {
+            return true;
+        }
+    }
+    if a.kind == ty_string() {
+        let pp = tc_pointee(p);
+        if pp != (0 as *mut TcType) && pp.kind == ty_byte() {
+            return true;
+        }
+    }
+    // By-reference calling convention: `&mut Struct` may satisfy a Struct or
+    // pointer-to-Struct parameter, and vice versa.
+    let pp = tc_pointee(p);
+    let ap = tc_pointee(a);
+    if (p.kind == ty_ptr() || p.kind == ty_ref()) &&
+       (a.kind == ty_ptr() || a.kind == ty_ref()) {
+        if pp != (0 as *mut TcType) && ap != (0 as *mut TcType) {
+            if pp.kind == ap.kind {
+                if pp.kind == ty_struct() || pp.kind == ty_ptr() || pp.kind == ty_ref() {
+                    if pp.sym != 0 && ap.sym != 0 {
+                        return pp.sym == ap.sym;
+                    }
+                }
+                return true;
+            }
+            if (pp.kind == ty_int() || pp.kind == ty_byte()) &&
+               (ap.kind == ty_int() || ap.kind == ty_byte()) {
+                return true;
+            }
+        }
+    }
+    if pp != (0 as *mut TcType) && ap != (0 as *mut TcType) {
+        if pp.kind == ty_struct() && ap.kind == ty_struct() {
+            if pp.sym == 0 || ap.sym == 0 {
+                return true;
+            }
+            return pp.sym == ap.sym;
+        }
+        if (pp.kind == ty_int() || pp.kind == ty_byte()) &&
+           (ap.kind == ty_int() || ap.kind == ty_byte()) {
+            return true;
+        }
+    }
+    false
+}
+
+fn tc_type_label(tc: &mut TypeChecker, t: *mut TcType) -> String {
+    if t == (0 as *mut TcType) {
+        return "unknown";
+    }
+    if t.kind == ty_struct() && t.sym != 0 {
+        let interner_ref = tc.interner as &Interner;
+        return interner_lookup(interner_ref, t.sym);
+    }
+    return tc_kind_name(t.kind);
+}
+
+fn tc_compose_type_mismatch(tc: &mut TypeChecker, prefix: String, expected: *mut TcType, got: *mut TcType) -> String {
+    let e = tc_type_label(tc, expected);
+    let g = tc_type_label(tc, got);
+    let with_expected = tc_compose_callee_msg(tc.arena, prefix, e);
+    let got_part = tc_compose_callee_msg(tc.arena, ", got " as String, g);
+    return tc_compose_callee_msg(tc.arena, with_expected, got_part);
+}
+
+fn tc_compose_arg_mismatch(tc: &mut TypeChecker, callee: String, expected: *mut TcType, got: *mut TcType) -> String {
+    let base = tc_compose_callee_msg(tc.arena, "Argument type mismatch in call to " as String, callee);
+    let with_colon = tc_compose_callee_msg(tc.arena, base, ": expected " as String);
+    tc_compose_type_mismatch(tc, with_colon, expected, got)
 }
 
 fn tc_int_meta(l: *mut TcType, r: *mut TcType) -> i64 {
@@ -305,6 +502,10 @@ pub struct TypeChecker {
     linear_names: *mut Vec<String>, // 8: Vec of active linear resource variable names
     linear_modes: *mut HashMap,     // 9: Map of var name -> i64 mode (1=linear, 2=affine)
     arg_report: i64,                // 10: 1 = print argument-kind discrepancies (never fails the build)
+    generic_param_sym: i64,         // 11: Current declaration's generic parameter, exempt from undefined-type errors
+    last_expr_ty: *mut TcType,      // 12: Type of the most recently checked expression statement
+    last_expr_set: i64,             // 13: 1 when last_expr_ty is valid
+    current_fn_name: String,        // 14: Diagnostic context for return checks
 }
 
 pub fn typechecker_new_in(interner: *mut Interner, arena: *mut u8) -> TypeChecker {
@@ -321,6 +522,10 @@ pub fn typechecker_new_in(interner: *mut Interner, arena: *mut u8) -> TypeChecke
         linear_names: 0 as *mut Vec<String>,
         linear_modes: 0 as *mut HashMap,
         arg_report: 0,
+        generic_param_sym: 0,
+        last_expr_ty: 0 as *mut TcType,
+        last_expr_set: 0,
+        current_fn_name: "",
     }
 }
 
@@ -423,6 +628,8 @@ pub fn tc_init_prelude(tc: &mut TypeChecker, types: &mut HashMap) {
     hashmap_insert(types, "i16", t_i16 as i64);
     hashmap_insert(types, "u8", t_byte as i64);
     hashmap_insert(types, "i8", t_i8 as i64);
+    hashmap_insert(types, "f64", t_int as i64);
+    hashmap_insert(types, "f32", t_i32 as i64);
     hashmap_insert(types, "byte", t_byte as i64);
     hashmap_insert(types, "bool", t_bool as i64);
     hashmap_insert(types, "String", t_str as i64);
@@ -598,8 +805,12 @@ pub fn tc_resolve_type(tc: &mut TypeChecker, types: &HashMap, struct_defs: &Hash
             return alloc_tc_type(tc.arena, ty_struct(), sym);
         }
     }
-    // Default fallback to Int for scalar types
-    alloc_tc_type(tc.arena, ty_int(), sym)
+    // Unknown names are left as ty_unknown here; declaration/cast validation
+    // reports them with the effectful diagnostic channel.
+    if sym != 0 && sym == tc.generic_param_sym {
+        return alloc_tc_type(tc.arena, ty_unknown(), sym);
+    }
+    alloc_tc_type(tc.arena, ty_unknown(), sym)
 }
 
 // -----------------------------------------------------------------------------
@@ -916,6 +1127,11 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
         if fn_val != 0 - 1 {
             target_fn = fn_val as *mut AstFn;
         }
+        let ext_val_sig = hashmap_get(ext_defs, s);
+        let mut target_ext: *mut AstExternFn = 0 as *mut AstExternFn;
+        if ext_val_sig != 0 - 1 {
+            target_ext = ext_val_sig as *mut AstExternFn;
+        }
 
         // Type check argument expressions and verify parameter refinement constraints
         let args_len = expr.args.len;
@@ -1016,6 +1232,30 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
                     }
                 }
             }
+            if target_fn != (0 as *mut AstFn) {
+              if target_fn.type_param_sym == 0 {
+                if i < target_fn.params.len {
+                    let p = vec_get(&target_fn.params, i);
+                    let param_ty = tc_resolve_type(tc, types, struct_defs, p.ty_sym);
+                    if !tc_type_has_generic_name(tc, param_ty) && !tc_type_has_generic_name(tc, arg_ty) && !tc_types_compatible(param_ty, arg_ty) {
+                        let msg = tc_compose_arg_mismatch(tc, s, param_ty, arg_ty);
+                        report_err(msg, 1, 1);
+                        tc.pos = tc.pos + 1;
+                    }
+                }
+            }
+            }
+            if target_ext != (0 as *mut AstExternFn) {
+                if i < target_ext.params.len {
+                    let p = vec_get(&target_ext.params, i);
+                    let param_ty = tc_resolve_type(tc, types, struct_defs, p.ty_sym);
+                    if !tc_type_has_generic_name(tc, param_ty) && !tc_type_has_generic_name(tc, arg_ty) && !tc_types_compatible(param_ty, arg_ty) {
+                        let msg = tc_compose_arg_mismatch(tc, s, param_ty, arg_ty);
+                        report_err(msg, 1, 1);
+                        tc.pos = tc.pos + 1;
+                    }
+                }
+            }
             i = i + 1;
         }
 
@@ -1026,7 +1266,8 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
             while ei < target_fn.yields_effects.len {
                 let eff_sym = vec_get(&target_fn.yields_effects, ei);
                 if !tc_is_effect_covered(tc, eff_sym) {
-                    report_err("Unhandled effect in function call; must be declared in yields contract or handled", 1, 1);
+                    let emsg = tc_compose_callee_msg(tc.arena, "Unhandled effect in call to " as String, s);
+                    report_err(emsg, 1, 1);
                     tc.pos = tc.pos + 1;
                 }
                 ei = ei + 1;
@@ -1166,6 +1407,15 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
         let inner_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, expr.left);
         let target_sym = expr.sym;
         let target_ty = tc_resolve_type(tc, types, struct_defs, target_sym);
+        if tc_type_has_unknown(target_ty) && !tc_type_has_generic_name(tc, target_ty) && target_sym != tc.generic_param_sym {
+            tc_report_undefined_type(tc, target_sym);
+        } else if expr.op == 1 && !tc_type_has_generic_name(tc, target_ty) && !tc_type_has_generic_name(tc, inner_ty) {
+            if !tc_types_compatible(target_ty, inner_ty) {
+                let msg = tc_compose_type_mismatch(tc, "Invalid let annotation: expected " as String, target_ty, inner_ty);
+                report_err(msg, 1, 1);
+                tc.pos = tc.pos + 1;
+            }
+        }
         if target_ty != (0 as *mut TcType) {
             if inner_ty != (0 as *mut TcType) {
                 if target_ty.op >= 0 {
@@ -1602,6 +1852,13 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
         let var_ty = var_ty_val as *mut TcType;
         let expr_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, stmt.expr);
         stmt.int_val = tc_encode_int(var_ty);
+        if !tc_type_has_generic_name(tc, var_ty) && !tc_type_has_generic_name(tc, expr_ty) {
+            if !tc_types_compatible(var_ty, expr_ty) {
+                let msg = tc_compose_type_mismatch(tc, "Assignment type mismatch: expected " as String, var_ty, expr_ty);
+                report_err(msg, 1, 1);
+                tc.pos = tc.pos + 1;
+            }
+        }
 
         // Refinement Constraint Check: Verify RHS is within LHS intervals
         if var_ty != (0 as *mut TcType) {
@@ -1798,6 +2055,18 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
             }
         }
 
+        if ret_ty != (0 as *mut TcType) && ret_ty.kind != ty_unit() {
+            if actual_ty == (0 as *mut TcType) || actual_ty.right == (0 as *mut TcType) {
+                if !tc_type_has_generic_name(tc, ret_ty) && !tc_type_has_generic_name(tc, actual_ty) && !tc_types_compatible(ret_ty, actual_ty) {
+                let base = tc_compose_callee_msg(tc.arena, "Return type mismatch in " as String, tc.current_fn_name);
+                let base2 = tc_compose_callee_msg(tc.arena, base, ": expected " as String);
+                let msg = tc_compose_type_mismatch(tc, base2, ret_ty, actual_ty);
+                report_err(msg, 1, 1);
+                tc.pos = tc.pos + 1;
+                }
+            }
+        }
+
         // Check for linear resource leaks on return
         if tc.linear_names != (0 as *mut Vec<String>) && tc.linear_vars != (0 as *mut HashMap) {
             let l_len = tc.linear_names.len;
@@ -1854,7 +2123,9 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
     }
 
     if kind == stmt_expr() {
-        tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, stmt.expr);
+        let val = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, stmt.expr);
+        tc.last_expr_ty = val;
+        tc.last_expr_set = 1;
         return true;
     }
 
@@ -2151,10 +2422,71 @@ pub fn tc_stmt(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
 // -----------------------------------------------------------------------------
 // Type Checking Functions & Program
 // -----------------------------------------------------------------------------
+fn tc_stmt_has_return(stmt: *mut AstStmt) -> bool {
+    if stmt == (0 as *mut AstStmt) {
+        return false;
+    }
+    if stmt.kind == stmt_return() {
+        return true;
+    }
+    let mut i: i64 = 0;
+    while i < stmt.then_stmts.len {
+        if tc_stmt_has_return(vec_get(&stmt.then_stmts, i)) {
+            return true;
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < stmt.else_stmts.len {
+        if tc_stmt_has_return(vec_get(&stmt.else_stmts, i)) {
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+fn tc_stmts_have_return(stmts: &Vec<*mut AstStmt>) -> bool {
+    let mut i: i64 = 0;
+    while i < stmts.len {
+        if tc_stmt_has_return(vec_get(stmts, i)) {
+            return true;
+        }
+        i = i + 1;
+    }
+    false
+}
+
+fn tc_stmt_guarantees_return(stmt: *mut AstStmt) -> bool {
+    if stmt == (0 as *mut AstStmt) {
+        return false;
+    }
+    if stmt.kind == stmt_return() || stmt.kind == stmt_expr() || stmt.kind == stmt_handle() {
+        return true;
+    }
+    if stmt.kind == stmt_block() {
+        if stmt.then_stmts.len == 0 {
+            return false;
+        }
+        return tc_stmt_guarantees_return(vec_get(&stmt.then_stmts, stmt.then_stmts.len - 1));
+    }
+    if stmt.kind == stmt_if() {
+        if stmt.then_stmts.len == 0 || stmt.else_stmts.len == 0 {
+            return false;
+        }
+        let t = tc_stmt_guarantees_return(vec_get(&stmt.then_stmts, stmt.then_stmts.len - 1));
+        let e = tc_stmt_guarantees_return(vec_get(&stmt.else_stmts, stmt.else_stmts.len - 1));
+        return t && e;
+    }
+    false
+}
+
 pub fn tc_function(tc: &mut TypeChecker, fn_defs: &HashMap, ext_defs: &HashMap, types: &HashMap, struct_defs: &HashMap, f: *mut AstFn) -> bool yields [Diagnostics] {
     tc.active_yields = &mut f.yields_effects as *mut Vec<i64>;
     let interner_ref = tc.interner as &Interner;
     let fn_name = interner_lookup(interner_ref, f.name_sym);
+    tc.current_fn_name = fn_name;
+    let is_handler_arm = unsafe { strncmp(fn_name as *const u8, "__handler_arm_" as *const u8, 14) } == 0;
     let mut vars = hashmap_new_in(tc.arena, 64);
     let mut linear_vars = hashmap_new_in(tc.arena, 32);
     let mut linear_names: Vec<String> = vec_new_in(tc.arena);
@@ -2185,11 +2517,43 @@ pub fn tc_function(tc: &mut TypeChecker, fn_defs: &HashMap, ext_defs: &HashMap, 
     let ret_ty = tc_resolve_type(tc, types, struct_defs, f.ret_ty_sym);
 
     let body_len = f.body.len;
+    tc.last_expr_set = 0;
     let mut j: i64 = 0;
     while j < body_len {
         let stmt = vec_get(&f.body, j);
         tc_stmt(tc, &mut vars, fn_defs, ext_defs, types, struct_defs, ret_ty, 0, 0, stmt);
         j = j + 1;
+    }
+
+    let mut body_guarantees = false;
+    if body_len > 0 {
+        let last_stmt = vec_get(&f.body, body_len - 1);
+        if last_stmt != (0 as *mut AstStmt) && last_stmt.kind == stmt_expr() {
+            if !is_handler_arm && ret_ty != (0 as *mut TcType) && ret_ty.kind != ty_unit() {
+                var tail_ty: *mut TcType = 0 as *mut TcType;
+                if tc.last_expr_set == 1 {
+                    tail_ty = tc.last_expr_ty;
+                } else {
+                    tail_ty = tc_expr(tc, &mut vars, fn_defs, ext_defs, types, struct_defs, ret_ty, last_stmt.expr);
+                }
+                if !tc_type_has_generic_name(tc, ret_ty) && !tc_type_has_generic_name(tc, tail_ty) && !tc_types_compatible(ret_ty, tail_ty) {
+                    let base = tc_compose_callee_msg(tc.arena, "Tail expression type mismatch in " as String, tc.current_fn_name);
+                    let base2 = tc_compose_callee_msg(tc.arena, base, ": expected " as String);
+                    let msg = tc_compose_type_mismatch(tc, base2, ret_ty, tail_ty);
+                    report_err(msg, 1, 1);
+                    tc.pos = tc.pos + 1;
+                }
+            }
+            body_guarantees = true;
+        } else {
+            body_guarantees = tc_stmt_guarantees_return(last_stmt);
+        }
+    }
+    if !is_handler_arm && ret_ty != (0 as *mut TcType) && ret_ty.kind != ty_unit() && !body_guarantees && !tc_stmts_have_return(&f.body) {
+        let fname = interner_lookup(tc.interner as &Interner, f.name_sym);
+        let msg = tc_compose_callee_msg(tc.arena, "Missing return statement in function: " as String, fname);
+        report_err(msg, 1, 1);
+        tc.pos = tc.pos + 1;
     }
 
     let l_len = linear_names.len;
@@ -2218,7 +2582,77 @@ pub fn tc_function(tc: &mut TypeChecker, fn_defs: &HashMap, ext_defs: &HashMap, 
     true
 }
 
-pub fn typecheck_program(prog: *mut AstProgram, interner: *mut Interner, arena: *mut u8, arg_report: i64) -> bool yields [Diagnostics] {
+// Validate every declared type name up front, including declarations whose
+// bodies are never typechecked. The generic parameter (if any) is the only
+// symbol allowed to remain unresolved.
+fn tc_validate_type_name(tc: &mut TypeChecker, types: &HashMap, struct_defs: &HashMap, sym: i64) yields [Diagnostics] {
+    if sym == 0 {
+        return;
+    }
+    let t = tc_resolve_type(tc, types, struct_defs, sym);
+    if tc_type_has_generic_name(tc, t) {
+        return;
+    }
+    let leaf = tc_unknown_leaf_sym(t);
+    if leaf != 0 && leaf != tc.generic_param_sym {
+        tc_report_undefined_type(tc, sym);
+    }
+}
+
+pub fn tc_validate_declarations(tc: &mut TypeChecker, prog: *mut AstProgram, types: &HashMap, struct_defs: &HashMap) yields [Diagnostics] {
+    let mut si: i64 = 0;
+    while si < prog.structs.len {
+        let st = vec_get(&prog.structs, si);
+        tc.generic_param_sym = st.type_param_sym;
+        let mut fi: i64 = 0;
+        while fi < st.fields.len {
+            let f = vec_get(&st.fields, fi);
+            tc_validate_type_name(tc, types, struct_defs, f.ty_sym);
+            fi = fi + 1;
+        }
+        si = si + 1;
+    }
+
+    let mut vi: i64 = 0;
+    while vi < prog.vals.len {
+        let ta = vec_get(&prog.vals, vi);
+        tc.generic_param_sym = 0;
+        tc_validate_type_name(tc, types, struct_defs, ta.ty_sym);
+        vi = vi + 1;
+    }
+
+    let mut fi: i64 = 0;
+    while fi < prog.functions.len {
+        let f = vec_get(&prog.functions, fi);
+        tc.generic_param_sym = f.type_param_sym;
+        let mut pi: i64 = 0;
+        while pi < f.params.len {
+            let p = vec_get(&f.params, pi);
+            tc_validate_type_name(tc, types, struct_defs, p.ty_sym);
+            pi = pi + 1;
+        }
+        tc_validate_type_name(tc, types, struct_defs, f.ret_ty_sym);
+        fi = fi + 1;
+    }
+
+    let mut ei: i64 = 0;
+    while ei < prog.extern_fns.len {
+        let e = vec_get(&prog.extern_fns, ei);
+        tc.generic_param_sym = 0;
+        let mut pi: i64 = 0;
+        while pi < e.params.len {
+            let p = vec_get(&e.params, pi);
+            tc_validate_type_name(tc, types, struct_defs, p.ty_sym);
+            pi = pi + 1;
+        }
+        tc_validate_type_name(tc, types, struct_defs, e.ret_ty_sym);
+        ei = ei + 1;
+    }
+    tc.generic_param_sym = 0;
+}
+
+pub fn typecheck_program(
+prog: *mut AstProgram, interner: *mut Interner, arena: *mut u8, arg_report: i64) -> bool yields [Diagnostics] {
     let mut tc = typechecker_new_in(interner, arena);
     tc.arg_report = arg_report;
     let mut types = hashmap_new_in(arena, 64);
@@ -2304,6 +2738,10 @@ pub fn typecheck_program(prog: *mut AstProgram, interner: *mut Interner, arena: 
         hashmap_insert(&mut fn_defs, s, f as i64);
         k = k + 1;
     }
+
+    // Reject undefined types in every declaration, including unused generic
+    // templates and extern signatures.
+    tc_validate_declarations(&mut tc, prog, &types, &struct_defs);
 
     // Typecheck each concrete function body.
     //

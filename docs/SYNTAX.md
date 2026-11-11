@@ -76,7 +76,7 @@ subset.
 | `bool` | ✅ | `true` / `false` |
 | `String` | ✅ | NUL-terminated byte string, heap or region allocated |
 | `void` | ✅ | Accepted as a return type; functions may also omit the return type |
-| `f32`, `f64` | ❌ | Parsed as a type name but unusable — there are no float literals |
+| `f32`, `f64` | ⚠️ | Accepted as opaque FFI type names only; no float literals or arithmetic |
 
 Verified: `let a: i8 = 1; let b: u16 = 2; let c: u64 = 3;` compiles and adds.
 
@@ -112,8 +112,9 @@ What the checker actually proves today:
 - **Division by a refined divisor whose interval spans zero is rejected**:
   `x / d` where `d: i64[-5..5]` → "Refinement Violation: potential division by zero
   (divisor interval spans 0)".
-- **Casts from variables are not range-checked**, and there is **no path-sensitive
-  narrowing**. Both of the following compile today:
+- **Path-sensitive narrowing is implemented for typed `if`/`while` conditions**
+  (for example, narrowing a refined `Port` inside `if port > 0 { ... }`).
+- **Casts from variables are not range-checked**. Both of the following compile today:
   ```morrow
   fn to_pct(x: i64) -> Percentage { x as Percentage }   // accepted
   fn f(x: i64) -> i64 { let v: i64 = 200; let p = v as Percentage; 0 }  // accepted
@@ -423,9 +424,9 @@ import compiler::diagnostics;
 ## 8. Statements & Control Flow
 
 ```morrow
-let immutable_x = 10;      // immutable binding
-var counter = 0;           // mutable binding
-let mut total: i64 = 0;    // mutable with explicit type
+let currently_mutable = 10; // `let` bindings are mutable in the current compiler
+var counter = 0;            // explicit mutable binding
+let mut total: i64 = 0;     // explicit mutable binding with type
 counter = counter + 1;     // assignment
 
 if x > 100 {
@@ -654,15 +655,21 @@ sqlite_query_in(&mut SqliteDb, sql: String, arena: *mut u8) -> SqliteResultSet
 sqlite_row_count(&SqliteResultSet) -> i64
 ```
 `std.sql` and `std.sql_builder` add a typed record wrapper and a fluent
-`QueryBuilder`; see `tests/sql_test.mw`.
+`QueryBuilder`. The builder concatenates caller-supplied fragments; it is a
+composition helper, not a sanitizer. Bind untrusted values through the
+parameterized driver rather than interpolating them into clauses. See
+`tests/sql_test.mw`.
 
 ### `std.crypto`
 ```morrow
 hex_encode_in(bytes: *const u8, len: i64, arena) -> String
 hex_decode_in(hex_str: String, arena) -> *mut u8
-fnv1a_hash(String) -> i64   adler32_hash(String) -> i64   crc32_hash(String) -> i64
+fnv1a_hash(String) -> i64   // standard FNV-1a 64-bit, returned as a signed bit pattern
+adler32_hash(String) -> i64 // standard Adler-32
+crc32_hash(String) -> i64   // standard CRC-32 (IEEE 802.3)
 rng_new(seed: i64) -> CryptoRng      rng_next_u64(&mut CryptoRng) -> i64
 rng_next_range(&mut CryptoRng, min, max) -> i64
+// CryptoRng is a deterministic non-cryptographic LCG; do not use it for secrets.
 ```
 
 ### `std.time` (benchmarking)

@@ -262,6 +262,10 @@ pub fn tokenize(src: String, interner: &mut Interner, arena: *mut u8) -> Vec<*mu
                         string_buffer_push_byte(&mut sbuf, 9 as u8);
                         idx = idx + 2;
                         col = col + 2;
+                    } else if next_c == 48 {
+                        string_buffer_push_byte(&mut sbuf, 0 as u8);
+                        idx = idx + 2;
+                        col = col + 2;
                     } else if next_c == 92 {
                         string_buffer_push_byte(&mut sbuf, 92 as u8);
                         idx = idx + 2;
@@ -348,6 +352,9 @@ pub fn tokenize(src: String, interner: &mut Interner, arena: *mut u8) -> Vec<*mu
                     kind = tok_or();
                     advance = 2;
                 }
+            } else if c == 94 {
+                // ^ bitwise XOR
+                kind = tok_caret();
             } else if c == 91 {
                 // [
                 kind = tok_lbracket();

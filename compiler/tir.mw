@@ -117,6 +117,7 @@ pub fn tir_inst_addr_var() -> i64 { 16 }
 pub fn tir_inst_addr_field() -> i64 { 17 }
 pub fn tir_inst_addr_index() -> i64 { 18 }
 pub fn tir_inst_cast() -> i64 { 19 }
+pub fn tir_inst_bool() -> i64 { 20 }
 
 pub struct TirInst {
     kind: i64,                  // 0: tir_inst_assign(), etc.
@@ -312,11 +313,15 @@ pub struct TirFunction {
     handled_effects: *mut Vec<i64>,  // 6: Stack of active handled effect symbols
     args: Vec<*mut TirBlock>,        // 7: Vector of basic blocks
     interner: *const Interner,       // 8: Interner pointer
+    region_stack: Vec<i64>,          // 9: Active region symbols, innermost last
+    cur_loop_region_depth: i64,      // 10: Region stack depth at loop entry
+    sc_end: *mut TirBlock,           // 11: Continuation block for short-circuit expressions
 }
 
 pub fn alloc_tir_function(arena: *mut u8, name_sym: i64, ret_ty_sym: i64, origin_fn: *mut AstFn, interner: &Interner) -> *mut TirFunction {
-    let p = unsafe { morrow_region_alloc(arena, 144, 8) as *mut TirFunction };
+    let p = unsafe { morrow_region_alloc(arena, 208, 8) as *mut TirFunction };
     let empty_blocks: Vec<*mut TirBlock> = vec_new_in(arena);
+    let empty_regions: Vec<i64> = vec_new_in(arena);
     let handled_vec = unsafe { morrow_region_alloc(arena, 32, 8) as *mut Vec<i64> };
     let empty_handled: Vec<i64> = vec_new_in(arena);
     handled_vec.data = empty_handled.data;
@@ -333,6 +338,9 @@ pub fn alloc_tir_function(arena: *mut u8, name_sym: i64, ret_ty_sym: i64, origin
         p.handled_effects = handled_vec;
         p.args = empty_blocks;
         p.interner = interner as *const Interner;
+        p.region_stack = empty_regions;
+        p.cur_loop_region_depth = 0;
+        p.sc_end = 0 as *mut TirBlock;
     }
     p
 }
@@ -677,6 +685,75 @@ pub fn lower_ast_expr_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, expr
     alloc_tir_op_int(arena, 0)
 }
 
+fn tir_emit_region_leave(f: *mut TirFunction, cur: *mut TirBlock, sym: i64, arena: *mut u8) {
+    let mut leave_args: Vec<*mut TirOperand> = vec_new_in(arena);
+    vec_push(&mut leave_args, alloc_tir_op_var(arena, sym));
+    let reg_leave = alloc_tir_inst_call(arena, 0, 0, leave_args);
+    reg_leave.str_val = "morrow_region_leave";
+    tir_block_push_inst(cur, reg_leave);
+}
+
+fn tir_emit_region_leaves(f: *mut TirFunction, cur: *mut TirBlock, depth: i64, arena: *mut u8) {
+    let mut i = f.region_stack.len - 1;
+    while i >= depth {
+        tir_emit_region_leave(f, cur, vec_get(&f.region_stack, i), arena);
+        i = i - 1;
+    }
+    f.region_stack.len = depth;
+}
+
+fn is_short_circuit_expr(e: *mut AstExpr) -> bool {
+    e != (0 as *mut AstExpr) && e.kind == expr_binop() && (e.op == tok_and() || e.op == tok_or())
+}
+
+fn tir_bool_operand(f: *mut TirFunction, cur: *mut TirBlock, val: *mut TirOperand, arena: *mut u8) -> *mut TirOperand {
+    let dest = f.op;
+    f.op = f.op + 1;
+    let inst = alloc_tir_inst(arena, tir_inst_bool(), dest, 0, val, 0 as *mut TirOperand);
+    tir_block_push_inst(cur, inst);
+    alloc_tir_op_reg(arena, dest)
+}
+
+fn lower_short_circuit(f: *mut TirFunction, cur: *mut TirBlock, expr: *mut AstExpr, arena: *mut u8) -> *mut TirOperand {
+    let rhs_block = tir_fn_add_block(f, arena);
+    let short_block = tir_fn_add_block(f, arena);
+    let merge_block = tir_fn_add_block(f, arena);
+    let left_val = lower_ast_expr_to_tir(f, cur, expr.left, arena);
+    let left_bool = tir_bool_operand(f, cur, left_val, arena);
+    if expr.op == tok_and() {
+        tir_block_set_branch_cond(cur, left_bool, rhs_block.kind, short_block.kind);
+    } else {
+        tir_block_set_branch_cond(cur, left_bool, short_block.kind, rhs_block.kind);
+    }
+    let tid = f.op;
+    f.op = f.op + 1;
+    let mut nb = string_buffer_new_in(arena);
+    fmt_append_str(&mut nb, "__sc_tmp_" as String);
+    fmt_append_i64(&mut nb, tid);
+    string_buffer_push_byte(&mut nb, 0 as u8);
+    let tmp_sym = interner_intern(f.interner as &mut Interner, string_as_ptr(&nb) as String);
+
+    // Right-hand block: evaluate the right side only on this path.
+    let right_val = lower_ast_expr_to_tir(f, rhs_block, expr.right, arena);
+    let right_bool = tir_bool_operand(f, rhs_block, right_val, arena);
+    let st_r = alloc_tir_inst(arena, tir_inst_store(), tmp_sym, 0, right_bool, 0 as *mut TirOperand);
+    tir_block_push_inst(rhs_block, st_r);
+    tir_block_set_branch(rhs_block, merge_block.kind);
+
+    // Short-circuit block: 0 for &&, 1 for ||.
+    let mut short_const: i64 = 1;
+    if expr.op == tok_and() {
+        short_const = 0;
+    }
+    let short_val = alloc_tir_op_int(arena, short_const);
+    let st_s = alloc_tir_inst(arena, tir_inst_store(), tmp_sym, 0, short_val, 0 as *mut TirOperand);
+    tir_block_push_inst(short_block, st_s);
+    tir_block_set_branch(short_block, merge_block.kind);
+
+    f.sc_end = merge_block;
+    alloc_tir_op_var(arena, tmp_sym)
+}
+
 pub fn lower_ast_stmt_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, stmt: *mut AstStmt, loop_exit_id: i64, loop_head_id: i64, is_tail: bool, arena: *mut u8) -> *mut TirBlock {
     if stmt == (0 as *mut AstStmt) {
         return cur_block;
@@ -689,35 +766,64 @@ pub fn lower_ast_stmt_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, stmt
     }
 
     if kind == stmt_let() {
-        let rhs = lower_ast_expr_to_tir(f, cur_block, stmt.expr, arena);
+        let mut cur_let = cur_block;
+        let mut rhs = alloc_tir_op_int(arena, 0);
+        if is_short_circuit_expr(stmt.expr) {
+            rhs = lower_short_circuit(f, cur_let, stmt.expr, arena);
+            cur_let = f.sc_end;
+        } else {
+            rhs = lower_ast_expr_to_tir(f, cur_let, stmt.expr, arena);
+        }
         let inst = alloc_tir_inst(arena, tir_inst_store(), stmt.sym, 0, rhs, 0 as *mut TirOperand);
-        tir_block_push_inst(cur_block, inst);
-        return cur_block;
+        tir_block_push_inst(cur_let, inst);
+        return cur_let;
     }
 
     if kind == stmt_assign() {
-        let rhs = lower_ast_expr_to_tir(f, cur_block, stmt.expr, arena);
+        let mut cur_as = cur_block;
+        let mut rhs = alloc_tir_op_int(arena, 0);
+        if is_short_circuit_expr(stmt.expr) {
+            rhs = lower_short_circuit(f, cur_as, stmt.expr, arena);
+            cur_as = f.sc_end;
+        } else {
+            rhs = lower_ast_expr_to_tir(f, cur_as, stmt.expr, arena);
+        }
         let inst = alloc_tir_inst(arena, tir_inst_store(), stmt.sym, 0, rhs, 0 as *mut TirOperand);
         unsafe { inst.int_val = stmt.int_val; }
-        tir_block_push_inst(cur_block, inst);
-        return cur_block;
+        tir_block_push_inst(cur_as, inst);
+        return cur_as;
     }
 
     if kind == stmt_return() {
-        let ret_val = lower_ast_expr_to_tir(f, cur_block, stmt.expr, arena);
-        tir_block_set_return(cur_block, ret_val);
+        let mut cur_ret = cur_block;
+        let mut ret_val = alloc_tir_op_int(arena, 0);
+        if is_short_circuit_expr(stmt.expr) {
+            ret_val = lower_short_circuit(f, cur_ret, stmt.expr, arena);
+            cur_ret = f.sc_end;
+        } else {
+            ret_val = lower_ast_expr_to_tir(f, cur_ret, stmt.expr, arena);
+        }
+        tir_emit_region_leaves(f, cur_ret, 0, arena);
+        tir_block_set_return(cur_ret, ret_val);
         let dead_block = tir_fn_add_block(f, arena);
         return dead_block;
     }
 
     if kind == stmt_expr() {
-        let val = lower_ast_expr_to_tir(f, cur_block, stmt.expr, arena);
+        let mut cur_ex = cur_block;
+        let mut val = alloc_tir_op_int(arena, 0);
+        if is_short_circuit_expr(stmt.expr) {
+            val = lower_short_circuit(f, cur_ex, stmt.expr, arena);
+            cur_ex = f.sc_end;
+        } else {
+            val = lower_ast_expr_to_tir(f, cur_ex, stmt.expr, arena);
+        }
         if is_tail {
-            tir_block_set_return(cur_block, val);
+            tir_block_set_return(cur_ex, val);
             let dead_block = tir_fn_add_block(f, arena);
             return dead_block;
         }
-        return cur_block;
+        return cur_ex;
     }
 
     if kind == stmt_field_assign() {
@@ -748,11 +854,13 @@ pub fn lower_ast_stmt_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, stmt
     }
 
     if kind == stmt_block() {
+        let pre_depth = f.region_stack.len;
         if stmt.sym != 0 {
             let empty_args: Vec<*mut TirOperand> = vec_new_in(arena);
             let reg_call = alloc_tir_inst_call(arena, stmt.sym, 0, empty_args);
             reg_call.str_val = "morrow_region_enter";
             tir_block_push_inst(cur_block, reg_call);
+            vec_push(&mut f.region_stack, stmt.sym);
         }
         let mut cur = cur_block;
         let mut bi: i64 = 0;
@@ -769,6 +877,7 @@ pub fn lower_ast_stmt_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, stmt
                         let reg_leave = alloc_tir_inst_call(arena, 0, 0, leave_args);
                         reg_leave.str_val = "morrow_region_leave";
                         tir_block_push_inst(cur, reg_leave);
+                        f.region_stack.len = pre_depth;
                     }
                     tir_block_set_return(cur, ret_val);
                     let dead_block = tir_fn_add_block(f, arena);
@@ -778,18 +887,16 @@ pub fn lower_ast_stmt_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, stmt
             cur = lower_ast_stmt_to_tir(f, cur, bs, loop_exit_id, loop_head_id, is_inner_tail, arena);
             bi = bi + 1;
         }
-        if stmt.sym != 0 {
-            let mut leave_args: Vec<*mut TirOperand> = vec_new_in(arena);
-            vec_push(&mut leave_args, alloc_tir_op_var(arena, stmt.sym));
-            let reg_leave = alloc_tir_inst_call(arena, 0, 0, leave_args);
-            reg_leave.str_val = "morrow_region_leave";
-            tir_block_push_inst(cur, reg_leave);
+        if stmt.sym != 0 && f.region_stack.len > pre_depth {
+            tir_emit_region_leave(f, cur, stmt.sym, arena);
+            f.region_stack.len = pre_depth;
         }
         return cur;
     }
 
     if kind == stmt_break() {
         if loop_exit_id >= 0 {
+            tir_emit_region_leaves(f, cur_block, f.cur_loop_region_depth, arena);
             tir_block_set_branch(cur_block, loop_exit_id);
             let dead_block = tir_fn_add_block(f, arena);
             return dead_block;
@@ -799,6 +906,7 @@ pub fn lower_ast_stmt_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, stmt
 
     if kind == stmt_continue() {
         if loop_head_id >= 0 {
+            tir_emit_region_leaves(f, cur_block, f.cur_loop_region_depth, arena);
             tir_block_set_branch(cur_block, loop_head_id);
             let dead_continue = tir_fn_add_block(f, arena);
             return dead_continue;
@@ -807,12 +915,20 @@ pub fn lower_ast_stmt_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, stmt
     }
 
     if kind == stmt_if() {
-        let cond = lower_ast_expr_to_tir(f, cur_block, stmt.expr, arena);
+        let pre_region_depth = f.region_stack.len;
+        let mut cond_block = cur_block;
+        let mut cond = alloc_tir_op_int(arena, 0);
+        if is_short_circuit_expr(stmt.expr) {
+            cond = lower_short_circuit(f, cond_block, stmt.expr, arena);
+            cond_block = f.sc_end;
+        } else {
+            cond = lower_ast_expr_to_tir(f, cond_block, stmt.expr, arena);
+        }
         let then_block = tir_fn_add_block(f, arena);
         let else_block = tir_fn_add_block(f, arena);
         let merge_block = tir_fn_add_block(f, arena);
 
-        tir_block_set_branch_cond(cur_block, cond, then_block.kind, else_block.kind);
+        tir_block_set_branch_cond(cond_block, cond, then_block.kind, else_block.kind);
 
         // Lower then statements
         let mut cur_then = then_block;
@@ -824,6 +940,7 @@ pub fn lower_ast_stmt_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, stmt
             cur_then = lower_ast_stmt_to_tir(f, cur_then, s, loop_exit_id, loop_head_id, is_inner_tail, arena);
             i = i + 1;
         }
+        f.region_stack.len = pre_region_depth;
         if cur_then.sym == tir_term_none() {
             tir_block_set_branch(cur_then, merge_block.kind);
         }
@@ -838,22 +955,33 @@ pub fn lower_ast_stmt_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, stmt
             cur_else = lower_ast_stmt_to_tir(f, cur_else, s, loop_exit_id, loop_head_id, is_inner_tail, arena);
             j = j + 1;
         }
+        f.region_stack.len = pre_region_depth;
         if cur_else.sym == tir_term_none() {
             tir_block_set_branch(cur_else, merge_block.kind);
         }
 
+        f.region_stack.len = pre_region_depth;
         return merge_block;
     }
 
     if kind == stmt_while() {
+        let pre_region_depth = f.region_stack.len;
+        let prev_region_depth = f.cur_loop_region_depth;
+        f.cur_loop_region_depth = pre_region_depth;
         let cond_block = tir_fn_add_block(f, arena);
         let body_block = tir_fn_add_block(f, arena);
         let exit_block = tir_fn_add_block(f, arena);
 
         tir_block_set_branch(cur_block, cond_block.kind);
 
-        let cond = lower_ast_expr_to_tir(f, cond_block, stmt.expr, arena);
-        tir_block_set_branch_cond(cond_block, cond, body_block.kind, exit_block.kind);
+        if is_short_circuit_expr(stmt.expr) {
+            let v = lower_short_circuit(f, cond_block, stmt.expr, arena);
+            let saved = f.sc_end;
+            tir_block_set_branch_cond(saved, v, body_block.kind, exit_block.kind);
+        } else {
+            let v = lower_ast_expr_to_tir(f, cond_block, stmt.expr, arena);
+            tir_block_set_branch_cond(cond_block, v, body_block.kind, exit_block.kind);
+        }
 
         let mut cur_body = body_block;
         let body_len = stmt.then_stmts.len;
@@ -863,6 +991,8 @@ pub fn lower_ast_stmt_to_tir(f: *mut TirFunction, cur_block: *mut TirBlock, stmt
             cur_body = lower_ast_stmt_to_tir(f, cur_body, s, exit_block.kind, cond_block.kind, false, arena);
             i = i + 1;
         }
+        f.region_stack.len = pre_region_depth;
+        f.cur_loop_region_depth = prev_region_depth;
         if cur_body.sym == tir_term_none() {
             tir_block_set_branch(cur_body, cond_block.kind);
         }

@@ -117,6 +117,7 @@ fn main() yields [Diagnostics, FS, IO] {
         var prog2 = parse_program(tokens2, &mut interner2, test_reg);
         var formatted2 = fmt_program(prog2, &interner2, test_reg);
         assert_str_eq(formatted1, formatted2, "Formatter idempotency check (fmt(fmt(x)) == fmt(x))");
+        assert(fmt_tokens_equivalent(&tokens, &tokens2), "Formatter preserves the semantic token stream");
 
         // Safety gates: never write a file the printer cannot represent.
         let r1 = test_safe_file(test_reg);

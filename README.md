@@ -23,7 +23,7 @@
     <img src="https://img.shields.io/badge/Parity-IR_%2B_Exe_Bitwise-06B6D4?style=for-the-badge&logo=target&logoColor=white&labelColor=0f172a" alt="Parity" />
   </a>
   <a href="tests/">
-    <img src="https://img.shields.io/badge/Tests-23_%2B_18_Passing-22C55E?style=for-the-badge&logo=checkmarx&logoColor=white&labelColor=0f172a" alt="Tests" />
+    <img src="https://img.shields.io/badge/Tests-27_%2B_18_Passing-22C55E?style=for-the-badge&logo=checkmarx&logoColor=white&labelColor=0f172a" alt="Tests" />
   </a>
   <a href="LICENSE.md">
     <img src="https://img.shields.io/badge/License-Morrow_Unified_License_(MUL)-F59E0B?style=for-the-badge&logo=open-source-initiative&logoColor=white&labelColor=0f172a" alt="License" />
@@ -69,7 +69,7 @@
    No `async` or `await` infection. Functions declare effect capabilities (`yields [Db, IOError, Diagnostics]`). Delimited handlers with native machine-level continuations (`resume`) support synchronous execution, fiber suspension, or pure unit-test mocking.
 
 3. **Compile-Time Refinement Types**  
-   Declare bounded types like `type Health = u8[0..100];` and `type Port = u16[1..65535];`. The checker rejects out-of-range **literal** casts and statically rejects division by a refined divisor whose interval spans zero. Casts from variables are not yet range-proven, and there is no path-sensitive narrowing — see the verified status table in [`docs/SYNTAX.md` §14](docs/SYNTAX.md#14-not-implemented--known-limitations).
+   Declare bounded types like `type Health = u8[0..100];` and `type Port = u16[1..65535];`. The checker rejects out-of-range **literal** casts and statically rejects division by a refined divisor whose interval spans zero. Casts from variables are not yet range-proven; path-sensitive narrowing is enforced for typed `if`/`while` conditions — see the verified status table in [`docs/SYNTAX.md` §14](docs/SYNTAX.md#14-not-implemented--known-limitations).
 
 4. **Linear & Affine Resource Types (Leak Prevention)**  
    `linear struct` enforces exactly-once consumption, including branch convergence across `if/else`: dropping an unconsumed handle is a compile error. `affine struct` currently follows the same all-paths consumption rule — automatic drop on early `return` is not implemented yet.
@@ -103,14 +103,14 @@ There is no CI involved: the check runs on the machine that builds the binaries.
 | Algebraic effects (`effect`, `yields`, `perform`, `handle … with`, `resume`) | ✅ implemented; arms must be `fn op(k, args) { resume(k, v); }` and cover every op |
 | Linear resources (`linear struct`, `consume`, branch convergence) | ✅ enforced |
 | Affine resources (`affine struct`) | ⚠️ parsed; all-paths consumption required (no auto-drop on early `return`) |
-| Refinements | ⚠️ literal casts + divisor-span checks only (no variable proofs, no narrowing) |
+| Refinements | ⚠️ literal-cast checks, divisor-span checks, and path-sensitive narrowing for typed conditions; casts from variables are not range-proven |
 | Generics + turbofish (`identity::<i64>(42)`, `Pair::<i64> { … }`) | ✅ implemented |
 | Region escape analysis | ⚠️ partial: region-allocated values (pointers, references, `*_in` results, region-expression values) are rejected on `return`, on outer-scope assignment, and on struct-field or element stores into an outer-scope value; indirect escapes through calls are not detected |
 | `enum` / `match`, `for`, `nursery`/fibers, closures, `if`-expressions | ❌ not implemented (parse errors) |
-| Float literals | ❌ not implemented |
+| Float literals, float arithmetic | ❌ not implemented; `f32`/`f64` are opaque FFI type names only |
 | Debug info (PDB), LTO, section GC | ❌ not implemented (stage-0 Rust only) |
 | `println` | one value per call: literal, integer, or a single `{}` placeholder |
-| Call signatures | callee existence + argument **count** enforced; argument *types* not compared (inference returns `i64` for most expressions) |
+| Call signatures | callee existence, argument count, and argument/return kinds are enforced; generic parameters are exempt |
 | `std::process` | `process_exec` and `command_status` both work natively via default `Process` effect handler |
 
 Toolchain prerequisite: **`clang` on `PATH`** (the compiler emits LLVM IR and
@@ -151,7 +151,7 @@ fn fetch_player(id: i64) -> Player yields [Database] {
 fn process_batch() {
     region batch_reg {
         let mut buffer = string_buffer_new_in(batch_reg);
-        string_buffer_push_str(&mut buffer, "Processing region batch...");
+        string_buffer_push_str(&mut buffer, "Processing region batch...", 26);
     } // Entire arena memory reclaimed instantly here
 }
 
@@ -205,8 +205,8 @@ Morrow/
 │   ├── http.mw            # Zero-copy HTTP/1.1 engine
 │   ├── crypto.mw          # Hashing, checksums, hex codecs, CSPRNG
 │   ├── sql.mw             # High-level SQLite connection & transaction wrapper
-│   ├── sql_builder.mw     # Fluent, injection-safe SQL query builder
-│   ├── sqlite.mw          # Parameterized, SQL-injection-immune database driver
+│   ├── sql_builder.mw     # Fluent SQL composition helper (caller-trusted fragments)
+│   ├── sqlite.mw          # Parameterized database driver (bind untrusted values)
 │   ├── sync.mw            # Channels and message passing
 │   └── time.mw            # Monotonic host clock, stopwatch, throughput math
 ├── tests/                 # Pure Morrow Test Suites (21 Native Suites)
@@ -224,7 +224,7 @@ Morrow/
 │   ├── generics_test.mw   # Parametric generics and monomorphization
 │   ├── effects_test.mw    # Delimited continuations, resumption, and abortive unwinding
 │   ├── formal_verification_test.mw # Non-linear SMT intervals, affine & linear resources
-│   ├── crypto_test.mw     # Hex codecs, hashes, checksums, deterministic RNG
+│   ├── crypto_test.mw     # Hex codecs, standard hashes/checksums, deterministic non-crypto RNG
 │   ├── io_test.mw         # Integer formatting, BufReader lines, BufWriter assembly
 │   ├── sql_test.mw        # Query builder composition and SQL rendering
 │   ├── lsp_test.mw        # JSON-RPC framing, hover, completion, diagnostics

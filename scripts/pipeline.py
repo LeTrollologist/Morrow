@@ -104,6 +104,7 @@ class ReleasePipeline:
         self.parity_hash = None
         self.suite_summary = None
         self.example_count = 0
+        self.example_results = []
         self.notes_path = ROOT / "release-notes" / f"{self.tag}.md"
         self.ledger_path = ROOT / "releases" / f"{self.tag}.json"
 
@@ -437,8 +438,8 @@ class ReleasePipeline:
         log(f"forge test: {self.suite_summary}")
 
         log("Building all shipped examples...")
-        failed = []
         examples = sorted((ROOT / "examples").glob("*.mw"))
+        failed = []
         for example in examples:
             out_exe = ROOT / "target" / f"release_test_{example.stem}.exe"
             res = run(f'"{forge_bin}" build "{example}" -o "{out_exe}"', check=False, capture_output=True)
@@ -447,8 +448,59 @@ class ReleasePipeline:
         if failed:
             raise RuntimeError(f"Examples failed to build: {', '.join(failed)}")
         self.example_count = len(examples)
+
+        # Runtime gate: supported examples must execute with the expected status.
+        # Interactive servers and SQLite demos are intentionally build-only until
+        # their external runtime prerequisites are shipped/available.
+        skipped = {
+            "colorless_network_server": "interactive network service",
+            "http_server": "interactive network service",
+            "tcp_echo_server": "interactive network service",
+            "sqlite_benchmark": "requires sqlite3.dll (documented in docs/RUNTIME.md)",
+            "web_service": "requires sqlite3.dll (documented in docs/RUNTIME.md)",
+        }
+        expected = {"wasm_sample": 55}
+        run_results = []
+        failures = []
+        for example in examples:
+            name = example.stem
+            if name in skipped:
+                run_results.append((name, "SKIP", skipped[name]))
+                continue
+            exe = ROOT / "target" / f"release_test_{name}.exe"
+            want = expected.get(name, 0)
+            try:
+                proc = subprocess.run(
+                    [str(exe)], cwd=str(ROOT), stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    timeout=15, text=True,
+                )
+                got = proc.returncode
+                output = (proc.stdout or "").strip()
+            except subprocess.TimeoutExpired as exc:
+                got = "TIMEOUT"
+                output = (exc.stdout or "") if isinstance(exc.stdout, str) else ""
+            ok = got == want
+            run_results.append((name, "PASS" if ok else "FAIL", f"exit={got} expected={want}"))
+            if not ok:
+                failures.append((name, got, want, output))
+        report = ROOT / "target" / "pipeline-examples.log"
+        report.write_text(
+            "\n".join(f"{n}: {s} ({d})" for n, s, d in run_results) + "\n",
+            encoding="utf-8",
+        )
+        self.example_results = run_results
+        if failures:
+            detail = "\n".join(
+                f"  {n}: exit={g} expected={w}\n    {o[-400:]}"
+                for n, g, w, o in failures
+            )
+            raise RuntimeError(
+                f"Examples failed at runtime (see {report}):\n{detail}"
+            )
+        log(f"All {len(examples)} examples built; "
+            f"{len(examples) - len(skipped)} executed, {len(skipped)} build-only.")
         self._save_state(suites=self.suite_summary, examples=self.example_count)
-        log(f"All {len(examples)} examples built successfully.")
 
     def stage_bench(self):
         log("STAGE 5: Runtime Benchmarking", header=True)

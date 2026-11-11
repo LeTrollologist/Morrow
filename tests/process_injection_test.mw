@@ -1,0 +1,30 @@
+// Process invocation regression: output paths must be passed as arguments, not
+// interpreted by a shell. The payload below would terminate the shell with 99
+// and echo a marker if `system()` were still used.
+import std::test;
+import std::fs;
+import std::process;
+
+extern "C" {
+    fn CreateDirectoryA(path: *const u8, attrs: *const u8) -> i32;
+}
+
+fn main() -> i64 {
+    unsafe { CreateDirectoryA("target/inj" as *const u8, 0 as *const u8); }
+    let src = "fn main() -> i64 { 0 }\n";
+    if !fs_write_string("target/inj/inj_src.mw", src) { return 1; }
+
+    let status = process_exec("bin\\forge.exe", "build target/inj/inj_src.mw -o \"target/inj/p & exit 99\"");
+    if status != 0 { return 2; }
+    if !fs_exists("target/inj/p & exit 99.exe") { return 3; }
+    if !fs_exists("target/inj/p & exit 99.ll") { return 4; }
+
+    let fail_status = process_exec("bin\\forge.exe", "build target/inj/inj_src.mw -o \"target/no_such_dir/out.exe\"");
+    if fail_status == 0 { return 5; }
+
+    unsafe { CreateDirectoryA("target/inj/blocked.exe" as *const u8, 0 as *const u8); }
+    let clang_fail = process_exec("bin\\forge.exe", "build target/inj/inj_src.mw -o \"target/inj/blocked\"");
+    if clang_fail == 0 { return 6; }
+
+    return 0;
+}

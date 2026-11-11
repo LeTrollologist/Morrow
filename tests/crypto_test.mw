@@ -30,6 +30,7 @@ fn test_fnv1a_hashing() {
 
     assert_eq(h1, h2, "FNV-1a determinism on identical strings");
     assert(h1 != h3, "FNV-1a distinct hashes for distinct strings");
+    assert_eq(h1, -6615550055289275125, "FNV-1a 64-bit standard vector for 'hello'");
 }
 
 fn test_adler32_hashing() {
@@ -39,6 +40,7 @@ fn test_adler32_hashing() {
 
     assert_eq(a1, a2, "Adler-32 determinism on identical input");
     assert(a1 != a3, "Adler-32 distinct hashes for distinct input");
+    assert_eq(a1, 300286872, "Adler-32 standard vector for 'Wikipedia'");
 }
 
 fn test_crc32_hashing() {
@@ -48,6 +50,7 @@ fn test_crc32_hashing() {
 
     assert_eq(c1, c2, "CRC-32 determinism on identical input");
     assert(c1 != c3, "CRC-32 distinct checksums for distinct input");
+    assert_eq(crc32_hash("123456789"), 3421780262, "CRC-32 standard vector for '123456789'");
 }
 
 fn test_crypto_rng() {

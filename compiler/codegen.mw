@@ -26,6 +26,8 @@ pub struct Codegen {
     handlers: Vec<*mut AstHandler>,
     target_triple: String,
     cur_loop_head: i64,
+    region_stack: Vec<i64>,
+    cur_loop_region_depth: i64,
 }
 
 fn emit_i64_helper(cg: &mut Codegen, n: i64) {
@@ -117,6 +119,7 @@ pub fn codegen_new_target_in(interner: &mut Interner, arena: *mut u8, target_tri
     let str_vec: Vec<String> = vec_new_in(arena);
     let vars_vec: Vec<i64> = vec_new_in(arena);
     let handlers_vec: Vec<*mut AstHandler> = vec_new_in(arena);
+    let region_vec: Vec<i64> = vec_new_in(arena);
     Codegen {
         buf: sbuf,
         cg_interner: interner as *mut Interner,
@@ -130,6 +133,8 @@ pub fn codegen_new_target_in(interner: &mut Interner, arena: *mut u8, target_tri
         handlers: handlers_vec,
         target_triple: target_triple,
         cur_loop_head: 0,
+        region_stack: region_vec,
+        cur_loop_region_depth: 0,
     }
 }
 
@@ -143,6 +148,65 @@ fn alloc_label(cg: &mut Codegen) -> i64 {
     let l = cg.next_label;
     cg.next_label = cg.next_label + 1;
     l
+}
+
+fn emit_runtime_fail(cg: &mut Codegen, msg: String) {
+    let sid = get_str_id(cg, msg);
+    emit_str(cg, "    call i32 @puts(ptr @str_");
+    emit_i64(cg, sid);
+    emit_str(cg, ")\n");
+    emit_str(cg, "    call void @morrow_runtime_exit(i32 1)\n");
+    emit_str(cg, "    unreachable\n");
+}
+
+fn emit_div0_guard(cg: &mut Codegen, divisor_reg: i64) {
+    let is_zero = alloc_reg(cg);
+    emit_str(cg, "    %t");
+    emit_i64(cg, is_zero);
+    emit_str(cg, " = icmp eq i64 %t");
+    emit_i64(cg, divisor_reg);
+    emit_str(cg, ", 0\n");
+    let bad_lbl = alloc_label(cg);
+    let ok_lbl = alloc_label(cg);
+    emit_str(cg, "    br i1 %t");
+    emit_i64(cg, is_zero);
+    emit_str(cg, ", label %lbl_div0_");
+    emit_i64(cg, bad_lbl);
+    emit_str(cg, ", label %lbl_divok_");
+    emit_i64(cg, ok_lbl);
+    emit_str(cg, "\n");
+    emit_str(cg, "lbl_div0_");
+    emit_i64(cg, bad_lbl);
+    emit_str(cg, ":\n");
+    emit_runtime_fail(cg, "Runtime error: division by zero\n" as String);
+    emit_str(cg, "lbl_divok_");
+    emit_i64(cg, ok_lbl);
+    emit_str(cg, ":\n");
+    cg.terminated = false;
+}
+
+fn emit_region_cleanup(cg: &mut Codegen, depth: i64) {
+    let mut i = cg.region_stack.len - 1;
+    while i >= depth {
+        let sym = vec_get(&cg.region_stack, i);
+        let loaded_arena = alloc_reg(cg);
+        emit_str(cg, "    %t");
+        emit_i64(cg, loaded_arena);
+        emit_str(cg, " = load i64, ptr %v_");
+        emit_sym(cg, sym);
+        emit_str(cg, "\n");
+        let arena_p = alloc_reg(cg);
+        emit_str(cg, "    %t");
+        emit_i64(cg, arena_p);
+        emit_str(cg, " = inttoptr i64 %t");
+        emit_i64(cg, loaded_arena);
+        emit_str(cg, " to ptr\n");
+        emit_str(cg, "    call void @morrow_region_exit(ptr %t");
+        emit_i64(cg, arena_p);
+        emit_str(cg, ")\n");
+        i = i - 1;
+    }
+    cg.region_stack.len = depth;
 }
 
 fn emit_escaped_string(cg: &mut Codegen, s: String) {
@@ -712,6 +776,7 @@ pub fn emit_expr(cg: &mut Codegen, expr_ptr: *mut AstExpr) -> i64 {
             return r;
         }
         if expr_ptr.op == tok_slash() {
+            emit_div0_guard(cg, right_reg);
             emit_str(cg, "    %t");
             emit_i64(cg, r);
             emit_str(cg, " = sdiv i64 %t");
@@ -722,6 +787,7 @@ pub fn emit_expr(cg: &mut Codegen, expr_ptr: *mut AstExpr) -> i64 {
             return r;
         }
         if expr_ptr.op == tok_percent() {
+            emit_div0_guard(cg, right_reg);
             emit_str(cg, "    %t");
             emit_i64(cg, r);
             emit_str(cg, " = srem i64 %t");
@@ -732,6 +798,16 @@ pub fn emit_expr(cg: &mut Codegen, expr_ptr: *mut AstExpr) -> i64 {
             return r;
         }
 
+        if expr_ptr.op == tok_caret() {
+            emit_str(cg, "    %t");
+            emit_i64(cg, r);
+            emit_str(cg, " = xor i64 %t");
+            emit_i64(cg, left_reg);
+            emit_str(cg, ", %t");
+            emit_i64(cg, right_reg);
+            emit_str(cg, "\n");
+            return r;
+        }
         if expr_ptr.op == tok_and() {
             let l_cmp = alloc_reg(cg);
             emit_str(cg, "    %t");
@@ -1530,6 +1606,7 @@ pub fn emit_stmt(cg: &mut Codegen, stmt_ptr: *mut AstStmt, is_main: bool, is_tai
 
     if stmt_ptr.kind == stmt_return() {
         let ret_reg = emit_expr(cg, stmt_ptr.expr);
+        emit_region_cleanup(cg, 0);
         if is_main {
             let r32 = alloc_reg(cg);
             emit_str(cg, "    %t");
@@ -1562,6 +1639,7 @@ pub fn emit_stmt(cg: &mut Codegen, stmt_ptr: *mut AstStmt, is_main: bool, is_tai
 
     if stmt_ptr.kind == stmt_break() {
         if cg.cur_loop_exit > 0 {
+            emit_region_cleanup(cg, cg.cur_loop_region_depth);
             emit_str(cg, "    br label %lbl_");
             emit_i64(cg, cg.cur_loop_exit);
             emit_str(cg, "\n");
@@ -1573,6 +1651,7 @@ pub fn emit_stmt(cg: &mut Codegen, stmt_ptr: *mut AstStmt, is_main: bool, is_tai
     if stmt_ptr.kind == stmt_block() {
         if stmt_ptr.sym != 0 {
             // Region block: region r { ... }
+            let pre_depth = cg.region_stack.len;
             let mut already_alloc = false;
             let mut vi: i64 = 0;
             while vi < cg.allocated_vars.len {
@@ -1604,6 +1683,7 @@ pub fn emit_stmt(cg: &mut Codegen, stmt_ptr: *mut AstStmt, is_main: bool, is_tai
             emit_str(cg, ", ptr %v_");
             emit_sym(cg, stmt_ptr.sym);
             emit_str(cg, "\n");
+            vec_push(&mut cg.region_stack, stmt_ptr.sym);
 
             let mut bi: i64 = 0;
             while bi < stmt_ptr.then_stmts.len {
@@ -1628,6 +1708,7 @@ pub fn emit_stmt(cg: &mut Codegen, stmt_ptr: *mut AstStmt, is_main: bool, is_tai
                     emit_str(cg, "    call void @morrow_region_exit(ptr %t");
                     emit_i64(cg, arena_p);
                     emit_str(cg, ")\n");
+                    cg.region_stack.len = pre_depth;
 
                     if is_main {
                         let r32 = alloc_reg(cg);
@@ -1653,23 +1734,7 @@ pub fn emit_stmt(cg: &mut Codegen, stmt_ptr: *mut AstStmt, is_main: bool, is_tai
             }
 
             if !cg.terminated {
-                let loaded_arena = alloc_reg(cg);
-                emit_str(cg, "    %t");
-                emit_i64(cg, loaded_arena);
-                emit_str(cg, " = load i64, ptr %v_");
-                emit_sym(cg, stmt_ptr.sym);
-                emit_str(cg, "\n");
-
-                let arena_p = alloc_reg(cg);
-                emit_str(cg, "    %t");
-                emit_i64(cg, arena_p);
-                emit_str(cg, " = inttoptr i64 %t");
-                emit_i64(cg, loaded_arena);
-                emit_str(cg, " to ptr\n");
-
-                emit_str(cg, "    call void @morrow_region_exit(ptr %t");
-                emit_i64(cg, arena_p);
-                emit_str(cg, ")\n");
+                emit_region_cleanup(cg, pre_depth);
             }
             return;
         }
@@ -1685,6 +1750,7 @@ pub fn emit_stmt(cg: &mut Codegen, stmt_ptr: *mut AstStmt, is_main: bool, is_tai
     }
 
     if stmt_ptr.kind == stmt_if() {
+        let pre_region_depth = cg.region_stack.len;
         let cond_reg = emit_expr(cg, stmt_ptr.expr);
         let cmp_reg = alloc_reg(cg);
         emit_str(cg, "    %t");
@@ -1715,6 +1781,7 @@ pub fn emit_stmt(cg: &mut Codegen, stmt_ptr: *mut AstStmt, is_main: bool, is_tai
             emit_stmt(cg, vec_get(&stmt_ptr.then_stmts, i), is_main, false);
             i = i + 1;
         }
+        cg.region_stack.len = pre_region_depth;
         if !cg.terminated {
             emit_str(cg, "    br label %lbl_");
             emit_i64(cg, merge_lbl);
@@ -1731,6 +1798,7 @@ pub fn emit_stmt(cg: &mut Codegen, stmt_ptr: *mut AstStmt, is_main: bool, is_tai
             emit_stmt(cg, vec_get(&stmt_ptr.else_stmts, i), is_main, false);
             i = i + 1;
         }
+        cg.region_stack.len = pre_region_depth;
         if !cg.terminated {
             emit_str(cg, "    br label %lbl_");
             emit_i64(cg, merge_lbl);
@@ -1741,18 +1809,22 @@ pub fn emit_stmt(cg: &mut Codegen, stmt_ptr: *mut AstStmt, is_main: bool, is_tai
         emit_str(cg, "lbl_");
         emit_i64(cg, merge_lbl);
         emit_str(cg, ":\n");
+        cg.region_stack.len = pre_region_depth;
         cg.terminated = false;
         return;
     }
 
     if stmt_ptr.kind == stmt_while() {
+        let pre_region_depth = cg.region_stack.len;
         let cond_lbl = alloc_label(cg);
         let body_lbl = alloc_label(cg);
         let exit_lbl = alloc_label(cg);
         let prev_exit = cg.cur_loop_exit;
         let prev_head = cg.cur_loop_head;
+        let prev_region_depth = cg.cur_loop_region_depth;
         cg.cur_loop_exit = exit_lbl;
         cg.cur_loop_head = cond_lbl;
+        cg.cur_loop_region_depth = pre_region_depth;
 
         emit_str(cg, "    br label %lbl_");
         emit_i64(cg, cond_lbl);
@@ -1788,6 +1860,7 @@ pub fn emit_stmt(cg: &mut Codegen, stmt_ptr: *mut AstStmt, is_main: bool, is_tai
             emit_stmt(cg, vec_get(&stmt_ptr.then_stmts, i), is_main, false);
             i = i + 1;
         }
+        cg.region_stack.len = pre_region_depth;
         if !cg.terminated {
             emit_str(cg, "    br label %lbl_");
             emit_i64(cg, cond_lbl);
@@ -1801,11 +1874,13 @@ pub fn emit_stmt(cg: &mut Codegen, stmt_ptr: *mut AstStmt, is_main: bool, is_tai
         cg.terminated = false;
         cg.cur_loop_exit = prev_exit;
         cg.cur_loop_head = prev_head;
+        cg.cur_loop_region_depth = prev_region_depth;
         return;
     }
 
     if stmt_ptr.kind == stmt_continue() {
         if cg.cur_loop_head > 0 {
+            emit_region_cleanup(cg, cg.cur_loop_region_depth);
             emit_str(cg, "    br label %lbl_");
             emit_i64(cg, cg.cur_loop_head);
             emit_str(cg, "\n");
@@ -2193,6 +2268,22 @@ fn emit_tir_inst(cg: &mut Codegen, inst: *mut TirInst) {
         return;
     }
 
+    if kind == tir_inst_bool() {
+        let src = emit_tir_op(cg, inst.left);
+        let cmp = alloc_reg(cg);
+        emit_str(cg, "    %t");
+        emit_i64(cg, cmp);
+        emit_str(cg, " = icmp ne i64 %t");
+        emit_i64(cg, src);
+        emit_str(cg, ", 0\n");
+        emit_str(cg, "    %t");
+        emit_i64(cg, inst.sym);
+        emit_str(cg, " = zext i1 %t");
+        emit_i64(cg, cmp);
+        emit_str(cg, " to i64\n");
+        return;
+    }
+
     if kind == tir_inst_cast() {
         let src = emit_tir_op(cg, inst.left);
         let interner_ref = cg.cg_interner as &Interner;
@@ -2344,6 +2435,90 @@ fn emit_tir_inst(cg: &mut Codegen, inst: *mut TirInst) {
             }
         }
 
+        // Short-circuit logical operators before evaluating the right operand.
+        if inst.op == tok_and() || inst.op == tok_or() {
+            let left_reg = emit_tir_op(cg, inst.left);
+            let l_cmp = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, l_cmp);
+            emit_str(cg, " = icmp ne i64 %t");
+            emit_i64(cg, left_reg);
+            emit_str(cg, ", 0\n");
+            let rhs_lbl = alloc_label(cg);
+            let short_lbl = alloc_label(cg);
+            let merge_lbl = alloc_label(cg);
+            if inst.op == tok_and() {
+                emit_str(cg, "    br i1 %t");
+                emit_i64(cg, l_cmp);
+                emit_str(cg, ", label %lbl_sc_rhs_");
+                emit_i64(cg, rhs_lbl);
+                emit_str(cg, ", label %lbl_sc_short_");
+                emit_i64(cg, short_lbl);
+                emit_str(cg, "\n");
+            } else {
+                emit_str(cg, "    br i1 %t");
+                emit_i64(cg, l_cmp);
+                emit_str(cg, ", label %lbl_sc_short_");
+                emit_i64(cg, short_lbl);
+                emit_str(cg, ", label %lbl_sc_rhs_");
+                emit_i64(cg, rhs_lbl);
+                emit_str(cg, "\n");
+            }
+            emit_str(cg, "lbl_sc_rhs_");
+            emit_i64(cg, rhs_lbl);
+            emit_str(cg, ":\n");
+            cg.terminated = false;
+            let right_reg = emit_tir_op(cg, inst.right);
+            let r_cmp = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, r_cmp);
+            emit_str(cg, " = icmp ne i64 %t");
+            emit_i64(cg, right_reg);
+            emit_str(cg, ", 0\n");
+            let r_bool = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, r_bool);
+            emit_str(cg, " = zext i1 %t");
+            emit_i64(cg, r_cmp);
+            emit_str(cg, " to i64\n");
+            emit_str(cg, "    br label %lbl_sc_merge_");
+            emit_i64(cg, merge_lbl);
+            emit_str(cg, "\n");
+            emit_str(cg, "lbl_sc_short_");
+            emit_i64(cg, short_lbl);
+            emit_str(cg, ":\n");
+            let short_val = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, short_val);
+            emit_str(cg, " = add i64 0, ");
+            if inst.op == tok_and() { emit_str(cg, "0\n"); } else { emit_str(cg, "1\n"); }
+            emit_str(cg, "    br label %lbl_sc_merge_");
+            emit_i64(cg, merge_lbl);
+            emit_str(cg, "\n");
+            emit_str(cg, "lbl_sc_merge_");
+            emit_i64(cg, merge_lbl);
+            emit_str(cg, ":\n");
+            let res = alloc_reg(cg);
+            emit_str(cg, "    %t");
+            emit_i64(cg, res);
+            emit_str(cg, " = phi i64 [ %t");
+            emit_i64(cg, r_bool);
+            emit_str(cg, ", %lbl_sc_rhs_");
+            emit_i64(cg, rhs_lbl);
+            emit_str(cg, " ], [ %t");
+            emit_i64(cg, short_val);
+            emit_str(cg, ", %lbl_sc_short_");
+            emit_i64(cg, short_lbl);
+            emit_str(cg, " ]\n");
+            emit_str(cg, "    %t");
+            emit_i64(cg, inst.sym);
+            emit_str(cg, " = add i64 0, %t");
+            emit_i64(cg, res);
+            emit_str(cg, "\n");
+            cg.terminated = false;
+            return;
+        }
+
         // Binary operation
         let left_reg = emit_tir_op(cg, inst.left);
         let right_reg = emit_tir_op(cg, inst.right);
@@ -2415,6 +2590,7 @@ fn emit_tir_inst(cg: &mut Codegen, inst: *mut TirInst) {
             return;
         }
         if inst.op == tok_slash() {
+            emit_div0_guard(cg, right_reg);
             var divop = "sdiv";
             if inst.int_val / 256 == 0 {
                 divop = "udiv";
@@ -2443,6 +2619,7 @@ fn emit_tir_inst(cg: &mut Codegen, inst: *mut TirInst) {
             return;
         }
         if inst.op == tok_percent() {
+            emit_div0_guard(cg, right_reg);
             var remop = "srem";
             if inst.int_val / 256 == 0 {
                 remop = "urem";
@@ -2468,6 +2645,16 @@ fn emit_tir_inst(cg: &mut Codegen, inst: *mut TirInst) {
                 emit_i64(cg, right_reg);
                 emit_str(cg, "\n");
             }
+            return;
+        }
+        if inst.op == tok_caret() {
+            emit_str(cg, "    %t");
+            emit_i64(cg, inst.sym);
+            emit_str(cg, " = xor i64 %t");
+            emit_i64(cg, left_reg);
+            emit_str(cg, ", %t");
+            emit_i64(cg, right_reg);
+            emit_str(cg, "\n");
             return;
         }
         if inst.op == tok_and() {
@@ -3691,6 +3878,43 @@ fn emit_tir_inst(cg: &mut Codegen, inst: *mut TirInst) {
         emit_i64(cg, eff_sym);
         emit_str(cg, ")\n");
 
+        let is_null = alloc_reg(cg);
+        emit_str(cg, "    %t");
+        emit_i64(cg, is_null);
+        emit_str(cg, " = icmp eq ptr %t");
+        emit_i64(cg, frame_ptr);
+        emit_str(cg, ", null\n");
+        let ue_lbl = alloc_label(cg);
+        let ue_ok = alloc_label(cg);
+        emit_str(cg, "    br i1 %t");
+        emit_i64(cg, is_null);
+        emit_str(cg, ", label %lbl_ue_");
+        emit_i64(cg, ue_lbl);
+        emit_str(cg, ", label %lbl_ueok_");
+        emit_i64(cg, ue_ok);
+        emit_str(cg, "\n");
+        emit_str(cg, "lbl_ue_");
+        emit_i64(cg, ue_lbl);
+        emit_str(cg, ":\n");
+        let interner_ref = cg.cg_interner as &Interner;
+        let eff_name = interner_lookup(interner_ref, eff_sym);
+        let op_name = interner_lookup(interner_ref, op_sym);
+        let mut ubuf = string_buffer_new_in(cg.cg_arena);
+        fmt_append_str(&mut ubuf, "Runtime error: unhandled effect " as String);
+        fmt_append_str(&mut ubuf, eff_name);
+        fmt_append_str(&mut ubuf, "::" as String);
+        fmt_append_str(&mut ubuf, op_name);
+        fmt_append_str(&mut ubuf, "\n" as String);
+        string_buffer_push_byte(&mut ubuf, 0 as u8);
+        let msg_sid = get_str_id(cg, string_as_ptr(&ubuf) as String);
+        emit_str(cg, "    call i32 @puts(ptr @str_");
+        emit_i64(cg, msg_sid);
+        emit_str(cg, ")\n    call void @morrow_runtime_exit(i32 1)\n    unreachable\n");
+        emit_str(cg, "lbl_ueok_");
+        emit_i64(cg, ue_ok);
+        emit_str(cg, ":\n");
+        cg.terminated = false;
+
         emit_str(cg, "    store ptr %t");
         emit_i64(cg, frame_ptr);
         emit_str(cg, ", ptr %t");
@@ -4091,6 +4315,34 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
         fi = fi + 1;
     }
 
+    // Runtime diagnostic strings must exist before the global string table is emitted.
+    get_str_id(&mut cg, "Runtime error: division by zero\n" as String);
+    get_str_id(&mut cg, "Runtime error: unhandled effect " as String);
+    get_str_id(&mut cg, "::" as String);
+    get_str_id(&mut cg, "\n" as String);
+    let mut ei2: i64 = 0;
+    while ei2 < prog_ptr.effects.len {
+        let eff = vec_get(&prog_ptr.effects, ei2);
+        let eff_n = interner_lookup(interner, eff.name_sym);
+        get_str_id(&mut cg, eff_n);
+        let mut oi2: i64 = 0;
+        while oi2 < eff.ops.len {
+            let op2 = vec_get(&eff.ops, oi2);
+            let op_n = interner_lookup(interner, op2.name_sym);
+            get_str_id(&mut cg, op_n);
+            let mut mbuf = string_buffer_new_in(arena);
+            fmt_append_str(&mut mbuf, "Runtime error: unhandled effect " as String);
+            fmt_append_str(&mut mbuf, eff_n);
+            fmt_append_str(&mut mbuf, "::" as String);
+            fmt_append_str(&mut mbuf, op_n);
+            fmt_append_str(&mut mbuf, "\n" as String);
+            string_buffer_push_byte(&mut mbuf, 0 as u8);
+            get_str_id(&mut cg, string_as_ptr(&mbuf) as String);
+            oi2 = oi2 + 1;
+        }
+        ei2 = ei2 + 1;
+    }
+
     // Module Header
     let is_linux = is_linux_target(target_triple);
     let is_arm64 = is_aarch64_target(target_triple);
@@ -4116,6 +4368,7 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
     emit_str(&mut cg, "%MorrowContinuation = type { ptr, [64 x i64], i64, i64 }\n");
     emit_str(&mut cg, "%TungstenContinuation = type { ptr, [64 x i64], i64, i64 }\n");
     emit_str(&mut cg, "@morrow_top_handler_frame = internal global ptr null\n");
+    emit_str(&mut cg, "@morrow_region_live = internal global i64 0\n");
     emit_str(&mut cg, "@tungsten_top_handler_frame = internal global ptr null\n\n");
 
     if is_wasm {
@@ -4289,7 +4542,7 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
     }
     emit_str(&mut cg, "declare i64 @ftell(ptr)\n");
     emit_str(&mut cg, "declare i32 @remove(ptr)\n");
-    emit_str(&mut cg, "declare i32 @system(ptr)\n");
+
     if is_linux {
         emit_str(&mut cg, "declare i32 @mkdir(ptr, i32)\n");
         emit_str(&mut cg, "declare i32 @usleep(i32)\n");
@@ -4300,7 +4553,17 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
     }
     emit_str(&mut cg, "declare i32 @printf(ptr, ...)\n");
     emit_str(&mut cg, "declare i32 @puts(ptr)\n");
-    emit_str(&mut cg, "declare i32 @fflush(ptr)\n\n");
+    emit_str(&mut cg, "declare i32 @fflush(ptr)\n");
+    if is_linux {
+        emit_str(&mut cg, "declare void @_exit(i32)\n");
+        emit_str(&mut cg, "define void @morrow_runtime_exit(i32 %code) {\n    call void @_exit(i32 %code)\n    unreachable\n}\n\n");
+    } else if is_wasm {
+        emit_str(&mut cg, "declare void @abort()\n");
+        emit_str(&mut cg, "define void @morrow_runtime_exit(i32 %code) {\n    call void @abort()\n    unreachable\n}\n\n");
+    } else {
+        emit_str(&mut cg, "declare void @ExitProcess(i32)\n");
+        emit_str(&mut cg, "define void @morrow_runtime_exit(i32 %code) {\n    call void @ExitProcess(i32 %code)\n    unreachable\n}\n\n");
+    }
 
     // User / Library External Function Declarations
     let mut declared_syms: Vec<i64> = vec_new_in(arena);
@@ -4472,6 +4735,9 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
     emit_str(&mut cg, "    store i64 %init_cap, ptr %cap_ptr\n");
     emit_str(&mut cg, "    %chunk_list_ptr = getelementptr inbounds i8, ptr %arena, i64 24\n");
     emit_str(&mut cg, "    store ptr %chunk, ptr %chunk_list_ptr\n");
+    emit_str(&mut cg, "    %live0 = load i64, ptr @morrow_region_live\n");
+    emit_str(&mut cg, "    %live1 = add i64 %live0, 1\n");
+    emit_str(&mut cg, "    store i64 %live1, ptr @morrow_region_live\n");
     emit_str(&mut cg, "    ret ptr %arena\n}\n\n");
 
     emit_str(&mut cg, "define ptr @morrow_region_alloc(ptr %arena, i64 %size, i64 %align) {\n");
@@ -4568,6 +4834,9 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
     emit_str(&mut cg, "    %is_null = icmp eq ptr %arena, null\n");
     emit_str(&mut cg, "    br i1 %is_null, label %done, label %init_free\n");
     emit_str(&mut cg, "init_free:\n");
+    emit_str(&mut cg, "    %live2 = load i64, ptr @morrow_region_live\n");
+    emit_str(&mut cg, "    %live3 = sub i64 %live2, 1\n");
+    emit_str(&mut cg, "    store i64 %live3, ptr @morrow_region_live\n");
     emit_str(&mut cg, "    %chunk_list_ptr = getelementptr inbounds i8, ptr %arena, i64 24\n");
     emit_str(&mut cg, "    %first_chunk = load ptr, ptr %chunk_list_ptr\n");
     emit_str(&mut cg, "    br label %loop_cond\n");
@@ -4584,6 +4853,10 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
     emit_str(&mut cg, "    br label %done\n");
     emit_str(&mut cg, "done:\n");
     emit_str(&mut cg, "    ret void\n}\n\n");
+
+    emit_str(&mut cg, "define i64 @morrow_region_live_count() {\n");
+    emit_str(&mut cg, "    %lv = load i64, ptr @morrow_region_live\n");
+    emit_str(&mut cg, "    ret i64 %lv\n}\n\n");
 
     emit_str(&mut cg, "define ptr @morrow_fs_read_file_in(ptr %path, ptr %arena) {\n");
     emit_str(&mut cg, "    %fp = call ptr @fopen(ptr %path, ptr @str_mode_rb)\n");
@@ -4653,6 +4926,85 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
     emit_str(&mut cg, "    %ok = icmp eq i32 %rc, 0\n");
     emit_str(&mut cg, "    ret i1 %ok\n}\n\n");
 
+    if is_linux {
+        emit_str(&mut cg, "declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)\n");
+        emit_str(&mut cg, "declare i32 @wordexp(ptr, ptr, i32)\n");
+        emit_str(&mut cg, "declare void @wordfree(ptr)\n");
+        emit_str(&mut cg, "declare i32 @posix_spawnp(ptr, ptr, ptr, ptr, ptr, ptr)\n");
+        emit_str(&mut cg, "declare i32 @waitpid(i64, ptr, i32)\n");
+        emit_str(&mut cg, "@environ = external global ptr\n");
+        emit_str(&mut cg, "define i32 @morrow_spawn_unix(ptr %line) {\n");
+        emit_str(&mut cg, "entry:\n");
+        emit_str(&mut cg, "    %we = alloca [4 x i64], align 8\n");
+        emit_str(&mut cg, "    %rc = call i32 @wordexp(ptr %line, ptr %we, i32 4)\n");
+        emit_str(&mut cg, "    %bad = icmp ne i32 %rc, 0\n");
+        emit_str(&mut cg, "    br i1 %bad, label %fail, label %check\n");
+        emit_str(&mut cg, "check:\n");
+        emit_str(&mut cg, "    %wordc = load i64, ptr %we\n");
+        emit_str(&mut cg, "    %empty = icmp eq i64 %wordc, 0\n");
+        emit_str(&mut cg, "    br i1 %empty, label %fail, label %spawn\n");
+        emit_str(&mut cg, "spawn:\n");
+        emit_str(&mut cg, "    %wv_ptr = getelementptr inbounds i8, ptr %we, i64 8\n");
+        emit_str(&mut cg, "    %wv = load ptr, ptr %wv_ptr\n");
+        emit_str(&mut cg, "    %arg0 = load ptr, ptr %wv\n");
+        emit_str(&mut cg, "    %pid = alloca i64\n");
+        emit_str(&mut cg, "    %envp = load ptr, ptr @environ\n");
+        emit_str(&mut cg, "    %sp = call i32 @posix_spawnp(ptr %pid, ptr %arg0, ptr null, ptr null, ptr %wv, ptr %envp)\n");
+        emit_str(&mut cg, "    call void @wordfree(ptr %we)\n");
+        emit_str(&mut cg, "    %sf = icmp ne i32 %sp, 0\n");
+        emit_str(&mut cg, "    br i1 %sf, label %fail, label %wait\n");
+        emit_str(&mut cg, "wait:\n");
+        emit_str(&mut cg, "    %pidv = load i64, ptr %pid\n");
+        emit_str(&mut cg, "    %st = alloca i32\n");
+        emit_str(&mut cg, "    call i32 @waitpid(i64 %pidv, ptr %st, i32 0)\n");
+        emit_str(&mut cg, "    %status = load i32, ptr %st\n");
+        emit_str(&mut cg, "    %shifted = ashr i32 %status, 8\n");
+        emit_str(&mut cg, "    %code = and i32 %shifted, 255\n");
+        emit_str(&mut cg, "    ret i32 %code\n");
+        emit_str(&mut cg, "fail:\n");
+        emit_str(&mut cg, "    ret i32 -1\n");
+        emit_str(&mut cg, "}\n");
+    }
+    if is_linux {
+    } else if is_wasm {
+        emit_str(&mut cg, "define i32 @morrow_spawn_win(ptr %line) {\n    ret i32 -1\n}\n\n");
+    } else {
+        emit_str(&mut cg, "declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)\n");
+        emit_str(&mut cg, "declare i32 @CreateProcessA(ptr, ptr, ptr, ptr, i32, i32, ptr, ptr, ptr, ptr)\n");
+        emit_str(&mut cg, "declare i32 @WaitForSingleObject(ptr, i32)\n");
+        emit_str(&mut cg, "declare i32 @GetExitCodeProcess(ptr, ptr)\n");
+        emit_str(&mut cg, "declare i32 @CloseHandle(ptr)\n");
+        emit_str(&mut cg, "define i32 @morrow_spawn_win(ptr %line) {\n");
+        emit_str(&mut cg, "entry:\n");
+        emit_str(&mut cg, "    %len = call i64 @strlen(ptr %line)\n");
+        emit_str(&mut cg, "    %sz = add i64 %len, 1\n");
+        emit_str(&mut cg, "    %buf = call ptr @malloc(i64 %sz)\n");
+        emit_str(&mut cg, "    call void @llvm.memcpy.p0.p0.i64(ptr %buf, ptr %line, i64 %len, i1 false)\n");
+        emit_str(&mut cg, "    %term = getelementptr inbounds i8, ptr %buf, i64 %len\n");
+        emit_str(&mut cg, "    store i8 0, ptr %term\n");
+        emit_str(&mut cg, "    %si = alloca [104 x i8], align 8\n");
+        emit_str(&mut cg, "    call void @llvm.memset.p0.i64(ptr %si, i8 0, i64 104, i1 false)\n");
+        emit_str(&mut cg, "    %pi = alloca [4 x i64], align 8\n");
+        emit_str(&mut cg, "    %ok = call i32 @CreateProcessA(ptr null, ptr %buf, ptr null, ptr null, i32 0, i32 0, ptr null, ptr null, ptr %si, ptr %pi)\n");
+        emit_str(&mut cg, "    call void @free(ptr %buf)\n");
+        emit_str(&mut cg, "    %failed = icmp eq i32 %ok, 0\n");
+        emit_str(&mut cg, "    br i1 %failed, label %fail, label %wait\n");
+        emit_str(&mut cg, "fail:\n");
+        emit_str(&mut cg, "    ret i32 -1\n");
+        emit_str(&mut cg, "wait:\n");
+        emit_str(&mut cg, "    %hproc = load ptr, ptr %pi\n");
+        emit_str(&mut cg, "    %hthread_ptr = getelementptr inbounds i8, ptr %pi, i64 8\n");
+        emit_str(&mut cg, "    %hthread = load ptr, ptr %hthread_ptr\n");
+        emit_str(&mut cg, "    call i32 @WaitForSingleObject(ptr %hproc, i32 -1)\n");
+        emit_str(&mut cg, "    %code_ptr = alloca i32\n");
+        emit_str(&mut cg, "    call i32 @GetExitCodeProcess(ptr %hproc, ptr %code_ptr)\n");
+        emit_str(&mut cg, "    %code = load i32, ptr %code_ptr\n");
+        emit_str(&mut cg, "    call i32 @CloseHandle(ptr %hproc)\n");
+        emit_str(&mut cg, "    call i32 @CloseHandle(ptr %hthread)\n");
+        emit_str(&mut cg, "    ret i32 %code\n");
+        emit_str(&mut cg, "}\n");
+    }
+
     emit_str(&mut cg, "define i64 @morrow_process_exec(ptr %cmd, ptr %args) {\n");
     emit_str(&mut cg, "    %is_args_null = icmp eq ptr %args, null\n");
     emit_str(&mut cg, "    br i1 %is_args_null, label %run_simple, label %check_args_empty\n");
@@ -4672,12 +5024,20 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
     emit_str(&mut cg, "    call void @llvm.memcpy.p0.p0.i64(ptr %args_dest, ptr %args, i64 %args_len, i1 false)\n");
     emit_str(&mut cg, "    %term_ptr = getelementptr inbounds i8, ptr %args_dest, i64 %args_len\n");
     emit_str(&mut cg, "    store i8 0, ptr %term_ptr\n");
-    emit_str(&mut cg, "    %res_code = call i32 @system(ptr %full_buf)\n");
+    if is_linux {
+        emit_str(&mut cg, "    %res_code = call i32 @morrow_spawn_unix(ptr %full_buf)\n");
+    } else {
+        emit_str(&mut cg, "    %res_code = call i32 @morrow_spawn_win(ptr %full_buf)\n");
+    }
     emit_str(&mut cg, "    call void @free(ptr %full_buf)\n");
     emit_str(&mut cg, "    %res_i64 = sext i32 %res_code to i64\n");
     emit_str(&mut cg, "    ret i64 %res_i64\n");
     emit_str(&mut cg, "run_simple:\n");
-    emit_str(&mut cg, "    %res_code_simple = call i32 @system(ptr %cmd)\n");
+    if is_linux {
+        emit_str(&mut cg, "    %res_code_simple = call i32 @morrow_spawn_unix(ptr %cmd)\n");
+    } else {
+        emit_str(&mut cg, "    %res_code_simple = call i32 @morrow_spawn_win(ptr %cmd)\n");
+    }
     emit_str(&mut cg, "    %res_simple_i64 = sext i32 %res_code_simple to i64\n");
     emit_str(&mut cg, "    ret i64 %res_simple_i64\n}\n\n");
 

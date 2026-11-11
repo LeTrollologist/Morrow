@@ -986,6 +986,7 @@ pub fn compile_file(src_path: String, out_ll_path: String, out_exe_path: String)
     return compile_file_target(src_path, out_ll_path, out_exe_path, "x86_64-pc-windows-gnu");
 }
 
+
 pub fn compile_file_target(src_path: String, out_ll_path: String, out_exe_path: String, target_triple: String) -> i64 yields [FS, Process, Diagnostics, IO] {
     if !forge_target_supported(target_triple) {
         forge_print("Error: unsupported target: ");
@@ -1038,24 +1039,36 @@ pub fn compile_file_target(src_path: String, out_ll_path: String, out_exe_path: 
                     if is_wasm {
                         let opt_prefix = "--target=wasm32-unknown-unknown -nostdlib -Wl,--no-entry -Wl,--export-all -Wl,--allow-undefined -o ";
                         string_buffer_push_str(&mut cmd_args, opt_prefix as *const u8, unsafe { strlen(opt_prefix as *const u8) } as i64);
+                        string_buffer_push_byte(&mut cmd_args, 34 as u8);
                         string_buffer_push_str(&mut cmd_args, out_exe_path as *const u8, unsafe { strlen(out_exe_path as *const u8) } as i64);
+                        string_buffer_push_byte(&mut cmd_args, 34 as u8);
                         string_buffer_push_byte(&mut cmd_args, 32 as u8);
+                        string_buffer_push_byte(&mut cmd_args, 34 as u8);
                         string_buffer_push_str(&mut cmd_args, out_ll_path as *const u8, unsafe { strlen(out_ll_path as *const u8) } as i64);
+                        string_buffer_push_byte(&mut cmd_args, 34 as u8);
                     } else if is_arm64 {
                         let opt_prefix = "--target=aarch64-unknown-linux-gnu -o ";
                         let opt_suffix = " -lc -lpthread -lm -ldl";
                         string_buffer_push_str(&mut cmd_args, opt_prefix as *const u8, unsafe { strlen(opt_prefix as *const u8) } as i64);
+                        string_buffer_push_byte(&mut cmd_args, 34 as u8);
                         string_buffer_push_str(&mut cmd_args, out_exe_path as *const u8, unsafe { strlen(out_exe_path as *const u8) } as i64);
+                        string_buffer_push_byte(&mut cmd_args, 34 as u8);
                         string_buffer_push_byte(&mut cmd_args, 32 as u8);
+                        string_buffer_push_byte(&mut cmd_args, 34 as u8);
                         string_buffer_push_str(&mut cmd_args, out_ll_path as *const u8, unsafe { strlen(out_ll_path as *const u8) } as i64);
+                        string_buffer_push_byte(&mut cmd_args, 34 as u8);
                         string_buffer_push_str(&mut cmd_args, opt_suffix as *const u8, unsafe { strlen(opt_suffix as *const u8) } as i64);
                     } else if is_linux {
                         let opt_prefix = "--target=x86_64-unknown-linux-gnu -o ";
                         let opt_suffix = " -lc -lpthread -lm -ldl";
                         string_buffer_push_str(&mut cmd_args, opt_prefix as *const u8, unsafe { strlen(opt_prefix as *const u8) } as i64);
+                        string_buffer_push_byte(&mut cmd_args, 34 as u8);
                         string_buffer_push_str(&mut cmd_args, out_exe_path as *const u8, unsafe { strlen(out_exe_path as *const u8) } as i64);
+                        string_buffer_push_byte(&mut cmd_args, 34 as u8);
                         string_buffer_push_byte(&mut cmd_args, 32 as u8);
+                        string_buffer_push_byte(&mut cmd_args, 34 as u8);
                         string_buffer_push_str(&mut cmd_args, out_ll_path as *const u8, unsafe { strlen(out_ll_path as *const u8) } as i64);
+                        string_buffer_push_byte(&mut cmd_args, 34 as u8);
                         string_buffer_push_str(&mut cmd_args, opt_suffix as *const u8, unsafe { strlen(opt_suffix as *const u8) } as i64);
                     } else {
                         let opt_prefix = "--target=x86_64-pc-windows-gnu -nostartfiles -Wl,--no-insert-timestamp -o ";
@@ -1066,14 +1079,17 @@ pub fn compile_file_target(src_path: String, out_ll_path: String, out_exe_path: 
                         string_buffer_push_byte(&mut suffix_buf, 0 as u8);
                         let opt_suffix = string_as_ptr(&suffix_buf) as String;
                         string_buffer_push_str(&mut cmd_args, opt_prefix as *const u8, unsafe { strlen(opt_prefix as *const u8) } as i64);
+                        string_buffer_push_byte(&mut cmd_args, 34 as u8);
                         string_buffer_push_str(&mut cmd_args, out_exe_path as *const u8, unsafe { strlen(out_exe_path as *const u8) } as i64);
+                        string_buffer_push_byte(&mut cmd_args, 34 as u8);
                         string_buffer_push_byte(&mut cmd_args, 32 as u8);
+                        string_buffer_push_byte(&mut cmd_args, 34 as u8);
                         string_buffer_push_str(&mut cmd_args, out_ll_path as *const u8, unsafe { strlen(out_ll_path as *const u8) } as i64);
+                        string_buffer_push_byte(&mut cmd_args, 34 as u8);
                         string_buffer_push_str(&mut cmd_args, opt_suffix as *const u8, unsafe { strlen(opt_suffix as *const u8) } as i64);
                     }
                     string_buffer_push_byte(&mut cmd_args, 0 as u8);
                     let args_str = string_as_ptr(&cmd_args) as String;
-
                     let mut status = process_exec("clang", args_str);
                     if status != 0 && is_linux {
                         // If cross-compilation linking fails on host due to absent Linux sysroot,
@@ -1086,9 +1102,13 @@ pub fn compile_file_target(src_path: String, out_ll_path: String, out_exe_path: 
                             let c_prefix = "--target=x86_64-unknown-linux-gnu -c -o ";
                             string_buffer_push_str(&mut c_args, c_prefix as *const u8, unsafe { strlen(c_prefix as *const u8) } as i64);
                         }
+                        string_buffer_push_byte(&mut c_args, 34 as u8);
                         string_buffer_push_str(&mut c_args, out_exe_path as *const u8, unsafe { strlen(out_exe_path as *const u8) } as i64);
+                        string_buffer_push_byte(&mut c_args, 34 as u8);
                         string_buffer_push_byte(&mut c_args, 32 as u8);
+                        string_buffer_push_byte(&mut c_args, 34 as u8);
                         string_buffer_push_str(&mut c_args, out_ll_path as *const u8, unsafe { strlen(out_ll_path as *const u8) } as i64);
+                        string_buffer_push_byte(&mut c_args, 34 as u8);
                         string_buffer_push_byte(&mut c_args, 0 as u8);
                         let c_str = string_as_ptr(&c_args) as String;
                         let c_status = process_exec("clang", c_str);
@@ -1244,6 +1264,11 @@ pub fn forge_run_test(arena: *mut u8) -> i64 yields [FS, Process, Diagnostics, I
     vec_push(&mut test_suites, "tests/struct_field_layout_test.mw");
     vec_push(&mut test_suites, "tests/refinement_test.mw");
     vec_push(&mut test_suites, "tests/region_escape_test.mw");
+    vec_push(&mut test_suites, "tests/region_cleanup_test.mw");
+    vec_push(&mut test_suites, "tests/runtime_diagnostics_test.mw");
+    vec_push(&mut test_suites, "tests/process_injection_test.mw");
+    vec_push(&mut test_suites, "tests/readme_example_test.mw");
+    vec_push(&mut test_suites, "tests/short_circuit_test.mw");
     vec_push(&mut test_suites, "tests/generics_test.mw");
     vec_push(&mut test_suites, "tests/effects_test.mw");
     vec_push(&mut test_suites, "tests/formal_verification_test.mw");
@@ -1288,16 +1313,7 @@ pub fn forge_run_test(arena: *mut u8) -> i64 yields [FS, Process, Diagnostics, I
             forge_print(t_path);
             failed = failed + 1;
         } else {
-            let mut run_status: i64 = 1;
-            let mut attempts: i64 = 0;
-            while attempts < 10 {
-                unsafe { Sleep(200); }
-                run_status = process_exec(out_exe, "");
-                if run_status == 0 {
-                    break;
-                }
-                attempts = attempts + 1;
-            }
+            let run_status = process_exec(out_exe, "");
             if run_status != 0 {
                 forge_print("[FAIL] Test suite failed: ");
                 forge_print(t_path);
@@ -1460,16 +1476,7 @@ pub fn forge_run_bench(arena: *mut u8) -> i64 yields [FS, Process, Diagnostics, 
             forge_print(src);
             failed = failed + 1;
         } else {
-            let mut attempts: i64 = 0;
-            let mut run_status: i64 = 1;
-            while attempts < 10 {
-                unsafe { Sleep(200); }
-                run_status = process_exec(out_exe, "");
-                if run_status == 0 {
-                    break;
-                }
-                attempts = attempts + 1;
-            }
+            let run_status = process_exec(out_exe, "");
             if run_status != 0 {
                 forge_print("[FAIL] Benchmark exited non-zero: ");
                 forge_print(src);

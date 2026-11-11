@@ -1,0 +1,64 @@
+// Region cleanup regression: every exit path must release its region.
+extern "C" {
+    fn morrow_region_live_count() -> i64;
+}
+
+fn early_return(n: i64) -> i64 {
+    region r {
+        if n == 0 {
+            return 7;
+        }
+    }
+    0
+}
+
+fn break_out(n: i64) -> i64 {
+    let mut i: i64 = 0;
+    while i < n {
+        region r {
+            i = i + 1;
+            if i == 2 { break; }
+        }
+    }
+    i
+}
+
+fn continue_out(n: i64) -> i64 {
+    let mut i: i64 = 0;
+    let mut s: i64 = 0;
+    while i < n {
+        i = i + 1;
+        region r {
+            if i == 2 { continue; }
+            s = s + i;
+        }
+    }
+    s
+}
+
+fn nested_return(n: i64) -> i64 {
+    region a {
+        region b {
+            if n == 0 { return 3; }
+        }
+    }
+    0
+}
+
+fn main() -> i64 {
+    let mut i: i64 = 0;
+    while i < 20 {
+        let x = early_return(0);
+        if x != 7 { return 10; }
+        if morrow_region_live_count() != 0 { return 11; }
+        i = i + 1;
+    }
+
+    if break_out(5) != 2 { return 12; }
+    if morrow_region_live_count() != 0 { return 13; }
+    if continue_out(5) != 13 { return 14; }
+    if morrow_region_live_count() != 0 { return 15; }
+    if nested_return(0) != 3 { return 16; }
+    if morrow_region_live_count() != 0 { return 17; }
+    return 0;
+}

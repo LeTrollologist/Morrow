@@ -74,6 +74,9 @@ fn get_binop_precedence(kind: i64) -> i64 {
     if kind == tok_plus() || kind == tok_minus() {
         return 4;
     }
+    if kind == tok_caret() {
+        return 3;
+    }
     if kind == tok_star() || kind == tok_slash() || kind == tok_percent() {
         return 5;
     }
@@ -656,6 +659,7 @@ pub fn parse_stmt(p: &mut Parser) -> *mut AstStmt yields [Diagnostics] {
         let mut init_expr = parse_expr(p);
         if ty_sym != 0 {
             init_expr = alloc_expr_cast(p.arena, init_expr, ty_sym);
+            init_expr.op = 1; // implicit let annotation (enforce kind compatibility)
         }
         expect(p, tok_semicolon(), "Expected ';' after variable declaration");
         let stmt = alloc_stmt_let(p.arena, sym, init_expr);

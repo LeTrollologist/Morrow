@@ -94,6 +94,35 @@ fn cwd_independence_checks() -> i64 {
     if process_exec("cmd", overflow_cmd) == 0 {
         return 11;
     }
+
+    let bad_type_src = "fn main() -> i64 { let x: NoSuchType = 1; 0 }\n";
+    if !fs_write_string("target/cwd_test/bad_type.mw", bad_type_src) { return 12; }
+    if process_exec("cmd", "/c \"cd /d target/cwd_test && ..\\..\\bin\\forge.exe check bad_type.mw\"") == 0 { return 13; }
+
+    let bad_arg_src = "fn takes_int(x: i64) -> i64 { x }\nfn main() -> i64 { takes_int(\"hi\") }\n";
+    if !fs_write_string("target/cwd_test/bad_arg.mw", bad_arg_src) { return 14; }
+    if process_exec("cmd", "/c \"cd /d target/cwd_test && ..\\..\\bin\\forge.exe check bad_arg.mw\"") == 0 { return 15; }
+
+    let bad_ret_src = "fn f() -> String { 123 }\nfn main() -> i64 { 0 }\n";
+    if !fs_write_string("target/cwd_test/bad_ret.mw", bad_ret_src) { return 16; }
+    if process_exec("cmd", "/c \"cd /d target/cwd_test && ..\\..\\bin\\forge.exe check bad_ret.mw\"") == 0 { return 17; }
+
+    let missing_src = "fn f() -> i64 { let x = 1; }\nfn main() -> i64 { 0 }\n";
+    if !fs_write_string("target/cwd_test/missing.mw", missing_src) { return 18; }
+    if process_exec("cmd", "/c \"cd /d target/cwd_test && ..\\..\\bin\\forge.exe check missing.mw\"") == 0 { return 19; }
+
+    let bad_body_src = "fn f() -> i64 { undeclared + 1 }\nfn main() -> i64 { 0 }\n";
+    if !fs_write_string("target/cwd_test/bad_body.mw", bad_body_src) { return 20; }
+    if process_exec("cmd", "/c \"cd /d target/cwd_test && ..\\..\\bin\\forge.exe check bad_body.mw\"") == 0 { return 21; }
+
+    let bad_let_src = "fn main() -> i64 { let x: String = 5; 0 }\n";
+    if !fs_write_string("target/cwd_test/bad_let.mw", bad_let_src) { return 22; }
+    if process_exec("cmd", "/c \"cd /d target/cwd_test && ..\\..\\bin\\forge.exe check bad_let.mw\"") == 0 { return 23; }
+
+    let bad_assign_src = "fn main() -> i64 { var s: String = \"ok\"; s = 5; 0 }\n";
+    if !fs_write_string("target/cwd_test/bad_assign.mw", bad_assign_src) { return 24; }
+    if process_exec("cmd", "/c \"cd /d target/cwd_test && ..\\..\\bin\\forge.exe check bad_assign.mw\"") == 0 { return 25; }
+
     return 0;
 }
 
