@@ -1,0 +1,19 @@
+extern "C" {
+    fn morrow_region_alloc(arena: *mut u8, size: i64, align: i64) -> *mut u8;
+}
+
+fn leak(p: *mut i64) -> *mut i64 {
+    p
+}
+
+fn escape() -> *mut i64 {
+    region r {
+        let p = unsafe { morrow_region_alloc(r, 8, 8) } as *mut i64;
+        return leak(p);
+    }
+    0 as *mut i64
+}
+
+fn main() -> i64 {
+    0
+}

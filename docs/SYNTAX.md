@@ -255,13 +255,22 @@ boundaries. A value is region-scoped when
 | `region r { let p = morrow_region_alloc(r, 8, 8) as *mut i64; *p = 1; }` (used, not returned) | Accepted |
 | `region r { let inner: i64 = 99; val = inner; }` (scalar out of the region) | Accepted — scalars carry no tag |
 | `let n = region r { let v = vec_new_in(r); vec_len(&v) }; n` (scalar value) | Accepted — only pointer/allocator values are tagged |
-| Indirect escape: `region r { let v = vec_new_in(r); take(&v); }` where `take` stores or returns it | **Not detected** — no interprocedural analysis |
+| Indirect return: `region r { let p = alloc(r); return identity(p); }` | **Rejected** — `Region Escape Violation: region-scoped value returned from function` (callee summary propagates the tag) |
+| Indirect store: `stash(&mut outer, p)` where `stash(dst, src) { dst[0] = src; }` | **Rejected** — `Region Escape Violation: region-scoped value passed to escaping parameter of stash` |
+| Indirect container store: `vec_push(&mut outer_vec, p)` with `outer_vec` outside the region | **Rejected** — same call-boundary diagnostic |
+| Indirect read/query: `read_value(p)` that only loads or computes a scalar | Accepted — no escaping parameter edge is inferred |
+| Callback body / handler arm that stores or returns a region value | **Not fully analyzed** — callbacks and handler arms are outside the summary pass |
+| Alias chain deeper than the summary pass / function-pointer store | **Not fully analyzed** |
 
 Consequences worth stating plainly:
 
-- The rule is **conservative on allocation, not on flow**: a region-allocated value
-  copied into a value the checker cannot see into (through a call) is not tracked any
-  further.
+- Interprocedural summaries track parameters that are **returned** or **stored
+  through another pointer parameter**. A region-tagged argument is rejected when it
+  flows to an outer destination; container mutators such as `vec_push` participate
+  through the same summaries.
+- The analysis is intentionally conservative: callback bodies and handler arms are
+  not scanned, and alias chains beyond the summary pass can still lose a tag. Treat
+  this as a strong partial check, not a proof.
 - The escape checks are **not gated on being inside the region**. Because tags
   survive a region expression, a value produced by `region r { … }` is still checked
   when it is returned or assigned later, outside the block.
@@ -797,11 +806,13 @@ Implemented but weaker than older drafts claimed:
 - **Refinements**: literal casts, divisor-span checks, and path-sensitive narrowing
   for typed conditions; variable-range proofs remain unavailable.
 - **Affine resources**: no auto-drop; consumption must happen on every path.
-- **Escape analysis**: **partial** (v2.4.0). Region-allocated values (pointers,
+- **Escape analysis**: **partial** (v2.4.20+). Region-allocated values (pointers,
   references, `*_in` allocator results and the values of region expressions) are
   rejected on `return`, on assignment to an outer-scope variable, and on
-  struct-field and element stores into an outer-scope value. Indirect escapes through
-  calls are still not detected. The full detection matrix is
+  struct-field and element stores into an outer-scope value. Interprocedural
+  summaries additionally reject a region value returned through a callee, stored
+  through an outer destination parameter, or inserted into an outer container.
+  Callback bodies and handler arms remain uncovered. The full detection matrix is
   in [§4](#escape-analysis-what-is-and-is-not-rejected).
 - **`println`**: one value per call, no `{}` interpolation.
 - **Call signatures**: callee existence, argument count, and argument/return kinds

@@ -1271,6 +1271,7 @@ pub fn forge_run_test(arena: *mut u8) -> i64 yields [FS, Process, Diagnostics, I
     vec_push(&mut test_suites, "tests/short_circuit_test.mw");
     vec_push(&mut test_suites, "tests/collections_bounds_test.mw");
     vec_push(&mut test_suites, "tests/abi_setjmp_test.mw");
+    vec_push(&mut test_suites, "tests/region_indirect_safe_test.mw");
     vec_push(&mut test_suites, "tests/generics_test.mw");
     vec_push(&mut test_suites, "tests/effects_test.mw");
     vec_push(&mut test_suites, "tests/formal_verification_test.mw");
@@ -1375,6 +1376,12 @@ pub fn forge_run_test(arena: *mut u8) -> i64 yields [FS, Process, Diagnostics, I
     vec_push(&mut neg_expect, "Unterminated block comment");
     vec_push(&mut neg_files, "tests/negative/extern_struct_by_value.mw");
     vec_push(&mut neg_expect, "Unsupported C ABI type");
+    vec_push(&mut neg_files, "tests/negative/region_indirect_return.mw");
+    vec_push(&mut neg_expect, "Region Escape Violation");
+    vec_push(&mut neg_files, "tests/negative/region_indirect_store.mw");
+    vec_push(&mut neg_expect, "Region Escape Violation");
+    vec_push(&mut neg_files, "tests/negative/region_indirect_container.mw");
+    vec_push(&mut neg_expect, "Region Escape Violation");
 
     let mut ni: i64 = 0;
     while ni < neg_files.len {

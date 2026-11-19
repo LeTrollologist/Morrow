@@ -23,7 +23,7 @@
     <img src="https://img.shields.io/badge/Parity-IR_%2B_Exe_Bitwise-06B6D4?style=for-the-badge&logo=target&logoColor=white&labelColor=0f172a" alt="Parity" />
   </a>
   <a href="tests/">
-    <img src="https://img.shields.io/badge/Tests-30_%2B_20_Passing-22C55E?style=for-the-badge&logo=checkmarx&logoColor=white&labelColor=0f172a" alt="Tests" />
+    <img src="https://img.shields.io/badge/Tests-31_%2B_23_Passing-22C55E?style=for-the-badge&logo=checkmarx&logoColor=white&labelColor=0f172a" alt="Tests" />
   </a>
   <a href="LICENSE.md">
     <img src="https://img.shields.io/badge/License-Morrow_Unified_License_(MUL)-F59E0B?style=for-the-badge&logo=open-source-initiative&logoColor=white&labelColor=0f172a" alt="License" />
@@ -63,7 +63,7 @@
 ## Core Differentiators
 
 1. **Region-Based Memory Management (No explicit `<'a>` lifetimes)**  
-   Allocations are grouped into compile-time inferred regions (`region r { ... }`). When a region exits scope, memory is reclaimed en masse in $\mathcal{O}(1)$ without lifetime annotations polluting struct and function definitions. Escape analysis rejects direct region-to-outer escapes (returns, outer assignments, and field/element stores); **indirect escapes through calls are not yet detected**, so this is a partial safety check, not a full reference-safety guarantee. See [`docs/SYNTAX.md` §4](docs/SYNTAX.md#escape-analysis-what-is-and-is-not-rejected).
+   Allocations are grouped into compile-time inferred regions (`region r { ... }`). When a region exits scope, memory is reclaimed en masse in $\mathcal{O}(1)$ without lifetime annotations polluting struct and function definitions. Escape analysis rejects direct region-to-outer escapes and now tracks common indirect escapes through calls: values returned from a callee, stored through an outer destination parameter, or pushed into an outer container are rejected. Callback bodies and handler arms are not yet fully analyzed, so this is still a partial safety check, not a full reference-safety guarantee. See [`docs/SYNTAX.md` §4](docs/SYNTAX.md#escape-analysis-what-is-and-is-not-rejected).
 
 2. **Colorless Functions via Algebraic Effects**  
    No `async` or `await` infection. Functions declare effect capabilities (`yields [Db, IOError, Diagnostics]`). Delimited handlers with native machine-level continuations (`resume`) support synchronous execution, fiber suspension, or pure unit-test mocking.
@@ -105,7 +105,7 @@ There is no CI involved: the check runs on the machine that builds the binaries.
 | Affine resources (`affine struct`) | ⚠️ parsed; all-paths consumption required (no auto-drop on early `return`) |
 | Refinements | ⚠️ literal-cast checks, divisor-span checks, and path-sensitive narrowing for typed conditions; casts from variables are not range-proven |
 | Generics + turbofish (`identity::<i64>(42)`, `Pair::<i64> { … }`) | ✅ implemented |
-| Region escape analysis | ⚠️ partial: region-allocated values (pointers, references, `*_in` results, region-expression values) are rejected on `return`, on outer-scope assignment, and on struct-field or element stores into an outer-scope value; indirect escapes through calls are not detected |
+| Region escape analysis | ⚠️ partial: region-allocated values (pointers, references, `*_in` results, region-expression values) are rejected on `return`, on outer-scope assignment, and on struct-field or element stores into an outer-scope value; indirect escapes through ordinary calls are partially detected (return/store/container paths); callback bodies and handler arms remain uncovered |
 | `enum` / `match`, `for`, `nursery`/fibers, closures, `if`-expressions | ❌ not implemented (parse errors) |
 | Float literals, float arithmetic | ❌ not implemented; `f32`/`f64` are opaque FFI type names only |
 | Debug info (PDB), LTO, section GC | ❌ not implemented (stage-0 Rust only) |

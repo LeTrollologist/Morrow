@@ -506,6 +506,7 @@ pub struct TypeChecker {
     last_expr_ty: *mut TcType,      // 12: Type of the most recently checked expression statement
     last_expr_set: i64,             // 13: 1 when last_expr_ty is valid
     current_fn_name: String,        // 14: Diagnostic context for return checks
+    region_summaries: *mut HashMap, // 15: Interprocedural region-escape summaries
 }
 
 pub fn typechecker_new_in(interner: *mut Interner, arena: *mut u8) -> TypeChecker {
@@ -526,6 +527,7 @@ pub fn typechecker_new_in(interner: *mut Interner, arena: *mut u8) -> TypeChecke
         last_expr_ty: 0 as *mut TcType,
         last_expr_set: 0,
         current_fn_name: "",
+        region_summaries: 0 as *mut HashMap,
     }
 }
 
@@ -1135,10 +1137,12 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
 
         // Type check argument expressions and verify parameter refinement constraints
         let args_len = expr.args.len;
+        let mut arg_types: Vec<*mut TcType> = vec_new_in(tc.arena);
         let mut i: i64 = 0;
         while i < args_len {
             let arg_expr = vec_get(&expr.args, i);
             let arg_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, arg_expr);
+            vec_push(&mut arg_types, arg_ty);
 
             // Linear consumption: passing a linear resource variable to a function consumes it
             if arg_expr != (0 as *mut AstExpr) && arg_expr.kind == expr_var() {
@@ -1259,6 +1263,41 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
             i = i + 1;
         }
 
+        let mut call_ret_tag: *mut TcType = 0 as *mut TcType;
+        if target_fn != (0 as *mut AstFn) && tc.region_summaries != (0 as *mut HashMap) {
+            let sv = hashmap_get(tc.region_summaries, s);
+            if sv != 0 - 1 {
+                let sm = sv as *mut TcRegionSummary;
+                let mut ei: i64 = 0;
+                while ei < sm.store_dst.len {
+                    let d = vec_get(&sm.store_dst, ei);
+                    let src = vec_get(&sm.store_src, ei);
+                    if d >= 0 && src >= 0 && d < arg_types.len && src < arg_types.len {
+                        let src_tag = tc_region_type_tag(vec_get(&arg_types, src));
+                        let dst_tag = tc_region_type_tag(vec_get(&arg_types, d));
+                        if src_tag != (0 as *mut TcType) && dst_tag == (0 as *mut TcType) {
+                            let base = tc_compose_callee_msg(tc.arena, "Region Escape Violation: region-scoped value passed to escaping parameter of " as String, s);
+                            report_err(base, 1, 1);
+                            tc.pos = tc.pos + 1;
+                        }
+                    }
+                    ei = ei + 1;
+                }
+                ei = 0;
+                while ei < sm.ret_params.len {
+                    let pi = vec_get(&sm.ret_params, ei);
+                    if pi >= 0 && pi < arg_types.len {
+                        let tag = tc_region_type_tag(vec_get(&arg_types, pi));
+                        if tag != (0 as *mut TcType) {
+                            call_ret_tag = tag;
+                            break;
+                        }
+                    }
+                    ei = ei + 1;
+                }
+            }
+        }
+
         // Check user function return
         if target_fn != (0 as *mut AstFn) {
             // Static Invariant: Check effect propagation
@@ -1283,7 +1322,7 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
                     let rname = interner_lookup(interner_ref, ret_sym);
                     let gname = interner_lookup(interner_ref, target_fn.type_param_sym);
                     if unsafe { strcmp(rname as *const u8, gname as *const u8) } == 0 {
-                        return tc_resolve_type(tc, types, struct_defs, expr.int_val);
+                        return tc_region_with_tag(tc_resolve_type(tc, types, struct_defs, expr.int_val), call_ret_tag);
                     }
                 } else {
                     // No turbofish: the result type of `T` comes from the container the
@@ -1310,7 +1349,7 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
                                     if cty.sym != 0 {
                                         let elem = tc_type_arg_sym(tc, cty.sym);
                                         if elem != 0 {
-                                            return tc_resolve_type(tc, types, struct_defs, elem);
+                                            return tc_region_with_tag(tc_resolve_type(tc, types, struct_defs, elem), call_ret_tag);
                                         }
                                     }
                                 }
@@ -1322,7 +1361,7 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
                                 if cty != (0 as *mut TcType) && cty.sym != 0 {
                                     let elem = tc_type_arg_sym(tc, cty.sym);
                                     if elem != 0 {
-                                        return tc_resolve_type(tc, types, struct_defs, elem);
+                                        return tc_region_with_tag(tc_resolve_type(tc, types, struct_defs, elem), call_ret_tag);
                                     }
                                 }
                             }
@@ -1330,7 +1369,7 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
                     }
                 }
             }
-            return tc_resolve_type(tc, types, struct_defs, ret_sym);
+            return tc_region_with_tag(tc_resolve_type(tc, types, struct_defs, ret_sym), call_ret_tag);
         }
 
         // Check extern function
@@ -1338,7 +1377,7 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
         if ext_val != 0 - 1 {
             let ext = ext_val as *mut AstExternFn;
             let ret_sym = ext.ret_ty_sym;
-            return tc_resolve_type(tc, types, struct_defs, ret_sym);
+            return tc_region_with_tag(tc_resolve_type(tc, types, struct_defs, ret_sym), call_ret_tag);
         }
 
         return alloc_tc_type(tc.arena, ty_int(), 0);
@@ -2671,6 +2710,309 @@ fn tc_validate_declarations(tc: &mut TypeChecker, prog: *mut AstProgram, types: 
     tc.generic_param_sym = 0;
 }
 
+fn tc_region_type_tag(t: *mut TcType) -> *mut TcType {
+    if t == (0 as *mut TcType) {
+        return 0 as *mut TcType;
+    }
+    if t.right != (0 as *mut TcType) {
+        return t.right;
+    }
+    if t.left != (0 as *mut TcType) && t.left.right != (0 as *mut TcType) {
+        return t.left.right;
+    }
+    0 as *mut TcType
+}
+
+fn tc_region_with_tag(t: *mut TcType, tag: *mut TcType) -> *mut TcType {
+    if t != (0 as *mut TcType) && tag != (0 as *mut TcType) {
+        if t.kind == ty_ptr() || t.kind == ty_ref() || t.kind == ty_struct() || t.kind == ty_string() {
+            t.right = tag;
+        }
+    }
+    t
+}
+
+struct TcRegionSummary {
+    ret_params: Vec<i64>,
+    store_dst: Vec<i64>,
+    store_src: Vec<i64>,
+}
+
+fn tc_region_summary_new(arena: *mut u8) -> *mut TcRegionSummary {
+    let p = unsafe { morrow_alloc(128, 8) as *mut TcRegionSummary };
+    p.ret_params = vec_new_in(arena);
+    p.store_dst = vec_new_in(arena);
+    p.store_src = vec_new_in(arena);
+    p
+}
+
+fn tc_region_add(list: &mut Vec<i64>, value: i64) -> bool {
+    let mut i: i64 = 0;
+    while i < list.len {
+        if vec_get(list, i) == value {
+            return false;
+        }
+        i = i + 1;
+    }
+    vec_push(list, value);
+    true
+}
+
+fn tc_region_add_edge(sum: *mut TcRegionSummary, dst: i64, src: i64) -> bool {
+    let mut i: i64 = 0;
+    while i < sum.store_dst.len {
+        if vec_get(&sum.store_dst, i) == dst && vec_get(&sum.store_src, i) == src {
+            return false;
+        }
+        i = i + 1;
+    }
+    vec_push(&mut sum.store_dst, dst);
+    vec_push(&mut sum.store_src, src);
+    true
+}
+
+fn tc_region_merge(dst: *mut TcRegionSummary, src: *mut TcRegionSummary) -> bool {
+    let mut changed = false;
+    let mut i: i64 = 0;
+    while i < src.ret_params.len {
+        if tc_region_add(&mut dst.ret_params, vec_get(&src.ret_params, i)) {
+            changed = true;
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < src.store_dst.len {
+        if tc_region_add_edge(dst, vec_get(&src.store_dst, i), vec_get(&src.store_src, i)) {
+            changed = true;
+        }
+        i = i + 1;
+    }
+    changed
+}
+
+fn tc_region_root_param(e: *mut AstExpr, params: &HashMap, aliases: &HashMap, interner: &Interner) -> i64 {
+    if e == (0 as *mut AstExpr) {
+        return 0 - 1;
+    }
+    if e.kind == expr_var() {
+        let s = interner_lookup(interner, e.sym);
+        let pv = hashmap_get(params, s);
+        if pv != 0 - 1 {
+            return pv;
+        }
+        let av = hashmap_get(aliases, s);
+        if av != 0 - 1 {
+            return av;
+        }
+        return 0 - 1;
+    }
+    if e.kind == expr_field() || e.kind == expr_index() || e.kind == expr_unary() || e.kind == expr_cast() {
+        return tc_region_root_param(e.left, params, aliases, interner);
+    }
+    return 0 - 1;
+}
+
+fn tc_region_expr_param(tc: &mut TypeChecker, e: *mut AstExpr, params: &HashMap, aliases: &HashMap,
+                        summaries: *mut HashMap) -> i64 {
+    if e == (0 as *mut AstExpr) {
+        return 0 - 1;
+    }
+    if e.kind == expr_call() {
+        let interner_ref = tc.interner as &Interner;
+        let name = interner_lookup(interner_ref, e.sym);
+        // A callback/function-pointer parameter has no static summary; conservatively
+        // assume it can return its first argument (identity-style callbacks).
+        let cp = hashmap_get(params, name);
+        if cp >= 0 && e.args.len > 0 {
+            return tc_region_root_param(vec_get(&e.args, 0), params, aliases, interner_ref);
+        }
+        let sv = hashmap_get(summaries, name);
+        if sv != 0 - 1 {
+            let sm = sv as *mut TcRegionSummary;
+            let mut i: i64 = 0;
+            while i < sm.ret_params.len {
+                let pi = vec_get(&sm.ret_params, i);
+                if pi >= 0 && pi < e.args.len {
+                    let ap = tc_region_root_param(vec_get(&e.args, pi), params, aliases, interner_ref);
+                    if ap >= 0 {
+                        return ap;
+                    }
+                }
+                i = i + 1;
+            }
+        }
+        return 0 - 1;
+    }
+    return tc_region_root_param(e, params, aliases, tc.interner as &Interner);
+}
+
+fn tc_region_scan_expr(tc: &mut TypeChecker, e: *mut AstExpr, params: &HashMap, aliases: &HashMap,
+                       summaries: *mut HashMap, sum: *mut TcRegionSummary) {
+    if e == (0 as *mut AstExpr) {
+        return;
+    }
+    if e.kind == expr_handle() {
+        let mut hi: i64 = 0;
+        while hi < e.stmts.len {
+            let hs = vec_get(&e.stmts, hi);
+            tc_region_scan_expr(tc, hs.expr, params, aliases, summaries, sum);
+            hi = hi + 1;
+        }
+        return;
+    }
+    if e.kind == expr_call() {
+        let interner_ref = tc.interner as &Interner;
+        let name = interner_lookup(interner_ref, e.sym);
+        let sv = hashmap_get(summaries, name);
+        if sv != 0 - 1 {
+            let callee = sv as *mut TcRegionSummary;
+            let mut i: i64 = 0;
+            while i < callee.store_dst.len {
+                let d = vec_get(&callee.store_dst, i);
+                let s = vec_get(&callee.store_src, i);
+                if d >= 0 && s >= 0 && d < e.args.len && s < e.args.len {
+                    let dp = tc_region_root_param(vec_get(&e.args, d), params, aliases, interner_ref);
+                    let sp = tc_region_root_param(vec_get(&e.args, s), params, aliases, interner_ref);
+                    if dp >= 0 && sp >= 0 {
+                        tc_region_add_edge(sum, dp, sp);
+                    }
+                }
+                i = i + 1;
+            }
+        }
+        let mut ai: i64 = 0;
+        while ai < e.args.len {
+            tc_region_scan_expr(tc, vec_get(&e.args, ai), params, aliases, summaries, sum);
+            ai = ai + 1;
+        }
+        return;
+    }
+    tc_region_scan_expr(tc, e.left, params, aliases, summaries, sum);
+    tc_region_scan_expr(tc, e.right, params, aliases, summaries, sum);
+    let mut i: i64 = 0;
+    while i < e.args.len {
+        tc_region_scan_expr(tc, vec_get(&e.args, i), params, aliases, summaries, sum);
+        i = i + 1;
+    }
+    i = 0;
+    while i < e.stmts.len {
+        let s = vec_get(&e.stmts, i);
+        tc_region_scan_expr(tc, s.expr, params, aliases, summaries, sum);
+        i = i + 1;
+    }
+}
+
+fn tc_region_scan_stmt(tc: &mut TypeChecker, st: *mut AstStmt, params: &HashMap, aliases: &mut HashMap,
+                       summaries: *mut HashMap, sum: *mut TcRegionSummary) {
+    if st == (0 as *mut AstStmt) {
+        return;
+    }
+    let interner_ref = tc.interner as &Interner;
+    if st.kind == stmt_return() {
+        tc_region_scan_expr(tc, st.expr, params, aliases, summaries, sum);
+        let pi = tc_region_expr_param(tc, st.expr, params, aliases, summaries);
+        if pi >= 0 {
+            tc_region_add(&mut sum.ret_params, pi);
+        }
+        return;
+    }
+    if st.kind == stmt_let() || st.kind == stmt_assign() {
+        tc_region_scan_expr(tc, st.expr, params, aliases, summaries, sum);
+        let pi = tc_region_expr_param(tc, st.expr, params, aliases, summaries);
+        let name = interner_lookup(interner_ref, st.sym);
+        hashmap_insert(aliases, name, pi);
+        return;
+    }
+    if st.kind == stmt_field_assign() || st.kind == stmt_index_assign() {
+        tc_region_scan_expr(tc, st.left, params, aliases, summaries, sum);
+        tc_region_scan_expr(tc, st.expr, params, aliases, summaries, sum);
+        let dp = tc_region_root_param(st.left, params, aliases, interner_ref);
+        let sp = tc_region_expr_param(tc, st.expr, params, aliases, summaries);
+        if dp >= 0 && sp >= 0 {
+            tc_region_add_edge(sum, dp, sp);
+        }
+        return;
+    }
+    if st.kind == stmt_expr() {
+        tc_region_scan_expr(tc, st.expr, params, aliases, summaries, sum);
+        return;
+    }
+    let mut i: i64 = 0;
+    while i < st.then_stmts.len {
+        tc_region_scan_stmt(tc, vec_get(&st.then_stmts, i), params, aliases, summaries, sum);
+        i = i + 1;
+    }
+    i = 0;
+    while i < st.else_stmts.len {
+        tc_region_scan_stmt(tc, vec_get(&st.else_stmts, i), params, aliases, summaries, sum);
+        i = i + 1;
+    }
+}
+
+fn tc_build_region_summaries(tc: &mut TypeChecker, prog: *mut AstProgram) {
+    let arena = tc.arena;
+    let summaries: *mut HashMap = hashmap_new_in(arena, 128);
+    tc.region_summaries = summaries;
+
+    let mut i: i64 = 0;
+    while i < prog.functions.len {
+        let f = vec_get(&prog.functions, i);
+        let interner_ref = tc.interner as &Interner;
+        let name = interner_lookup(interner_ref, f.name_sym);
+        hashmap_insert(tc.region_summaries, name, tc_region_summary_new(arena) as i64);
+        i = i + 1;
+    }
+
+    let mut pass: i64 = 0;
+    while pass < 8 {
+        let mut changed = false;
+        i = 0;
+        while i < prog.functions.len {
+            let f = vec_get(&prog.functions, i);
+            let interner_ref = tc.interner as &Interner;
+            let name = interner_lookup(interner_ref, f.name_sym);
+            let params = hashmap_new_in(arena, 16);
+            let mut aliases = hashmap_new_in(arena, 16);
+            let mut pi: i64 = 0;
+            while pi < f.params.len {
+                let p = vec_get(&f.params, pi);
+                let pname = interner_lookup(interner_ref, p.name_sym);
+                hashmap_insert(&mut params, pname, pi);
+                hashmap_insert(&mut aliases, pname, pi);
+                pi = pi + 1;
+            }
+            let fresh = tc_region_summary_new(arena);
+            let mut bi: i64 = 0;
+            while bi < f.body.len {
+                tc_region_scan_stmt(tc, vec_get(&f.body, bi), &params, &mut aliases, tc.region_summaries, fresh);
+                bi = bi + 1;
+            }
+            // A final expression statement is an implicit return value.
+            if f.body.len > 0 {
+                let last = vec_get(&f.body, f.body.len - 1);
+                if last.kind == stmt_expr() {
+                    let pi = tc_region_expr_param(tc, last.expr, &params, &aliases, tc.region_summaries);
+                    if pi >= 0 {
+                        tc_region_add(&mut fresh.ret_params, pi);
+                    }
+                }
+            }
+            let existing_val = hashmap_get(tc.region_summaries, name);
+            if existing_val != 0 - 1 {
+                let existing = existing_val as *mut TcRegionSummary;
+                if tc_region_merge(existing, fresh) {
+                    changed = true;
+                }
+            }
+            i = i + 1;
+        }
+        if !changed {
+            break;
+        }
+        pass = pass + 1;
+    }
+}
+
 pub fn typecheck_program(
 prog: *mut AstProgram, interner: *mut Interner, arena: *mut u8, arg_report: i64) -> bool yields [Diagnostics] {
     let mut tc = typechecker_new_in(interner, arena);
@@ -2761,6 +3103,7 @@ prog: *mut AstProgram, interner: *mut Interner, arena: *mut u8, arg_report: i64)
 
     // Reject undefined types in every declaration, including unused generic
     // templates and extern signatures.
+    tc_build_region_summaries(&mut tc, prog);
     tc_validate_declarations(&mut tc, prog, &types, &struct_defs);
 
     // Typecheck each concrete function body.

@@ -1,0 +1,20 @@
+extern "C" {
+    fn morrow_region_alloc(arena: *mut u8, size: i64, align: i64) -> *mut u8;
+}
+
+fn stash(dst: *mut *mut i64, src: *mut i64) {
+    dst[0] = src;
+}
+
+fn escape() -> i64 {
+    let mut out: *mut i64 = 0 as *mut i64;
+    region r {
+        let p = unsafe { morrow_region_alloc(r, 8, 8) } as *mut i64;
+        stash(&mut out, p);
+    }
+    0
+}
+
+fn main() -> i64 {
+    0
+}

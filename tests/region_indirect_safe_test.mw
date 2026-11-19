@@ -1,0 +1,35 @@
+// Positive controls for interprocedural region escape analysis: read-only and
+// region-local container helpers must remain accepted.
+import std::test;
+import std::collections;
+
+extern "C" {
+    fn morrow_region_alloc(arena: *mut u8, size: i64, align: i64) -> *mut u8;
+}
+
+fn read_value(p: *mut i64) -> i64 {
+    unsafe { p[0] }
+}
+
+fn read_only_helper() -> i64 {
+    region r {
+        let p = unsafe { morrow_region_alloc(r, 8, 8) } as *mut i64;
+        unsafe { p[0] = 41; }
+        read_value(p) + 1
+    }
+}
+
+fn region_local_container() -> i64 {
+    region r {
+        let p = unsafe { morrow_region_alloc(r, 8, 8) } as *mut i64;
+        let mut v = vec_new_in(r);
+        vec_push(&mut v, p);
+        vec_len(&v)
+    }
+}
+
+fn main() -> i64 {
+    assert_eq(read_only_helper(), 42, "read-only region helper is accepted");
+    assert_eq(region_local_container(), 1, "region-local container store is accepted");
+    0
+}

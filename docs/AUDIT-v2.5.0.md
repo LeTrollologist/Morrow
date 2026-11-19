@@ -2,7 +2,8 @@
 
 **Status:** Maintainer-run verification, **not an independent audit**.
 **Date:** 2026-11-19
-**Evaluated release:** v2.4.20 (commit `90d8749`)
+**Evaluated baseline:** v2.4.20 (commit `90d8749`)
+**Candidate work:** post-v2.4.20 C1 indirect region-escape summaries
 **Author:** Morrow maintainer toolchain (automated commands below)
 
 This report exists because `ROADMAP.md` Phase 15 promised a fresh
@@ -35,9 +36,9 @@ Self-hosting fixed point (three stages):
 | Gate | Observed result |
 |---|---|
 | Toolchain | `forge 2.4.20 (morrow standalone 2026)` |
-| Test suites | `test result: ok. 30 positive suites, 20 compile-fail suites passed.` |
-| Fixed point | `BF43E2888D74EBB328EE5E7BF183913DA9B5D15AB9CE6B056319F6CD532FE695` |
-| Binary parity | stage2.exe == stage3.exe, 623104 bytes |
+| Test suites | `test result: ok. 31 positive suites, 23 compile-fail suites passed.` |
+| Fixed point | `F6BC907EC55496E655BD9D8E22940DF698A0BD067D75E7316397B6C473030D95` |
+| Binary parity | stage2.exe == stage3.exe, 635392 bytes |
 | Examples | 22 built; 17 executed with expected exit codes; 5 build-only |
 | Benchmark runner | `bench result: ok. all benchmark programs completed.` |
 | Python helpers | `py_compile` passes for `scripts/*.py` and `benchmarks/*.py` |
@@ -45,6 +46,7 @@ Self-hosting fixed point (three stages):
 | LSP framing | valid frames answered; oversized/malformed frames rejected with JSON-RPC `-32700` |
 | Parser limits | 20k parentheses/unary input reports the 512-level limit, no stack overflow |
 | ABI | signed negative `i32` return (`atoi("-5") == -5`), pointer args, abortive-handler longjmp |
+| C1 indirect escapes | `region_indirect_return`, `region_indirect_store`, and `region_indirect_container` fail on v2.4.20 and pass with call-boundary diagnostics; `region_indirect_safe_test` accepts read-only/region-local cases |
 
 ## 3. Phase 15 audit-finding status
 
@@ -86,9 +88,11 @@ P2-11 CI/process items.
 
 These are real and must not be described as solved:
 
-1. **Indirect region escapes are not detected.** Direct returns/assignments/field
-   and index stores are rejected, but a callee can store or return a region-scoped
-   value without a diagnostic.
+1. **Indirect region escapes are partially detected.** Callee summaries now reject
+   region values returned through a function, stored through an outer destination
+   parameter, or inserted into an outer container; read-only and region-local uses
+   remain accepted. Callback bodies, handler arms, function-pointer stores, and very
+   deep alias chains are not yet analyzed.
 2. **Structured concurrency and fibers are absent** from the Pure Morrow compiler.
    The `nursery`/fiber surface belongs to archived Stage-0 and is not shipped.
 3. **Variable-range and interprocedural refinement proofs are not implemented.**
@@ -105,12 +109,14 @@ These are real and must not be described as solved:
 
 ## 5. Verdict
 
-v2.4.20 is materially stronger than the audited v2.4.16: the release gate executes
-supported examples, the test harness can fail, the direct region/effect/type-safety
-findings are addressed, input bounds are enforced, and the C ABI is typed.
+The post-v2.4.20 C1 work is materially stronger than the audited v2.4.16: the release
+gate executes supported examples, the test harness can fail, the direct
+region/effect/type-safety findings are addressed, input bounds are enforced, the C ABI
+is typed, and common indirect region escapes through calls/containers are now
+rejected.
 
-It is **not** ready to claim v2.5.0 yet. The remaining work is correctness completion
-(Phase 16 C1–C6) and regression coverage, followed by updating this maintainer-run
-report for the candidate commit. Reproducible verification is the release standard;
+It is **not** ready to claim v2.5.0 yet. C1 remains partial (callbacks/handler arms),
+and C2–C6 are still open. The remaining work is correctness completion plus regression
+coverage, followed by updating this maintainer-run report for the candidate commit. Reproducible verification is the release standard;
 no independent audit is claimed or implied. External review is desirable but is not
 a release prerequisite.
