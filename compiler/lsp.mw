@@ -94,15 +94,31 @@ fn lsp_read_exact(h: *mut u8, buf: *mut u8, n: i64, arena: *mut u8) -> i64 {
 }
 
 // Parse an ASCII decimal integer from |buf[start..end)|.
+fn lsp_max_message_bytes() -> i64 { 8388608 }
+
+fn lsp_max_header_count() -> i64 { 64 }
+
+// Parse an ASCII decimal integer from |buf[start..end)|.
+// Returns -1 for an empty/non-numeric field or a value above the message limit.
 fn lsp_parse_cl(buf: *mut u8, start: i64, end: i64) -> i64 {
     let mut val: i64 = 0;
+    let mut digits: i64 = 0;
     let mut i: i64 = start;
     while i < end {
         let b = unsafe { buf[i] } as i64;
-        if b >= 48 && b <= 57 {
-            val = val * 10 + (b - 48);
+        if b < 48 || b > 57 {
+            return 0 - 1;
         }
+        let d = b - 48;
+        if val > (lsp_max_message_bytes() - d) / 10 {
+            return 0 - 1;
+        }
+        val = val * 10 + d;
+        digits = digits + 1;
         i = i + 1;
+    }
+    if digits == 0 || val <= 0 {
+        return 0 - 1;
     }
     val
 }
@@ -435,14 +451,20 @@ pub fn lsp_run_stdio(arena: *mut u8) -> i64 yields [FS, Diagnostics] {
         let mut content_len: i64 = 0;
         let mut header_done = false;
         let mut got_eof     = false;
+        let mut header_error = false;
+        let mut header_count: i64 = 0;
 
         while !header_done {
             let line_buf = unsafe { morrow_region_alloc(arena, 256, 1) };
             let line_len = lsp_read_line(h_in, line_buf, 256, arena);
+            header_count = header_count + 1;
 
             if line_len < 0 {
                 // EOF / pipe closed
                 got_eof     = true;
+                header_done = true;
+            } else if line_len >= 255 {
+                header_error = true;
                 header_done = true;
             } else if line_len == 0 {
                 // Blank line terminates the header block
@@ -453,12 +475,25 @@ pub fn lsp_run_stdio(arena: *mut u8) -> i64 yields [FS, Diagnostics] {
                     strncmp(line_buf as *const u8, "Content-Length: " as *const u8, 16) == 0
                 } {
                     content_len = lsp_parse_cl(line_buf, 16, line_len);
+                    if content_len < 0 {
+                        header_error = true;
+                        header_done = true;
+                    }
                 }
                 // Other headers (Content-Type etc.) are silently ignored
+            }
+            if header_count > lsp_max_header_count() {
+                header_error = true;
+                header_done = true;
             }
         }
 
         if got_eof {
+            running = false;
+        } else if header_error || content_len <= 0 || content_len > lsp_max_message_bytes() {
+            let err = lsp_make_error_response(0, 0 - 32700, "Invalid Content-Length or message frame", arena);
+            let err_len = unsafe { strlen(err as *const u8) } as i64;
+            lsp_write_response(h_out, err, err_len, arena);
             running = false;
         } else if content_len > 0 {
             // ── Phase B: read body ───────────────────────────────────────

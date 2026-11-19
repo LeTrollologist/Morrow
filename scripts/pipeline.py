@@ -15,7 +15,7 @@ Stages:
   8. publish:   commit, tag HEAD, push branch+tag with plain git, and verify the tag on origin.
 
 Usage:
-  python scripts/pipeline.py v2.3.0                 # full release pipeline
+  python scripts/pipeline.py v2.3.0 --publish      # explicitly tag, push, and upload
   python scripts/pipeline.py v2.3.0 --dry-run       # preview stages without side effects
   python scripts/pipeline.py v2.3.0 --from package  # resume from packaging
   python scripts/pipeline.py v2.3.0 --skip bench    # skip a specific stage
@@ -88,13 +88,16 @@ def compute_sha256(path: Path) -> str:
 class ReleasePipeline:
     def __init__(self, tag: str, dry_run: bool = False, no_publish: bool = False,
                  no_bump: bool = False, force: bool = False, clobber: bool = False,
-                 no_release_page: bool = False):
+                 no_release_page: bool = False, publish: bool = False):
         if not tag.startswith("v"):
             tag = f"v{tag}"
+        if not re.fullmatch(r"v\d+\.\d+\.\d+", tag):
+            raise ValueError(f"invalid release tag {tag!r}; expected vMAJOR.MINOR.PATCH")
         self.tag = tag
         self.ver = tag.lstrip("v")
         self.dry_run = dry_run
         self.no_publish = no_publish
+        self.publish = publish and not no_publish
         self.no_bump = no_bump
         self.force = force
         self.clobber = clobber
@@ -157,8 +160,9 @@ class ReleasePipeline:
         if self.dry_run:
             log(f"[DRY-RUN] Would upload dist/{self.tag}/* to the release page for {self.tag}.")
             return
-        if self.no_publish:
-            log("--no-publish requested; skipping the release page.")
+        if not self.publish:
+            log("No --publish flag; the release page is not modified. "
+                "Pass --publish to tag, push, and upload explicitly.")
             return
         if self.no_release_page:
             log("--no-release-page requested; artifacts stay local in dist/ only.")
@@ -211,14 +215,17 @@ class ReleasePipeline:
         if not branch:
             raise RuntimeError("HEAD is detached; check out the release branch first.")
         log(f"Branch: {branch}")
-        res = run("git remote get-url origin", capture_output=True, check=False)
-        if res.returncode != 0:
-            raise RuntimeError(
-                "No 'origin' remote configured; add one (git remote add origin <url>) "
-                "or run with --no-publish."
-            )
-        self.remote = res.stdout.strip()
-        log(f"Remote: origin = {self.remote}")
+        if self.publish:
+            res = run("git remote get-url origin", capture_output=True, check=False)
+            if res.returncode != 0:
+                raise RuntimeError(
+                    "No 'origin' remote configured; add one (git remote add origin <url>) "
+                    "or run without --publish."
+                )
+            self.remote = res.stdout.strip()
+            log(f"Remote: origin = {self.remote}")
+        else:
+            log("Publishing disabled (no --publish); origin is not required.")
 
         self._assert_no_host_cli()
 
@@ -420,6 +427,13 @@ class ReleasePipeline:
             return
 
         forge_bin = ROOT / "bin" / "forge.exe"
+        log("Validating Python helper scripts...")
+        py_files = sorted((ROOT / "scripts").glob("*.py")) + sorted((ROOT / "benchmarks").glob("*.py"))
+        for py_file in py_files:
+            res = run(f'"{sys.executable}" -m py_compile "{py_file}"', check=False, capture_output=True)
+            if res.returncode != 0:
+                raise RuntimeError(f"Python syntax validation failed: {py_file}\\n{res.stderr}")
+        log(f"Validated {len(py_files)} Python helper script(s).")
         log("Running native and compile-fail test suites...")
         res = run(f'"{forge_bin}" test', check=False, capture_output=True)
         combined = (res.stdout or "") + (res.stderr or "")
@@ -785,8 +799,8 @@ Built with the local release pipeline (`scripts/pipeline.py`, see `RELEASE_PROCE
             log("[DRY-RUN] Would tag and create/update the GitHub release.")
             return
 
-        if self.no_publish:
-            log("--no-publish requested; skipping git tag/push.")
+        if not self.publish:
+            log("No --publish flag; skipping git tag, push, and release-page upload.")
             return
 
         self._recover_facts()
@@ -887,7 +901,16 @@ Built with the local release pipeline (`scripts/pipeline.py`, see `RELEASE_PROCE
         branch = run("git branch --show-current", capture_output=True).stdout.strip() or "main"
         log(f"Pushing {branch} and {self.tag} to origin...")
         run(f"git push origin {branch}")
-        run(f"git push origin {self.tag} --force")
+        if self.force:
+            run(f"git push origin {self.tag} --force")
+        else:
+            res = run(f"git push origin {self.tag}", check=False, capture_output=True)
+            if res.returncode != 0:
+                raise RuntimeError(
+                    f"Tag push for {self.tag} was rejected without force. The remote tag "
+                    f"was not overwritten. Resolve the tag conflict or pass --force only "
+                    f"if moving the tag is intentional.\n{res.stderr}"
+                )
 
         # 3. Prove the tag actually landed on the remote, comparing the peeled
         #    commit id reported by ls-remote with the commit we tagged. The peeled
@@ -973,7 +996,8 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="Preview stages without running commands")
     parser.add_argument("--from", dest="from_stage", choices=STAGES, default="preflight", help="Resume pipeline from stage")
     parser.add_argument("--skip", action="append", choices=STAGES, default=[], help="Skip specified stage (can be repeated)")
-    parser.add_argument("--no-publish", action="store_true", help="Run all stages except git tag/push")
+    parser.add_argument("--publish", action="store_true", help="Explicitly tag, push, and upload the release (required for remote publication)")
+    parser.add_argument("--no-publish", action="store_true", help="Deprecated alias for the default local-only behavior")
     parser.add_argument("--no-bump", action="store_true", help="Do not rewrite version declarations (must already be correct)")
     parser.add_argument("--force", action="store_true", help="Allow publishing a dirty tree / moving an existing tag")
     parser.add_argument("--clobber", action="store_true", help="Republish an already-released version: rebuild its artifacts and record another publication")
@@ -983,7 +1007,7 @@ def main():
 
     pipeline = ReleasePipeline(tag=args.tag, dry_run=args.dry_run, no_publish=args.no_publish,
                                no_bump=args.no_bump, force=args.force, clobber=args.clobber,
-                               no_release_page=args.no_release_page)
+                               no_release_page=args.no_release_page, publish=args.publish)
 
     start_idx = STAGES.index(args.from_stage)
     active_stages = STAGES[start_idx:]

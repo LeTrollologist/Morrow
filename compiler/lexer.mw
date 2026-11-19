@@ -81,6 +81,8 @@ pub fn tokenize(src: String, interner: &mut Interner, arena: *mut u8) -> Vec<*mu
             }
         } else if c == 47 && idx + 1 < len && unsafe { ptr[idx + 1] } as i64 == 42 {
             // Block comment: skip until the closing */ (newlines keep line counting honest)
+            let comment_line = line;
+            let comment_col = col;
             idx = idx + 2;
             col = col + 2;
             let mut closed = false;
@@ -98,6 +100,9 @@ pub fn tokenize(src: String, interner: &mut Interner, arena: *mut u8) -> Vec<*mu
                     idx = idx + 1;
                     col = col + 1;
                 }
+            }
+            if !closed {
+                report_err("Unterminated block comment", comment_line, comment_col);
             }
         } else if is_digit(c) {
             // Integer literal: decimal or hexadecimal (0x…), with optional '_' separators

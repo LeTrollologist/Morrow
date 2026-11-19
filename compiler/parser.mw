@@ -17,6 +17,8 @@ pub struct Parser {
     pos: i64,
     interner: *mut Interner,
     arena: *mut u8,
+    depth: i64,
+    aborted: i64,
 }
 
 fn current_tok(p: &Parser) -> *mut Token {
@@ -53,12 +55,37 @@ fn check(p: &Parser, kind: i64) -> bool {
 
 fn expect(p: &mut Parser, kind: i64, err_msg: String) -> *mut Token yields [Diagnostics] {
     let tok = current_tok(p);
+    if p.aborted != 0 {
+        return tok;
+    }
     if tok.kind == kind {
         p.pos = p.pos + 1;
         return tok;
     }
     report_err(err_msg, tok.line, tok.col);
     tok
+}
+
+fn parser_max_depth() -> i64 { 512 }
+
+fn parser_enter(p: &mut Parser) -> bool yields [Diagnostics] {
+    if p.depth >= parser_max_depth() {
+        let tok = current_tok(p);
+        if p.aborted == 0 {
+            p.aborted = 1;
+            p.pos = p.tokens.len - 1;
+            report_err("Parser nesting limit exceeded (maximum 512 levels)", tok.line, tok.col);
+        }
+        return false;
+    }
+    p.depth = p.depth + 1;
+    true
+}
+
+fn parser_leave(p: &mut Parser) {
+    if p.depth > 0 {
+        p.depth = p.depth - 1;
+    }
 }
 
 fn get_binop_precedence(kind: i64) -> i64 {
@@ -133,6 +160,17 @@ fn strip_pointer_prefix(p: &mut Parser, sym: i64) -> i64 {
 
 // Parses type annotations (e.g. i64, String, *mut u8, &mut Vec<T>, etc.)
 pub fn parse_type(p: &mut Parser) -> i64 yields [Diagnostics] {
+    if p.aborted != 0 {
+        return 0;
+    }
+    if !parser_enter(p) {
+        return 0;
+    }
+    let ty = parse_type_inner(p);
+    parser_leave(p);
+    ty
+}
+fn parse_type_inner(p: &mut Parser) -> i64 yields [Diagnostics] {
     if check(p, tok_star()) {
         advance(p); // consume *
         let mut prefix = "* ";
@@ -229,6 +267,9 @@ pub fn parse_type(p: &mut Parser) -> i64 yields [Diagnostics] {
 }
 
 fn parse_primary_expr(p: &mut Parser) -> *mut AstExpr yields [Diagnostics] {
+    if p.aborted != 0 {
+        return alloc_expr_int(p.arena, 0);
+    }
     let tok = current_tok(p);
     let kind = tok.kind;
 
@@ -561,6 +602,18 @@ fn parse_postfix_expr(p: &mut Parser) -> *mut AstExpr yields [Diagnostics] {
 }
 
 fn parse_unary_expr(p: &mut Parser) -> *mut AstExpr yields [Diagnostics] {
+    if p.aborted != 0 {
+        return alloc_expr_int(p.arena, 0);
+    }
+    if !parser_enter(p) {
+        return alloc_expr_int(p.arena, 0);
+    }
+    let e = parse_unary_expr_inner(p);
+    parser_leave(p);
+    e
+}
+
+fn parse_unary_expr_inner(p: &mut Parser) -> *mut AstExpr yields [Diagnostics] {
     let kind = current_kind(p);
 
     if kind == tok_bang() {
@@ -599,6 +652,17 @@ fn parse_cast_expr(p: &mut Parser) -> *mut AstExpr yields [Diagnostics] {
 }
 
 fn parse_expr_prec(p: &mut Parser, min_prec: i64) -> *mut AstExpr yields [Diagnostics] {
+    if p.aborted != 0 {
+        return alloc_expr_int(p.arena, 0);
+    }
+    if !parser_enter(p) {
+        return alloc_expr_int(p.arena, 0);
+    }
+    let e = parse_expr_prec_inner(p, min_prec);
+    parser_leave(p);
+    e
+}
+fn parse_expr_prec_inner(p: &mut Parser, min_prec: i64) -> *mut AstExpr yields [Diagnostics] {
     let mut left = parse_cast_expr(p);
 
     loop {
@@ -631,6 +695,17 @@ fn parse_block(p: &mut Parser) -> Vec<*mut AstStmt> yields [Diagnostics] {
 }
 
 pub fn parse_stmt(p: &mut Parser) -> *mut AstStmt yields [Diagnostics] {
+    if p.aborted != 0 {
+        return alloc_stmt_expr(p.arena, alloc_expr_int(p.arena, 0));
+    }
+    if !parser_enter(p) {
+        return alloc_stmt_expr(p.arena, alloc_expr_int(p.arena, 0));
+    }
+    let s = parse_stmt_inner(p);
+    parser_leave(p);
+    s
+}
+fn parse_stmt_inner(p: &mut Parser) -> *mut AstStmt yields [Diagnostics] {
     let kind = current_kind(p);
 
     if kind == tok_semicolon() {
@@ -1037,6 +1112,8 @@ pub fn parse_program(tokens: Vec<*mut Token>, interner: &mut Interner, arena: *m
         pos: 0,
         interner: interner as *mut Interner,
         arena: arena,
+        depth: 0,
+        aborted: 0,
     };
 
     while !check(&p, tok_eof()) {

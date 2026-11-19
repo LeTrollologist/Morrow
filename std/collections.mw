@@ -15,6 +15,12 @@ extern "C" {
 // Vec<T> - Dynamically sized, contiguous growable array
 // Supports both heap allocation (vec_new) and region allocation (vec_new_in)
 // with O(1) in-place tail growth when backed by a Region arena.
+//
+// Failure contract (validated at runtime, no invalid memory access):
+// - vec_get/vec_pop with an out-of-range or negative index return 0-as-T.
+// - vec_set with an out-of-range or negative index is a no-op.
+// - vec_push on a failed/zero-capacity allocation is a no-op.
+// - vec_free is idempotent and safe on an empty Vec.
 // -----------------------------------------------------------------------------
 
 struct Vec<T> {
@@ -24,12 +30,22 @@ struct Vec<T> {
     arena: *mut u8,
 }
 
+fn collections_max_cap() -> i64 { 1073741824 }
+
 fn vec_new<T>() -> Vec<T> {
     let initial_cap: i64 = 8;
     let null_arena: *mut u8 = 0 as *mut u8;
     let raw_buf = unsafe {
         morrow_alloc(initial_cap * 8, 8)
     };
+    if raw_buf == (0 as *mut u8) {
+        return Vec {
+            data: 0 as *mut T,
+            len: 0,
+            cap: 0,
+            arena: null_arena,
+        };
+    }
     Vec {
         data: raw_buf as *mut T,
         len: 0,
@@ -43,10 +59,24 @@ fn vec_with_capacity<T>(initial_cap: i64) -> Vec<T> {
     if cap < 4 {
         cap = 4;
     }
+    if cap > collections_max_cap() {
+        cap = 0;
+    }
+    if cap == 0 {
+        return Vec {
+            data: 0 as *mut T,
+            len: 0,
+            cap: 0,
+            arena: 0 as *mut u8,
+        };
+    }
     let null_arena: *mut u8 = 0 as *mut u8;
     let raw_buf = unsafe {
         morrow_alloc(cap * 8, 8)
     };
+    if raw_buf == (0 as *mut u8) {
+        cap = 0;
+    }
     Vec {
         data: raw_buf as *mut T,
         len: 0,
@@ -60,10 +90,14 @@ fn vec_new_in<T>(arena: *mut u8) -> Vec<T> {
     let raw_buf = unsafe {
         morrow_region_alloc(arena, initial_cap * 8, 8)
     };
+    let mut cap = initial_cap;
+    if raw_buf == (0 as *mut u8) {
+        cap = 0;
+    }
     Vec {
         data: raw_buf as *mut T,
         len: 0,
-        cap: initial_cap,
+        cap: cap,
         arena: arena,
     }
 }
@@ -73,9 +107,16 @@ fn vec_with_capacity_in<T>(arena: *mut u8, initial_cap: i64) -> Vec<T> {
     if cap < 4 {
         cap = 4;
     }
-    let raw_buf = unsafe {
-        morrow_region_alloc(arena, cap * 8, 8)
-    };
+    if cap > collections_max_cap() {
+        cap = 0;
+    }
+    let mut raw_buf: *mut u8 = 0 as *mut u8;
+    if cap > 0 {
+        raw_buf = unsafe { morrow_region_alloc(arena, cap * 8, 8) };
+        if raw_buf == (0 as *mut u8) {
+            cap = 0;
+        }
+    }
     Vec {
         data: raw_buf as *mut T,
         len: 0,
@@ -97,7 +138,13 @@ fn vec_is_empty<T>(v: &Vec<T>) -> bool {
 }
 
 fn vec_push<T>(v: &mut Vec<T>, item: T) {
+    if v.data == (0 as *mut T) || v.cap <= 0 || v.len < 0 || v.len > v.cap {
+        return;
+    }
     if v.len == v.cap {
+        if v.cap > collections_max_cap() {
+            return;
+        }
         let old_sz = v.cap * 8;
         let new_cap = v.cap * 2;
         let new_sz = new_cap * 8;
@@ -105,6 +152,9 @@ fn vec_push<T>(v: &mut Vec<T>, item: T) {
         let new_buf = unsafe {
             morrow_region_grow(v.arena, old_buf, old_sz, new_sz, 8)
         };
+        if new_buf == (0 as *mut u8) {
+            return;
+        }
         v.data = new_buf as *mut T;
         v.cap = new_cap;
     }
@@ -115,6 +165,9 @@ fn vec_push<T>(v: &mut Vec<T>, item: T) {
 }
 
 fn vec_pop<T>(v: &mut Vec<T>) -> T {
+    if v.len <= 0 || v.data == (0 as *mut T) {
+        return 0 as T;
+    }
     let new_len = v.len - 1;
     v.len = new_len;
     unsafe {
@@ -123,12 +176,18 @@ fn vec_pop<T>(v: &mut Vec<T>) -> T {
 }
 
 fn vec_get<T>(v: &Vec<T>, index: i64) -> T {
+    if v.data == (0 as *mut T) || index < 0 || index >= v.len {
+        return 0 as T;
+    }
     unsafe {
         v.data[index]
     }
 }
 
 fn vec_set<T>(v: &mut Vec<T>, index: i64, item: T) {
+    if v.data == (0 as *mut T) || index < 0 || index >= v.len {
+        return;
+    }
     unsafe {
         v.data[index] = item;
     }
@@ -136,11 +195,12 @@ fn vec_set<T>(v: &mut Vec<T>, index: i64, item: T) {
 
 fn vec_free<T>(v: &mut Vec<T>) {
     let null_arena: *mut u8 = 0 as *mut u8;
-    if v.arena == null_arena {
+    if v.arena == null_arena && v.data != (0 as *mut T) {
         unsafe {
             free(v.data as *mut u8);
         }
     }
+    v.data = 0 as *mut T;
     v.len = 0;
     v.cap = 0;
 }
@@ -352,6 +412,24 @@ pub fn hash_str(s: String) -> i64 {
     h
 }
 
+// HashMap failure contract:
+// - hashmap_get returns -1 for a missing key or an invalid/empty map.
+// - hashmap_contains/remove return false for a missing key or invalid map.
+// - hashmap_insert is a no-op when the map is invalid or growth cannot allocate.
+// - negative capacities produce an empty map; hashmap_free is idempotent.
+fn hashmap_empty() -> HashMap {
+    HashMap {
+        keys: 0 as *mut String,
+        len: 0,
+        cap: 0,
+        arena: 0 as *mut u8,
+        vals: 0 as *mut i64,
+        hashes: 0 as *mut i64,
+        psls: 0 as *mut i64,
+        occupied: 0 as *mut i64,
+    }
+}
+
 pub fn hashmap_new() -> HashMap {
     let initial_cap: i64 = 16;
     let bytes = (initial_cap * 8) as usize;
@@ -359,10 +437,20 @@ pub fn hashmap_new() -> HashMap {
     let vals_ptr = unsafe { morrow_alloc(bytes, 8) as *mut i64 };
     let hashes_ptr = unsafe { morrow_alloc(bytes, 8) as *mut i64 };
     let psls_raw = unsafe { morrow_alloc(bytes, 8) };
+    let occ_raw = unsafe { morrow_alloc(bytes, 8) };
+    if keys_ptr == (0 as *mut String) || vals_ptr == (0 as *mut i64) || hashes_ptr == (0 as *mut i64) ||
+       psls_raw == (0 as *mut u8) || occ_raw == (0 as *mut u8) {
+        unsafe {
+            free(keys_ptr as *mut u8);
+            free(vals_ptr as *mut u8);
+            free(hashes_ptr as *mut u8);
+            free(psls_raw);
+            free(occ_raw);
+        }
+        return hashmap_empty();
+    }
     unsafe { memset(psls_raw, 0, bytes); }
     let psls_ptr = psls_raw as *mut i64;
-
-    let occ_raw = unsafe { morrow_alloc(bytes, 8) };
     unsafe { memset(occ_raw, 0, bytes); }
     let occ_ptr = occ_raw as *mut i64;
 
@@ -380,20 +468,29 @@ pub fn hashmap_new() -> HashMap {
 }
 
 pub fn hashmap_new_in(arena: *mut u8, initial_cap: i64) -> HashMap {
+    if initial_cap < 0 {
+        return hashmap_empty();
+    }
     let mut cap = initial_cap;
     if cap < 16 {
         cap = 16;
+    }
+    if cap > collections_max_cap() {
+        return hashmap_empty();
     }
     let bytes = (cap * 8) as usize;
     let keys_ptr = unsafe { morrow_region_alloc(arena, bytes, 8) as *mut String };
     let vals_ptr = unsafe { morrow_region_alloc(arena, bytes, 8) as *mut i64 };
     let hashes_ptr = unsafe { morrow_region_alloc(arena, bytes, 8) as *mut i64 };
-
     let psls_raw = unsafe { morrow_region_alloc(arena, bytes, 8) };
+    let occ_raw = unsafe { morrow_region_alloc(arena, bytes, 8) };
+    if keys_ptr == (0 as *mut String) || vals_ptr == (0 as *mut i64) || hashes_ptr == (0 as *mut i64) ||
+       psls_raw == (0 as *mut u8) || occ_raw == (0 as *mut u8) {
+        return hashmap_empty();
+    }
+
     unsafe { memset(psls_raw, 0, bytes); }
     let psls_ptr = psls_raw as *mut i64;
-
-    let occ_raw = unsafe { morrow_region_alloc(arena, bytes, 8) };
     unsafe { memset(occ_raw, 0, bytes); }
     let occ_ptr = occ_raw as *mut i64;
 
@@ -418,8 +515,14 @@ pub fn hashmap_is_empty(map: &HashMap) -> bool {
 }
 
 pub fn hashmap_insert(map: &mut HashMap, key: String, val: i64) {
+    if map.cap <= 0 || map.keys == (0 as *mut String) || map.occupied == (0 as *mut i64) {
+        return;
+    }
     if (map.len + 1) * 10 >= map.cap * 7 {
         hashmap_grow(map);
+        if map.cap <= 0 || map.len >= map.cap {
+            return;
+        }
     }
 
     let mut k = key;
@@ -485,6 +588,9 @@ pub fn hashmap_insert(map: &mut HashMap, key: String, val: i64) {
 }
 
 pub fn hashmap_get(map: &HashMap, key: String) -> i64 {
+    if map.cap <= 0 || map.keys == (0 as *mut String) || map.occupied == (0 as *mut i64) {
+        return 0 - 1;
+    }
     let h = hash_str(key);
     let mut idx = h - (h / map.cap) * map.cap;
     if idx < 0 {
@@ -517,6 +623,9 @@ pub fn hashmap_get(map: &HashMap, key: String) -> i64 {
 }
 
 pub fn hashmap_contains(map: &HashMap, key: String) -> bool {
+    if map.cap <= 0 || map.keys == (0 as *mut String) || map.occupied == (0 as *mut i64) {
+        return false;
+    }
     let h = hash_str(key);
     let mut idx = h - (h / map.cap) * map.cap;
     if idx < 0 {
@@ -577,6 +686,9 @@ fn hashmap_shift_back(map: &mut HashMap, start: i64) {
 }
 
 pub fn hashmap_remove(map: &mut HashMap, key: String) -> bool {
+    if map.cap <= 0 || map.keys == (0 as *mut String) || map.occupied == (0 as *mut i64) {
+        return false;
+    }
     let h = hash_str(key);
     let mut idx = h - (h / map.cap) * map.cap;
     if idx < 0 {
@@ -612,14 +724,14 @@ pub fn hashmap_remove(map: &mut HashMap, key: String) -> bool {
 
 pub fn hashmap_grow(map: &mut HashMap) {
     let old_cap = map.cap;
+    if old_cap <= 0 || old_cap > collections_max_cap() {
+        return;
+    }
     let old_keys = map.keys;
     let old_vals = map.vals;
     let old_hashes = map.hashes;
     let old_psls = map.psls;
     let old_occ = map.occupied;
-
-    let new_cap = old_cap * 2;
-    let bytes = (new_cap * 8) as usize;
 
     let null_arena: *mut u8 = 0 as *mut u8;
     let mut new_keys: *mut String = 0 as *mut String;
@@ -631,28 +743,49 @@ pub fn hashmap_grow(map: &mut HashMap) {
     let mut psls_raw: *mut u8 = 0 as *mut u8;
     let mut occ_raw: *mut u8 = 0 as *mut u8;
 
+    let new_cap = old_cap * 2;
+    if new_cap <= 0 || new_cap > collections_max_cap() {
+        return;
+    }
+    let bytes = (new_cap * 8) as usize;
+
     if map.arena == null_arena {
         new_keys = unsafe { morrow_alloc(bytes, 8) as *mut String };
         new_vals = unsafe { morrow_alloc(bytes, 8) as *mut i64 };
         new_hashes = unsafe { morrow_alloc(bytes, 8) as *mut i64 };
         psls_raw = unsafe { morrow_alloc(bytes, 8) };
-        unsafe { memset(psls_raw, 0, bytes); }
         new_psls = psls_raw as *mut i64;
         occ_raw = unsafe { morrow_alloc(bytes, 8) };
-        unsafe { memset(occ_raw, 0, bytes); }
         new_occ = occ_raw as *mut i64;
     } else {
         new_keys = unsafe { morrow_region_alloc(map.arena, bytes, 8) as *mut String };
         new_vals = unsafe { morrow_region_alloc(map.arena, bytes, 8) as *mut i64 };
         new_hashes = unsafe { morrow_region_alloc(map.arena, bytes, 8) as *mut i64 };
         psls_raw = unsafe { morrow_region_alloc(map.arena, bytes, 8) };
-        unsafe { memset(psls_raw, 0, bytes); }
         new_psls = psls_raw as *mut i64;
         occ_raw = unsafe { morrow_region_alloc(map.arena, bytes, 8) };
-        unsafe { memset(occ_raw, 0, bytes); }
         new_occ = occ_raw as *mut i64;
     }
 
+    if new_keys == (0 as *mut String) || new_vals == (0 as *mut i64) ||
+       new_hashes == (0 as *mut i64) || psls_raw == (0 as *mut u8) ||
+       occ_raw == (0 as *mut u8) {
+        if map.arena == null_arena {
+            unsafe {
+                free(new_keys as *mut u8);
+                free(new_vals as *mut u8);
+                free(new_hashes as *mut u8);
+                free(psls_raw);
+                free(occ_raw);
+            }
+        }
+        return;
+    }
+
+    unsafe {
+        memset(new_psls as *mut u8, 0, bytes);
+        memset(new_occ as *mut u8, 0, bytes);
+    }
     map.keys = new_keys;
     map.vals = new_vals;
     map.hashes = new_hashes;
@@ -685,7 +818,7 @@ pub fn hashmap_grow(map: &mut HashMap) {
 
 pub fn hashmap_free(map: &mut HashMap) {
     let null_arena: *mut u8 = 0 as *mut u8;
-    if map.arena == null_arena {
+    if map.arena == null_arena && map.keys != (0 as *mut String) {
         unsafe {
             free(map.keys as *mut u8);
             free(map.vals as *mut u8);
@@ -694,4 +827,11 @@ pub fn hashmap_free(map: &mut HashMap) {
             free(map.occupied as *mut u8);
         }
     }
+    map.keys = 0 as *mut String;
+    map.vals = 0 as *mut i64;
+    map.hashes = 0 as *mut i64;
+    map.psls = 0 as *mut i64;
+    map.occupied = 0 as *mut i64;
+    map.len = 0;
+    map.cap = 0;
 }

@@ -461,6 +461,20 @@ error), closures (`let f = |x| ...`), `for`, `in`, `match`.
 extern "C" {
     fn malloc(size: i64) -> *mut u8;
     fn free(ptr: *mut u8) -> void;
+}
+
+C ABI notes:
+
+- Extern declarations are emitted with their declared C types (`i32`, `i16`,
+  `i8`, `u8`, `f64`, pointers, etc.) while Morrow-internal calls use `i64`.
+  Signed narrow returns are sign-extended; unsigned ones zero-extended.
+- Structs passed **by value** across an extern boundary are rejected with
+  `Unsupported C ABI type in extern function ...`; pass a pointer/reference
+  instead.
+- Abortive effect handlers use the platform setjmp/longjmp shim
+  (`morrow_setjmp`/`morrow_longjmp`) with callee-saved integer and floating-point
+  registers restored. `tests/effect*_test.mw` and `tests/abi_setjmp_test.mw`
+  exercise the paths.
 
 ---
 
@@ -780,8 +794,8 @@ Parsed as errors (do not appear in the language today):
 
 Implemented but weaker than older drafts claimed:
 
-- **Refinements**: literal casts and divisor-span checks only; no narrowing, no
-  variable-range proofs.
+- **Refinements**: literal casts, divisor-span checks, and path-sensitive narrowing
+  for typed conditions; variable-range proofs remain unavailable.
 - **Affine resources**: no auto-drop; consumption must happen on every path.
 - **Escape analysis**: **partial** (v2.4.0). Region-allocated values (pointers,
   references, `*_in` allocator results and the values of region expressions) are
@@ -790,11 +804,12 @@ Implemented but weaker than older drafts claimed:
   calls are still not detected. The full detection matrix is
   in [§4](#escape-analysis-what-is-and-is-not-rejected).
 - **`println`**: one value per call, no `{}` interpolation.
-- **Call signatures**: callee existence and argument **count** are enforced
-  (v2.0.2); argument *types* are not compared, because `tc_expr` currently infers
-  `i64` for most expressions — a kind comparison produced 152 false positives across
-  the compiler/stdlib during development, so type checking needs real inference
-  first.
+- **Call signatures**: callee existence, argument count, and argument/return kinds
+  are enforced; generic parameters are exempt. Call-site inference remains
+  conservative.
+- **Parser nesting**: expressions, statements, and types are limited to 512 nested
+  levels; deeper input produces `Parser nesting limit exceeded` instead of stack
+  exhaustion.
 - **`forge check`**: runs the full typechecker (including callee existence/arity)
   but does not link, so a missing C symbol is only caught by `forge build`.
 - **`forge fmt`**: safety-gated. The printer is idempotent for the subset it

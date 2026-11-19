@@ -1,0 +1,12 @@
+struct Pair {
+    x: i64,
+    y: i64,
+}
+
+extern "C" {
+    fn takes_pair(pair: Pair) -> i64;
+}
+
+fn main() -> i64 {
+    0
+}

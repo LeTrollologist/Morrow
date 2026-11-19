@@ -3,6 +3,7 @@
 import std::test;
 import std::fs;
 import std::process;
+import std::collections;
 
 extern "C" {
     fn morrow_alloc(size: usize, align: usize) -> *mut u8;
@@ -122,6 +123,29 @@ fn cwd_independence_checks() -> i64 {
     let bad_assign_src = "fn main() -> i64 { var s: String = \"ok\"; s = 5; 0 }\n";
     if !fs_write_string("target/cwd_test/bad_assign.mw", bad_assign_src) { return 24; }
     if process_exec("cmd", "/c \"cd /d target/cwd_test && ..\\..\\bin\\forge.exe check bad_assign.mw\"") == 0 { return 25; }
+
+    let bad_comment_src = "fn main() -> i64 { 0 }\n/* unterminated\n";
+    if !fs_write_string("target/cwd_test/bad_comment.mw", bad_comment_src) { return 26; }
+    if process_exec("bin\\forge.exe", "check target/cwd_test/bad_comment.mw") != 1 { return 27; }
+
+    region deep_reg {
+    let mut deep = string_buffer_new_in(deep_reg);
+    string_buffer_push_str(&mut deep, "fn main() -> i64 { " as *const u8, 19);
+    let mut d: i64 = 0;
+    while d < 600 {
+        string_buffer_push_byte(&mut deep, 40 as u8);
+        d = d + 1;
+    }
+    string_buffer_push_byte(&mut deep, 48 as u8);
+    d = 0;
+    while d < 600 {
+        string_buffer_push_byte(&mut deep, 41 as u8);
+        d = d + 1;
+    }
+    string_buffer_push_byte(&mut deep, 0 as u8);
+    if !fs_write_string("target/cwd_test/deep.mw", string_as_ptr(&deep) as String) { return 28; }
+    }
+    if process_exec("bin\\forge.exe", "check target/cwd_test/deep.mw") != 1 { return 29; }
 
     return 0;
 }

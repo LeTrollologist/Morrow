@@ -28,6 +28,7 @@ pub struct Codegen {
     cur_loop_head: i64,
     region_stack: Vec<i64>,
     cur_loop_region_depth: i64,
+    extern_sigs: *mut HashMap,
 }
 
 fn emit_i64_helper(cg: &mut Codegen, n: i64) {
@@ -79,19 +80,90 @@ pub fn is_aarch64_target(target: String) -> bool {
     false
 }
 
-pub fn is_wasm_target(target: String) -> bool {
+pub fn abi_type_code(interner: &Interner, sym: i64) -> i64 {
+    if sym == 0 {
+        return 11; // void/unit
+    }
+    let s = interner_lookup(interner, sym);
+    let p = s as *const u8;
+    if unsafe { strcmp(p, "i32" as *const u8) } == 0 { return 1; }
+    if unsafe { strcmp(p, "i16" as *const u8) } == 0 { return 2; }
+    if unsafe { strcmp(p, "i8" as *const u8) } == 0 { return 3; }
+    if unsafe { strcmp(p, "u32" as *const u8) } == 0 { return 4; }
+    if unsafe { strcmp(p, "u16" as *const u8) } == 0 { return 5; }
+    if unsafe { strcmp(p, "u8" as *const u8) } == 0 { return 6; }
+    if unsafe { strcmp(p, "bool" as *const u8) } == 0 { return 7; }
+    if unsafe { strcmp(p, "f64" as *const u8) } == 0 { return 8; }
+    if unsafe { strcmp(p, "f32" as *const u8) } == 0 { return 9; }
+    if unsafe { strcmp(p, "String" as *const u8) } == 0 || unsafe { strcmp(p, "string" as *const u8) } == 0 {
+        return 10;
+    }
+    let c0 = unsafe { p[0] } as i64;
+    if c0 == 42 || c0 == 38 {
+        return 10; // pointer/reference
+    }
+    return 0; // i64 or an opaque ABI-sized value
+}
+
+fn abi_type_name(code: i64) -> String {
+    if code == 1 { return "i32" as String; }
+    if code == 2 { return "i16" as String; }
+    if code == 3 { return "i8" as String; }
+    if code == 4 { return "i32" as String; }
+    if code == 5 { return "i16" as String; }
+    if code == 6 { return "i8" as String; }
+    if code == 7 { return "i1" as String; }
+    if code == 8 { return "double" as String; }
+    if code == 9 { return "float" as String; }
+    if code == 10 { return "ptr" as String; }
+    if code == 11 { return "void" as String; }
+    return "i64" as String;
+}
+
+fn abi_key(arena: *mut u8, name: String, suffix: String) -> String {
+    let mut b = string_buffer_new_in(arena);
+    fmt_append_str(&mut b, name);
+    fmt_append_str(&mut b, suffix);
+    string_buffer_push_byte(&mut b, 0 as u8);
+    string_as_ptr(&b) as String
+}
+
+fn is_wasm_target(target: String) -> bool {
     let p = target as *const u8;
-    if unsafe { strcmp(p, "wasm32-unknown-unknown" as *const u8) == 0 } {
+    if unsafe { strcmp(p, "wasm32-unknown-unknown" as *const u8) } == 0 {
         return true;
     }
-    if unsafe { strcmp(p, "wasm32" as *const u8) == 0 } {
+    if unsafe { strcmp(p, "wasm32" as *const u8) } == 0 {
         return true;
     }
-    if unsafe { strcmp(p, "wasm" as *const u8) == 0 } {
+    if unsafe { strcmp(p, "wasm" as *const u8) } == 0 {
         return true;
     }
     false
 }
+
+
+fn codegen_prepare_extern_abi(cg: &mut Codegen, prog_ptr: *mut AstProgram) {
+    let interner_ref = cg.cg_interner as &Interner;
+    let mut i: i64 = 0;
+    while i < prog_ptr.extern_fns.len {
+        let e = vec_get(&prog_ptr.extern_fns, i);
+        let name = interner_lookup(interner_ref, e.name_sym);
+        hashmap_insert(cg.extern_sigs, abi_key(cg.cg_arena, name, "#ret" as String), abi_type_code(interner_ref, e.ret_ty_sym));
+        let mut p: i64 = 0;
+        while p < e.params.len {
+            let param = vec_get(&e.params, p);
+            let mut idxbuf = string_buffer_new_in(cg.cg_arena);
+            fmt_append_str(&mut idxbuf, "#p" as String);
+            fmt_append_i64(&mut idxbuf, p);
+            string_buffer_push_byte(&mut idxbuf, 0 as u8);
+            hashmap_insert(cg.extern_sigs, abi_key(cg.cg_arena, name, string_as_ptr(&idxbuf) as String), abi_type_code(interner_ref, param.ty_sym));
+            p = p + 1;
+        }
+        i = i + 1;
+    }
+}
+
 
 pub fn is_linux_target(target: String) -> bool {
     let p = target as *const u8;
@@ -120,6 +192,7 @@ pub fn codegen_new_target_in(interner: &mut Interner, arena: *mut u8, target_tri
     let vars_vec: Vec<i64> = vec_new_in(arena);
     let handlers_vec: Vec<*mut AstHandler> = vec_new_in(arena);
     let region_vec: Vec<i64> = vec_new_in(arena);
+    let extern_sig_map: *mut HashMap = hashmap_new_in(arena, 64);
     Codegen {
         buf: sbuf,
         cg_interner: interner as *mut Interner,
@@ -135,6 +208,7 @@ pub fn codegen_new_target_in(interner: &mut Interner, arena: *mut u8, target_tri
         cur_loop_head: 0,
         region_stack: region_vec,
         cur_loop_region_depth: 0,
+        extern_sigs: extern_sig_map,
     }
 }
 
@@ -3675,6 +3749,128 @@ fn emit_tir_inst(cg: &mut Codegen, inst: *mut TirInst) {
             return;
         }
 
+        // Extern calls use the C ABI types declared in the AST; user functions
+        // keep the internal i64 calling convention.
+        let ret_code = hashmap_get(cg.extern_sigs, abi_key(cg.cg_arena, fn_name, "#ret" as String));
+        if ret_code != 0 - 1 {
+            let mut abi_regs: Vec<i64> = vec_new_in(cg.cg_arena);
+            let mut abi_types: Vec<String> = vec_new_in(cg.cg_arena);
+            i = 0;
+            while i < arg_regs.len {
+                let mut idxbuf = string_buffer_new_in(cg.cg_arena);
+                fmt_append_str(&mut idxbuf, "#p" as String);
+                fmt_append_i64(&mut idxbuf, i);
+                string_buffer_push_byte(&mut idxbuf, 0 as u8);
+                let code = hashmap_get(cg.extern_sigs, abi_key(cg.cg_arena, fn_name, string_as_ptr(&idxbuf) as String));
+                let src = vec_get(&arg_regs, i);
+                let r = alloc_reg(cg);
+                if code == 1 || code == 4 {
+                    emit_str(cg, "    %t"); emit_i64(cg, r);
+                    emit_str(cg, " = trunc i64 %t"); emit_i64(cg, src); emit_str(cg, " to i32\n");
+                    vec_push(&mut abi_regs, r);
+                    vec_push(&mut abi_types, "i32" as String);
+                } else if code == 2 || code == 5 {
+                    emit_str(cg, "    %t"); emit_i64(cg, r);
+                    emit_str(cg, " = trunc i64 %t"); emit_i64(cg, src); emit_str(cg, " to i16\n");
+                    vec_push(&mut abi_regs, r);
+                    vec_push(&mut abi_types, "i16" as String);
+                } else if code == 3 || code == 6 {
+                    emit_str(cg, "    %t"); emit_i64(cg, r);
+                    emit_str(cg, " = trunc i64 %t"); emit_i64(cg, src); emit_str(cg, " to i8\n");
+                    vec_push(&mut abi_regs, r);
+                    vec_push(&mut abi_types, "i8" as String);
+                } else if code == 7 {
+                    emit_str(cg, "    %t"); emit_i64(cg, r);
+                    emit_str(cg, " = trunc i64 %t"); emit_i64(cg, src); emit_str(cg, " to i1\n");
+                    vec_push(&mut abi_regs, r);
+                    vec_push(&mut abi_types, "i1" as String);
+                } else if code == 8 {
+                    emit_str(cg, "    %t"); emit_i64(cg, r);
+                    emit_str(cg, " = bitcast i64 %t"); emit_i64(cg, src); emit_str(cg, " to double\n");
+                    vec_push(&mut abi_regs, r);
+                    vec_push(&mut abi_types, "double" as String);
+                } else if code == 9 {
+                    let i32r = alloc_reg(cg);
+                    emit_str(cg, "    %t"); emit_i64(cg, i32r);
+                    emit_str(cg, " = trunc i64 %t"); emit_i64(cg, src); emit_str(cg, " to i32\n");
+                    emit_str(cg, "    %t"); emit_i64(cg, r);
+                    emit_str(cg, " = bitcast i32 %t"); emit_i64(cg, i32r); emit_str(cg, " to float\n");
+                    vec_push(&mut abi_regs, r);
+                    vec_push(&mut abi_types, "float" as String);
+                } else if code == 10 {
+                    emit_str(cg, "    %t"); emit_i64(cg, r);
+                    emit_str(cg, " = inttoptr i64 %t"); emit_i64(cg, src); emit_str(cg, " to ptr\n");
+                    vec_push(&mut abi_regs, r);
+                    vec_push(&mut abi_types, "ptr" as String);
+                } else {
+                    vec_push(&mut abi_regs, src);
+                    vec_push(&mut abi_types, "i64" as String);
+                }
+                i = i + 1;
+            }
+
+            let mut raw_reg = dest_reg;
+            if ret_code != 11 && ret_code != 0 {
+                raw_reg = alloc_reg(cg);
+            }
+            if ret_code == 11 {
+                emit_str(cg, "    call void @");
+                emit_str(cg, fn_name);
+                emit_str(cg, "(");
+            } else {
+                emit_str(cg, "    %t");
+                emit_i64(cg, raw_reg);
+                emit_str(cg, " = call ");
+                emit_str(cg, abi_type_name(ret_code));
+                emit_str(cg, " @");
+                emit_str(cg, fn_name);
+                emit_str(cg, "(");
+            }
+            i = 0;
+            while i < abi_regs.len {
+                if i > 0 { emit_str(cg, ", "); }
+                emit_str(cg, vec_get(&abi_types, i));
+                emit_str(cg, " %t");
+                emit_i64(cg, vec_get(&abi_regs, i));
+                i = i + 1;
+            }
+            emit_str(cg, ")\n");
+
+            if ret_code == 11 {
+                if dest_reg != 0 {
+                    emit_str(cg, "    %t"); emit_i64(cg, dest_reg);
+                    emit_str(cg, " = add i64 0, 0\n");
+                }
+            } else if ret_code == 1 || ret_code == 2 || ret_code == 3 {
+                let r = alloc_reg(cg);
+                emit_str(cg, "    %t"); emit_i64(cg, r);
+                emit_str(cg, " = sext "); emit_str(cg, abi_type_name(ret_code));
+                emit_str(cg, " %t"); emit_i64(cg, raw_reg); emit_str(cg, " to i64\n");
+                emit_str(cg, "    %t"); emit_i64(cg, dest_reg);
+                emit_str(cg, " = add i64 0, %t"); emit_i64(cg, r); emit_str(cg, "\n");
+            } else if ret_code == 4 || ret_code == 5 || ret_code == 6 || ret_code == 7 {
+                let r = alloc_reg(cg);
+                emit_str(cg, "    %t"); emit_i64(cg, r);
+                emit_str(cg, " = zext "); emit_str(cg, abi_type_name(ret_code));
+                emit_str(cg, " %t"); emit_i64(cg, raw_reg); emit_str(cg, " to i64\n");
+                emit_str(cg, "    %t"); emit_i64(cg, dest_reg);
+                emit_str(cg, " = add i64 0, %t"); emit_i64(cg, r); emit_str(cg, "\n");
+            } else if ret_code == 10 {
+                emit_str(cg, "    %t"); emit_i64(cg, dest_reg);
+                emit_str(cg, " = ptrtoint ptr %t"); emit_i64(cg, raw_reg); emit_str(cg, " to i64\n");
+            } else if ret_code == 8 {
+                emit_str(cg, "    %t"); emit_i64(cg, dest_reg);
+                emit_str(cg, " = bitcast double %t"); emit_i64(cg, raw_reg); emit_str(cg, " to i64\n");
+            } else if ret_code == 9 {
+                let bits = alloc_reg(cg);
+                emit_str(cg, "    %t"); emit_i64(cg, bits);
+                emit_str(cg, " = bitcast float %t"); emit_i64(cg, raw_reg); emit_str(cg, " to i32\n");
+                emit_str(cg, "    %t"); emit_i64(cg, dest_reg);
+                emit_str(cg, " = zext i32 %t"); emit_i64(cg, bits); emit_str(cg, " to i64\n");
+            }
+            return;
+        }
+
         // Generic user function call
         emit_str(cg, "    %t");
         emit_i64(cg, dest_reg);
@@ -4300,6 +4496,7 @@ pub fn emit_llvm_ir(tir_mod: *mut TirModule, interner: &mut Interner, arena: *mu
 pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, arena: *mut u8, target_triple: String) -> StringBuffer {
     let mut cg = codegen_new_target_in(interner, arena, target_triple);
     let prog_ptr = tir_mod.left;
+    codegen_prepare_extern_abi(&mut cg, prog_ptr);
 
     // Collect all string literals and handlers from AST
     let mut fi: i64 = 0;
@@ -4535,9 +4732,9 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
     emit_str(&mut cg, "declare i64 @fwrite(ptr, i64, i64, ptr)\n");
     emit_str(&mut cg, "declare i32 @fseek(ptr, i64, i32)\n");
     if !is_wasm {
-        emit_str(&mut cg, "declare i32 @morrow_setjmp(ptr)\n");
+        emit_str(&mut cg, "declare i32 @morrow_setjmp(ptr) returns_twice\n");
         emit_str(&mut cg, "declare void @morrow_longjmp(ptr, i32)\n");
-        emit_str(&mut cg, "declare i32 @tungsten_setjmp(ptr)\n");
+        emit_str(&mut cg, "declare i32 @tungsten_setjmp(ptr) returns_twice\n");
         emit_str(&mut cg, "declare void @tungsten_longjmp(ptr, i32)\n");
     }
     emit_str(&mut cg, "declare i64 @ftell(ptr)\n");
@@ -4623,18 +4820,29 @@ pub fn emit_llvm_ir_target(tir_mod: *mut TirModule, interner: &mut Interner, are
             }
             if !already_declared {
                 vec_push(&mut declared_syms, ef.name_sym);
-                emit_str(&mut cg, "declare i64 @");
-                emit_str(&mut cg, ef_name);
-                emit_str(&mut cg, "(");
+                let ret_code = hashmap_get(cg.extern_sigs, abi_key(cg.cg_arena, ef_name, "#ret" as String));
+                let mut decl = string_buffer_new_in(cg.cg_arena);
+                fmt_append_str(&mut decl, "declare " as String);
+                fmt_append_str(&mut decl, abi_type_name(ret_code));
+                fmt_append_str(&mut decl, " @" as String);
+                fmt_append_str(&mut decl, ef_name);
+                fmt_append_str(&mut decl, "(" as String);
                 let mut pi: i64 = 0;
                 while pi < ef.params.len {
                     if pi > 0 {
-                        emit_str(&mut cg, ", ");
+                        fmt_append_str(&mut decl, ", " as String);
                     }
-                    emit_str(&mut cg, "i64");
+                    let mut idxbuf = string_buffer_new_in(cg.cg_arena);
+                    fmt_append_str(&mut idxbuf, "#p" as String);
+                    fmt_append_i64(&mut idxbuf, pi);
+                    string_buffer_push_byte(&mut idxbuf, 0 as u8);
+                    let code = hashmap_get(cg.extern_sigs, abi_key(cg.cg_arena, ef_name, string_as_ptr(&idxbuf) as String));
+                    fmt_append_str(&mut decl, abi_type_name(code));
                     pi = pi + 1;
                 }
-                emit_str(&mut cg, ")\n");
+                fmt_append_str(&mut decl, ")\n" as String);
+                string_buffer_push_byte(&mut decl, 0 as u8);
+                emit_str(&mut cg, string_as_ptr(&decl) as String);
             }
         }
         ei = ei + 1;

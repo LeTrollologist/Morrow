@@ -1269,6 +1269,8 @@ pub fn forge_run_test(arena: *mut u8) -> i64 yields [FS, Process, Diagnostics, I
     vec_push(&mut test_suites, "tests/process_injection_test.mw");
     vec_push(&mut test_suites, "tests/readme_example_test.mw");
     vec_push(&mut test_suites, "tests/short_circuit_test.mw");
+    vec_push(&mut test_suites, "tests/collections_bounds_test.mw");
+    vec_push(&mut test_suites, "tests/abi_setjmp_test.mw");
     vec_push(&mut test_suites, "tests/generics_test.mw");
     vec_push(&mut test_suites, "tests/effects_test.mw");
     vec_push(&mut test_suites, "tests/formal_verification_test.mw");
@@ -1369,6 +1371,10 @@ pub fn forge_run_test(arena: *mut u8) -> i64 yields [FS, Process, Diagnostics, I
     vec_push(&mut neg_expect, "Unexpected token");
     vec_push(&mut neg_files, "tests/negative/shorthand_handler.mw");
     vec_push(&mut neg_expect, "Expected");
+    vec_push(&mut neg_files, "tests/negative/unterminated_comment.mw");
+    vec_push(&mut neg_expect, "Unterminated block comment");
+    vec_push(&mut neg_files, "tests/negative/extern_struct_by_value.mw");
+    vec_push(&mut neg_expect, "Unsupported C ABI type");
 
     let mut ni: i64 = 0;
     while ni < neg_files.len {

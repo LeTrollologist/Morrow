@@ -6,7 +6,7 @@ TAG ?= v2.4.19
 
 # Full release pipeline (bumps versions, rebuilds, verifies, publishes)
 release:
-	python scripts/pipeline.py $(TAG)
+	python scripts/pipeline.py $(TAG) --publish
 
 # Full local verification and packaging without publishing
 check:
@@ -38,12 +38,12 @@ verify:
 
 # Upload the locally built artifacts to the release page (no building happens there)
 ship:
-	python scripts/pipeline.py $(TAG) --from ship
+	python scripts/pipeline.py $(TAG) --from ship --publish
 
 # Republish an already-released version: rebuild artifacts, re-verify byte equality,
 # record another publication in releases/$(TAG).json
 republish:
-	python scripts/pipeline.py $(TAG) --clobber
+	python scripts/pipeline.py $(TAG) --clobber --publish
 
 # Preview pipeline execution without modifying state
 dry-run:

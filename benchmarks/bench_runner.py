@@ -1,70 +1,59 @@
-import socket
-import time
+#!/usr/bin/env python3
+"""Morrow benchmark runner.
+
+Runs the canonical benchmark suite through `bin/forge.exe bench`, which compiles
+and executes every `benchmarks/*.mw` workload and the `benchmarks/c/` baselines.
+This wrapper exists so the benchmark suite can be driven from the documented
+`benchmarks/` location without duplicating the compiler's benchmark logic.
+
+Usage:
+    python benchmarks/bench_runner.py [extra forge bench arguments]
+
+Exit status is 0 only when the complete benchmark suite succeeds. Missing tools,
+compile failures, runtime failures, and benchmark mismatches propagate as a
+non-zero status.
+"""
+
+from __future__ import annotations
+
+import shutil
 import subprocess
-import threading
 import sys
-import os
+from pathlib import Path
 
-def check_server_ready(port, timeout=5.0):
-    start = time.perf_counter()
-    while time.perf_counter() - start < timeout:
-        try:
-            with socket.create_connection(('127.0.0.1', port), timeout=0.5) as s:
-                s.sendall(b'GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n')
-                data = s.recv(128)
-                if b'200 OK' in data:
-                    return True
-        except Exception:
-            time.sleep(0.05)
-    return False
+ROOT = Path(__file__).resolve().parent.parent
+FORGE = ROOT / "bin" / "forge.exe"
+ALT_FORGE = ROOT / "bin" / "forge"
 
-def make_request(port):
-    t0 = time.perf_counter()
+
+def find_forge() -> Path:
+    if FORGE.exists():
+        return FORGE
+    if ALT_FORGE.exists():
+        return ALT_FORGE
+    exe = shutil.which("forge")
+    if exe:
+        return Path(exe)
+    raise SystemExit("bench_runner: bin/forge.exe not found; build the toolchain first")
+
+
+def main(argv: list[str]) -> int:
+    if argv and argv[0] in ("-h", "--help"):
+        print(__doc__.strip())
+        return 0
+    forge = find_forge()
+    cmd = [str(forge), "bench", *argv]
+    print("=== Morrow benchmark suite ===")
+    print("command:", " ".join(cmd), flush=True)
     try:
-        with socket.create_connection(('127.0.0.1', port), timeout=3.0) as s:
-            s.sendall(b'GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n')
-            data = s.recv(512)
-            t1 = time.perf_counter()
-            if b'200 OK' in data:
-                return (t1 - t0) * 1000.0, True
-            return (t1 - t0) * 1000.0, False
-     except Exception:
-        return 0.0, False
+        result = subprocess.run(cmd, cwd=str(ROOT))
+    except OSError as exc:
+        print(f"bench_runner: failed to launch forge: {exc}", file=sys.stderr)
+        return 127
+    if result.returncode != 0:
+        print(f"bench result: FAILED (exit {result.returncode})", file=sys.stderr)
+    return result.returncode
 
-def benchmark_target(name, port, total_requests=1000, concurrency=25):
-    latencies = []
-    successes = 0
-    failures = 0
-    lock = threading.Lock()
-    req_per_thread = total_requests // concurrency
 
-    def worker():
-        nonlocal successes, failures
-        local_lats = []
-        local_succ = 0
-        local_fail = 0
-        for _ in range(req_per_thread):
-            lat, ok = make_request(port)
-            if ok:
-                local_lats.append(lat)
-                local_succ += 1
-            else:
-                local_fail += 1
-        with lock:
-            latencies.extend(local_lats)
-            successes += local_succ
-            failures += local_fail
-
-    threads = []
-    t_start = time.perf_counter()
-    for _ in range(concurrency):
-        t = threading.Thread(target=worker)
-        threads.append(t)
-        t.start()
-    for t in threads:
-        t.join()
-    t_end = time.perf_counter()
-
-    duration = t_end - t_start
-    rps = successes / duration if duration > 0
-{!•±Í”€À(€€€±…Ñ•¹¥•Ì¹Í½ÉĞ ¤((€€€‘•˜À¡ÁĞ¤è(€€€€€€€¥˜¹½Ğ±…Ñ•¹¥•Ìè(€€€€€€€€€€€É•ÑÕÉ¸€À¸À(€€€€€€€¥‘à€ô¥¹Ğ¡±•¸¡±…Ñ•¹¥•Ì¤€¨€¡ÁĞ€¼€ÄÀÀ¸À¤¤(€€€€€€€¥‘à€ôµ¥¸¡¥‘à°±•¸¡±…Ñ•¹¥•Ì¤€´€Ä¤(€€€€€€€É•ÑÕÉ¸±…Ñ•¹¥•Ím¥‘át((€€€É•ÑÕÉ¸ì(€€€€€€€€¹…µ”œè¹…µ”°(€€€€€€€€½¹ÕÉÉ•¹äœè½¹ÕÉÉ•¹ä°(€€€€€€€€Ñ½Ñ…°œèÑ½Ñ…±}É•ÅÕ•ÍÑÌ°(€€€€€€€€ÍÕ•ÍÍ•ÌœèÍÕ•ÍÍ•Ì°(€€€€€€€€™…¥±ÕÉ•Ìœè™…¥±ÕÉ•Ì°(€€€€€€€€‘ÕÉ…Ñ¥½¹}Ìœè‘ÕÉ…Ñ¥½¸°(€€€€€€€€ÉÁÌœèÉÁÌ°(€€€€€€€€µ¥¹}µÌœè±…Ñ•¹¥•ÍlÁt¥˜±…Ñ•¹¥•Ì•±Í”€À¸À°(€€€€€€€€ÀÔÁ}µÌœèÀ ÔÀ¤°(€€€€€€€€ÀäÁ}µÌœèÀ äÀ¤°(€€€€€€€€Àäå}µÌœèÀ ää¤°(€€€€€€€€µ…á}µÌœè±…Ñ•¹¥•Íl´Åt¥˜±…Ñ•¹¥•Ì•±Í”€À¸À°(€€€ô()‘•˜ÉÕ¹}ÍÕ¥Ñ” ¤è(€€€ÁÉ¥¹Ğ œôœ€¨€àÀ¤(€€€ÁÉ¥¹Ğ œ€€€€€€Q!=1=I1ML!QQ@	9!5I,èQU9MQ8YLIUMP€¡Q=-%<¤œ¤(€€€ÁÉ¥¹Ğ œôœ€¨€àÀ€¬€q¸œ¤((€€€Í•¹…É¥½Ì€ôl ÄÀÀÀ°€ÈÔ¤°€ ÈÀÀÀ°€ÔÀ¤°€ ĞÀÀÀ°€ÄÀÀ¥t(€€€™½ÈÑ½Ñ…°°½¹Œ¥¸Í•¹…É¥½Ìè(€€€€€€€ÁÉ¥¹Ğ¡˜œøøøM•¹…É¥¼èíÑ½Ñ…±ôÉ•ÅÕ•ÍÑÌ…É½ÍÌí½¹ô½¹ÕÉÉ•¹Ğ½¹¹•Ñ¥½¹Ìœ¤(€€€€€€€ÁÉ¥¹Ğ œ€lÄ¼ÉtMÑ…ÉÑ¥¹œQÕ¹ÍÑ•¸!QQ@M•ÉÙ•È€¡=P11Y4I•±•…Í”¤¸¸¸œ¤(€€€€€€€Ñ}ÁÉ½Œ€ôÍÕ‰ÁÉ½•ÍÌ¹A½Á•¸¡lœ¸½Ñ…É•Ğ½É•±•…Í”½¡ÑÑÁ}Í•ÉÙ•È¹•á”t¤(€€€€€€€¥˜¹½Ğ¡•­}Í•ÉÙ•É}É•…‘ä ÄàÀàÀ¤è(€€€€€€€€€€€ÁÉ¥¹Ğ œ€II=HèQÕ¹ÍÑ•¸Í•ÉÙ•È™…¥±•Ñ¼‰¥¹€ÄàÀàÀœ¤(€€€€€€€€€€€Ñ}ÁÉ½Œ¹­¥±° ¤(€€€€€€€€€€€É•ÑÕÉ¸(€€€€€€€ÁÉ¥¹Ğ œ€	•¹¡µ…É­¥¹œQÕ¹ÍÑ•¸¸¸¸œ¤(€€€€€€€Ñ}É•Ì€ô‰•¹¡µ…É­}Ñ…É•Ğ QÕ¹ÍÑ•¸œ°€ÄàÀàÀ°Ñ½Ñ…±}É•ÅÕ•ÍÑÌõÑ½Ñ…°°½¹ÕÉÉ•¹äõ½¹Œ¤(€€€€€€€Ñ}ÁÉ½Œ¹Ñ•Éµ¥¹…Ñ” ¤(€€€€€€€Ñ}ÁÉ½Œ¹İ…¥Ğ ¤(€€€€€€€Ñ¥µ”¹Í±••À À¸Ô¤((€€€€€€€ÁÉ¥¹Ğ œ€lÈ¼ÉtMÑ…ÉÑ¥¹œIÕÍĞQ½­¥¼M•ÉÙ•È€¡I•±•…Í”¤¸¸¸œ¤(€€€€€€€Ñ½­¥½}ÁÉ½Œ€ôÍÕ‰ÁÉ½•ÍÌ¹A½Á•¸¡lœ¹Ğ½‰•¹¡µ…É­Ì½ÉÕÍÑ}Ñ½­¥¼½Ñ…É•Ğ½É•±•…Í”½ÉÕÍÑ}Ñ½­¥¼¹•á”t¤(€€€€€€€¥˜¹½Ğ¡•­}Í•ÉÙ•É}É•…‘ä ÄàÀàÄ¤è(€€€€€€€€€€€ÁÉ¥¹Ğ œ€II=HèQ½­¥¼Í•ÉÙ•È™…¥±•Ñ¼‰¥¹€ÄàÀàÄœ¤(€€€€€€€€€€€Ñ½­¥½}ÁÉ½Œ¹­¥±° ¤(€€€€€€€€€€€É•ÑÕÉ¸(€€€€€€€ÁÉ¥¹Ğ œ€	•¹¡µ…É­¥¹œIÕÍĞ€¡Q½­¥¼¤¸¸¸œ¤(€€€€€€€Ñ½­¥½}É•Ì€ô‰•¹¡µ…É­}Ñ…É•Ğ IÕÍĞQ½­¥¼œ°€ÄàÀàÄ°Ñ½Ñ…±}É•ÅÕ•ÍÑÌõÑ½Ñ…°°½¹ÕÉÉ•¹äõ½¹Œ¤(€€€€€€€Ñ½­¥½}ÁÉ½Œ¹Ñ•Éµ¥¹…Ñ” ¤(€€€€€€€Ñ½­¥½}ÁÉ½Œ¹İ…¥Ğ ¤(€€€€€€€Ñ¥µ”¹Í±••À À¸Ô¤((€€€€€€€ÁÉ¥¹Ğ¡˜q¸´´´	•¹¡µ…É¬I•ÍÕ±ÑÌ€¡½¹ÕÉÉ•¹ä€ôí½¹ô¤€´´´œ¤(€€€€€€€ÁÉ¥¹Ğ ğ5•ÑÉ¥Œ€€€€€€€€€€€ğQÕ¹ÍÑ•¸€¡½±½É±•ÍÌ€¬I•¥½¹Ì¤ğIÕÍĞ€¡Q½­¥¼Íå¹Œ¤ğQÕ¹ÍÑ•¸ÙÌQ½­¥¼ğœ¤(€€€€€€€ÁÉ¥¹Ğ ğ´´´´´´´´´´´´´´´´´´µğ´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´´µğ´´´´´´´´´´´´´´´´´´µğ´´´´´´´´´´´´´´´´´´µğœ¤(€€€€€€€ÉÁÍ}‘•±Ñ„€ô€ ¡Ñ}É•Íl‰ÉÁÌ‰t€´Ñ½­¥½}É•Íl‰ÉÁÌ‰t¤€¼Ñ½­¥½}É•Íl‰ÉÁÌ‰t¤€¨€ÄÀÀ¥˜Ñ½­¥½}É•Íl‰ÉÁÌ‰t€ø€À•±Í”€À(€€€€€€€ÁÉ¥¹Ğ¡˜ğQ¡É½Õ¡ÁÕĞ€¡IAL¤€ğíÑ}É•Íl‰ÉÁÌ‰tèøÈà¸ÅôÉ•Ä½ÌğíÑ½­¥½}É•Íl‰ÉÁÌ‰tèøÄÔ¸ÅôÉ•Ä½ÌğíÉÁÍ}‘•±Ñ„èø¬ÄÔ¸Åô€”ğœ¤(€€€€€€€ÁÉ¥¹Ğ¡˜ğ@ÔÀ1…Ñ•¹ä€€€€€€ğíÑ}É•Íl‰ÀÔÁ}µÌ‰tèøÈà¸ÉôµÌ€€€ğíÑ½­¥½}É•Íl‰ÀÔÁ}µÌ‰tèøÄÔ¸ÉôµÌ€€€ğíÑ}É•Íl‰ÀÔÁ}µÌ‰t€´Ñ½­¥½}É•Íl‰ÀÔÁ}µÌ‰tèø¬ÄÔ¸É™ôµÌğœ¤(€€€€€€€ÁÉ¥¹Ğ¡™ñğ@äÀ1…Ñ•¹ä€€€€€€ğíÑ}É•Íl‰ÀäÁ}µÌ‰tèøÈà¸ÉôµÌ€€€ğíÑ½­¥½}É•Íl‰ÀäÁ}µÌ‰tèøÄÔ¸ÉôµÌ€€€ğíÑ}É•Íl‰ÀäÁ}µÌ‰t€´Ñ½­¥½}É•Íl‰ÀäÁ}µÌ‰tèø¬ÄÔ¸É™ôµÌğœ¤(€€€€€€€ÁÉ¥¹Ğ¡˜ğ@ää1…Ñ•¹ä€€€€€€ğíÑ}É•Íl‰Àäå}µÌ‰tèøÈà¸ÉôµÌ€€€ğíÑ½­¥½}É•Íl‰Àäå}µÌ‰tèøÄÔ¸ÉôµÌ€€€ğíÑ}É•Íl‰Àäå}µÌ‰t€´Ñ½­¥½}É•Íl‰Àäå}µÌ‰tèø¬ÄÔ¸É™ôµÌğœ¤(€€€€€€€ÁÉ¥¹Ğ¡˜ğMÕ•ÍÌI…Ñ”€€€€€ğíÑ}É•Íl‰ÍÕ•ÍÍ•Ì‰uô½íÑ}É•Íl‰Ñ½Ñ…°‰uô€ ÄÀÀ¸À”¤€€€€€€€€€€€€€€ğíÑ½­¥½}É•Íl‰ÍÕ•ÍÍ•Ì‰uô½íÑ½­¥½}É•Íl‰Ñ½Ñ…°‰uô€ ÄÀÀ¸À”¤€€€€€€€ğ€ÄÀÀ¸À”€€€€€€€€€€€ğœ¤(€€€€€€€ÁÉ¥¹Ğ q¹q¸œ¤()¥˜}}¹…µ•}|€ôô€}}µ…¥¹}|œè(€€€ÉÕ¹}ÍÕ¥Ñ” ¤(
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

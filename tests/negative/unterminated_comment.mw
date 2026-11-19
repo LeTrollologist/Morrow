@@ -1,0 +1,6 @@
+fn main() -> i64 {
+    1
+}
+
+/* unterminated block comment
+still inside

@@ -1,0 +1,51 @@
+// Boundary-condition tests for Vec and HashMap contracts.
+import std::test;
+import std::collections;
+
+fn main() -> i64 {
+    region r {
+        let mut v = vec_new_in(r);
+        assert_eq(vec_len(&v), 0, "new Vec is empty");
+        assert_eq(vec_get(&v, 0), 0, "empty Vec get returns 0");
+        assert_eq(vec_get(&v, -1), 0, "negative Vec get returns 0");
+        assert_eq(vec_pop(&mut v), 0, "empty Vec pop returns 0");
+        vec_set(&mut v, 0, 7);
+        assert_eq(vec_len(&v), 0, "invalid Vec set does not grow");
+
+        vec_push(&mut v, 10);
+        vec_push(&mut v, 20);
+        assert_eq(vec_len(&v), 2, "Vec push grows length");
+        assert_eq(vec_get(&v, 0), 10, "Vec get valid index");
+        assert_eq(vec_get(&v, 2), 0, "Vec get past end returns 0");
+        vec_set(&mut v, 1, 21);
+        assert_eq(vec_get(&v, 1), 21, "Vec set valid index");
+        assert_eq(vec_pop(&mut v), 21, "Vec pop returns tail");
+        assert_eq(vec_len(&v), 1, "Vec pop shrinks length");
+
+        let mut empty_cap = vec_with_capacity_in(r, 0);
+        assert_eq(vec_len(&empty_cap), 0, "zero-capacity Vec is empty");
+        vec_push(&mut empty_cap, 1);
+        assert_eq(vec_len(&empty_cap), 1, "zero-capacity Vec still accepts push");
+
+        let mut m = hashmap_new_in(r, 4);
+        assert_eq(hashmap_len(&m), 0, "new HashMap is empty");
+        assert_eq(hashmap_get(&m, "missing"), -1, "missing HashMap key returns -1");
+        assert(!hashmap_contains(&m, "missing"), "missing HashMap key is absent");
+        assert(!hashmap_remove(&m, "missing"), "removing missing key returns false");
+        hashmap_insert(&mut m, "a", 1);
+        hashmap_insert(&mut m, "b", 2);
+        assert_eq(hashmap_get(&m, "a"), 1, "HashMap insert/get");
+        assert(hashmap_contains(&m, "b"), "HashMap contains inserted key");
+        assert(hashmap_remove(&m, "a"), "HashMap remove existing key");
+        assert_eq(hashmap_get(&m, "a"), -1, "removed key is missing");
+
+        let mut empty_map = hashmap_new_in(r, 0 - 1);
+        assert_eq(hashmap_len(&empty_map), 0, "negative-capacity HashMap is empty");
+        hashmap_insert(&mut empty_map, "x", 1);
+        assert_eq(hashmap_get(&empty_map, "x"), -1, "empty HashMap insert is safe");
+        hashmap_free(&mut empty_map);
+        hashmap_free(&mut empty_map);
+        assert_eq(hashmap_len(&empty_map), 0, "double HashMap free is safe");
+    }
+    0
+}

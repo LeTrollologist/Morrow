@@ -18,17 +18,18 @@ document disagree, the script is wrong.
 | **5. `bench`** | `forge bench` | Runs the Morrow benchmarks and their `-O2` C baselines. |
 | **6. `package`** | assets in `dist/v{VER}/` | Copies `forge.exe`, `mwc.exe`, builds `Morrow-v{VER}-win64.zip`, and writes `RELEASE_NOTES.md` (see §4). |
 | **7. `verify`** | checksums + integrity | Requires the four expected assets to exist, writes `SHA256SUMS.txt` covering every asset, and runs a CRC check over the archive. |
-| **8. `publish`** | `git` only | Commits pipeline-managed changes, tags `HEAD`, pushes branch and tag, then **verifies with `git ls-remote` that the tag exists on `origin` and points at the tagged commit**. Writes `dist/v{VER}/PUBLISH.txt` recording commit, remote, fixed point and asset list. |
-| **9. `ship`** | `scripts/release_page.py` | Uploads `dist/v{VER}/*` to the release page for the tag and sets its body from `release-notes/v{VER}.md`. GitHub stores bytes we built; it never builds. `--no-release-page` skips this stage. |
+| **8. `publish`** | `git` only (requires `--publish`) | Commits pipeline-managed changes, tags `HEAD`, pushes branch and tag without force-overwriting an existing tag by default, then verifies the remote tag. Writes `dist/v{VER}/PUBLISH.txt` recording commit, remote, fixed point and asset list. |
+| **9. `ship`** | `scripts/release_page.py` (requires `--publish`) | Uploads `dist/v{VER}/*` to the release page for the tag and sets its body from `release-notes/v{VER}.md`. Without `--publish` it does nothing. `--no-release-page` skips upload. GitHub stores bytes we built; it never builds. |
 
 ---
 
 ## 2. CLI usage
 
 ```bash
-python scripts/pipeline.py v2.3.1                 # full release
+python scripts/pipeline.py v2.3.1 --publish       # full release (explicit)
 python scripts/pipeline.py v2.3.1 --dry-run       # preview, no side effects
-python scripts/pipeline.py v2.3.1 --no-publish    # everything except tag + push
+python scripts/pipeline.py v2.3.1                 # local build/test/package only
+python scripts/pipeline.py v2.3.1 --publish       # explicit tag + push + upload
 python scripts/pipeline.py v2.3.1 --from package  # resume from a stage
 python scripts/pipeline.py v2.3.1 --skip bench    # skip one stage
 python scripts/pipeline.py v2.3.1 --no-bump       # declarations must already match
@@ -47,7 +48,7 @@ make build | test | bench | package | verify | dry-run
 
 ## 3. Publish semantics
 
-Publishing is entirely local: `git commit`, `git tag -a`, `git push`,
+Remote publishing is opt-in: pass `--publish` to run the publish and ship stages. Publishing is entirely local: `git commit`, `git tag -a`, `git push`,
 `git ls-remote`, plus the release record described in §7. The final stage then uploads
 the artifacts this machine built to the release page — GitHub is a **file host**, never
 a builder: no Actions workflow, no CI runner, no forge CLI.
@@ -56,13 +57,13 @@ a builder: no Actions workflow, no CI runner, no forge CLI.
    declarations, `bin/*.exe`, `release-notes/`, `releases/`, `dist/`. If only those
    changed, it commits them as `chore(release): vX.Y.Z`. Any other uncommitted file
    aborts the release unless `--force` is passed.
-2. **Tags.** The annotated tag `vX.Y.Z` is created at `HEAD`. Moving an existing tag
+2. **Tags.** The annotated tag `vX.Y.Z` is created at `HEAD`. Tag pushes are never forced by default; a rejected tag push is a clear error. Moving an existing tag
    requires `--force`; a tag that is *behind* `HEAD` (but an ancestor) is a
    republication and requires `--clobber`.
 3. **Verification, not trust.** After pushing, the pipeline runs
    `git ls-remote --tags origin` and checks the tag object id and its peeled commit
    against the local tag. A push that silently did not land fails the stage.
-4. **Then we ship it.** `stage_ship` runs `scripts/release_page.py`, which creates the
+4. **Then we ship it (only with `--publish`).** `stage_ship` runs `scripts/release_page.py`, which creates the
    release page for the tag (or updates it) and uploads `dist/vX.Y.Z/*`, replacing any
    asset of the same name. The body is `release-notes/vX.Y.Z.md`. It talks to the REST
    API directly with the credential `git push` already uses (`MORROW_GITHUB_TOKEN` is

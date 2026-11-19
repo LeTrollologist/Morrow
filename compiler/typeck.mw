@@ -2599,7 +2599,23 @@ fn tc_validate_type_name(tc: &mut TypeChecker, types: &HashMap, struct_defs: &Ha
     }
 }
 
-pub fn tc_validate_declarations(tc: &mut TypeChecker, prog: *mut AstProgram, types: &HashMap, struct_defs: &HashMap) yields [Diagnostics] {
+pub fn tc_validate_extern_abi(tc: &mut TypeChecker, types: &HashMap, struct_defs: &HashMap, sym: i64, fn_name: String, what: String) yields [Diagnostics] {
+    if sym == 0 {
+        return;
+    }
+    let t = tc_resolve_type(tc, types, struct_defs, sym);
+    if t == (0 as *mut TcType) {
+        return;
+    }
+    if t.kind == ty_struct() || t.kind == ty_continuation() {
+        let base = tc_compose_callee_msg(tc.arena, "Unsupported C ABI type in extern function " as String, fn_name);
+        let msg = tc_compose_callee_msg(tc.arena, base, what);
+        report_err(msg, 1, 1);
+        tc.pos = tc.pos + 1;
+    }
+}
+
+fn tc_validate_declarations(tc: &mut TypeChecker, prog: *mut AstProgram, types: &HashMap, struct_defs: &HashMap) yields [Diagnostics] {
     let mut si: i64 = 0;
     while si < prog.structs.len {
         let st = vec_get(&prog.structs, si);
@@ -2639,13 +2655,17 @@ pub fn tc_validate_declarations(tc: &mut TypeChecker, prog: *mut AstProgram, typ
     while ei < prog.extern_fns.len {
         let e = vec_get(&prog.extern_fns, ei);
         tc.generic_param_sym = 0;
+        let interner_ref = tc.interner as &Interner;
+        let ename = interner_lookup(interner_ref, e.name_sym);
         let mut pi: i64 = 0;
         while pi < e.params.len {
             let p = vec_get(&e.params, pi);
             tc_validate_type_name(tc, types, struct_defs, p.ty_sym);
+            tc_validate_extern_abi(tc, types, struct_defs, p.ty_sym, ename, " parameter" as String);
             pi = pi + 1;
         }
         tc_validate_type_name(tc, types, struct_defs, e.ret_ty_sym);
+        tc_validate_extern_abi(tc, types, struct_defs, e.ret_ty_sym, ename, " return type" as String);
         ei = ei + 1;
     }
     tc.generic_param_sym = 0;

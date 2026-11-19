@@ -1,0 +1,38 @@
+// ABI and non-local-control-flow regression: C i32 returns, pointer arguments,
+// and abortive handler longjmp unwinding.
+import std::test;
+
+effect Bail {
+    fn bail(code: i64) -> i64;
+}
+
+extern "C" {
+    fn strcmp(a: *const u8, b: *const u8) -> i32;
+    fn abs(value: i32) -> i32;
+    fn atoi(value: *const u8) -> i32;
+    fn strlen(value: *const u8) -> i64;
+}
+
+fn perform_bail() -> i64 yields [Bail] {
+    perform Bail.bail(7)
+}
+
+fn main() -> i64 {
+    assert(strcmp("a" as *const u8, "b" as *const u8) < 0, "strcmp negative i32 ABI");
+    assert(strcmp("b" as *const u8, "a" as *const u8) > 0, "strcmp positive i32 ABI");
+    assert_eq(strcmp("x" as *const u8, "x" as *const u8), 0, "strcmp zero ABI");
+    assert_eq(abs(0 - 7), 7, "abs i32 argument/return ABI");
+    assert_eq(atoi("-5" as *const u8), 0 - 5, "signed i32 extern return ABI");
+    assert_eq(strlen("hello" as *const u8), 5, "pointer argument ABI");
+
+    let aborted = handle {
+        perform_bail()
+    } with Bail {
+        fn bail(k, code: i64) {
+            42
+        }
+    };
+    assert_eq(aborted, 42, "abortive handler longjmp returns handler value");
+
+    return 0;
+}
