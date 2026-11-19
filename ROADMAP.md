@@ -10,13 +10,16 @@
 > `nursery` scopes, the in-memory JIT, CodeView/PDB debug info, LTO and
 > function-section GC, and `enum`/`match`. See
 > [`docs/SYNTAX.md` §14](docs/SYNTAX.md#14-not-implemented--known-limitations) for
-> the verified list of what v2.4.16 accepts, rejects, and only partially enforces.
+> the verified list of what v2.4.20 accepts, rejects, and only partially enforces.
 >
-> **Current priority (2026-11-08): [Phase 15 — Correctness & Trust Remediation](#phase-15-correctness--trust-remediation-v250--post-audit).**
-> An independent audit of v2.4.16 ([`docs/AUDIT-2026-11-08.md`](docs/AUDIT-2026-11-08.md))
-> found 3 Critical, 9 High, 9 Medium, and 2 Low findings. No Phase 14.x feature
-> work should land until Phase 15 P0 is complete. Several status entries below are
-> corrected inline with a **“2026-11-08 audit”** note.
+> **Current priority (updated 2026-11-19): [Phase 15 — Correctness & Trust Remediation](#phase-15-correctness--trust-remediation-v250--post-audit).**
+> The original v2.4.16 audit ([`docs/AUDIT-2026-11-08.md`](docs/AUDIT-2026-11-08.md))
+> found 3 Critical, 9 High, 9 Medium, and 2 Low findings. Most P0/P1 findings are
+> now closed in v2.4.20, but the phase is **not complete**: the formatter is still
+> safety-gated rather than lossless, SQLite runtime DLL packaging is documented
+> rather than shipped; no independent audit is claimed. External review is desirable but optional.
+> [`docs/AUDIT-v2.5.0.md`](docs/AUDIT-v2.5.0.md) is a maintainer-run verification
+> report, **not** an independent audit. No v2.5.0 tag exists yet. v2.4.20 is a maintenance release for the closed P0/P1 items, not the v2.5.0 correctness milestone.
 
 ---
 
@@ -743,13 +746,16 @@ region-escape rules depend on those kinds.
 
 > **Opened 2026-11-08.** Source: [`docs/AUDIT-2026-11-08.md`](docs/AUDIT-2026-11-08.md).
 > The audit of v2.4.16 found **3 Critical, 9 High, 9 Medium, and 2 Low** issues. The
-> bootstrap and the 23 + 18 test suites are real; the problem is that several core
+> bootstrap and the v2.4.16 23 + 18 test suites were real; the problem is that several core
 > semantics do not match the documentation, the formatter destroys source, effect
 > handlers are bypassed for built-ins, and the release gate never executes an example.
 >
 > **This phase is a release blocker.** No Phase 14.x feature work (new syntax,
-> enums, floats, closures, fibers, optimization) lands until **P0** exits. Status:
-> **planned**; the binary in `bin/` remains v2.4.16 until the P0 gate is green.
+> enums, floats, closures, fibers, optimization) lands until **P0** exits. Current
+> status (v2.4.20): **partially complete.** P0-2/P0-3/P0-5, P1-1–P1-5, and P1-7 are
+> closed; P1-6 docs are corrected but external audit remains; P0-1 (lossless formatter) and P0-4 (SQLite runtime packaging and all
+> examples executable) remain open. The binary in `bin/` is **v2.4.20**, not
+> v2.4.16.
 >
 > **Guiding rule:** no claim in `README.md`, `docs/`, or this roadmap without a test
 > that fails when the claim is broken. New tests must be shown to fail on v2.4.16
@@ -769,6 +775,15 @@ region-escape rules depend on those kinds.
 > enforce width/sign for arithmetic, storage, loads and comparisons, and the
 > toolchain resolves `std`/`lib/crt` from its executable with validated targets.
 > Full lossless printer coverage remains P0-1.
+>
+> **Progress (2026-11-19):** v2.4.17–v2.4.20 closed the remaining P1 items and most
+> P2 items: type-checker soundness, region cleanup on every exit, runtime
+> diagnostics, command-injection-free process spawning, executed-example release
+> gating (with documented build-only examples), honest test assertions/no retries,
+> documentation truth pass, standard FNV-1a/CRC-32 vectors, short-circuit
+> `&&`/`||`, bounded parser/LSP input, safe collection bounds, a repaired benchmark
+> runner, C-ABI typing, and `returns_twice` setjmp. Open correctness gaps are listed
+> in [Phase 16](#phase-16-next-correctness-completion--reproducible-verification).
 
 ### 15.1 Exit criteria for v2.5.0
 
@@ -784,14 +799,18 @@ region-escape rules depend on those kinds.
    loop stays within a bounded RSS.
 6. Unhandled effects and integer division by zero produce a readable diagnostic or
    defined trap, never an access violation / `0xC0000094`.
-7. The release gate executes every runnable example; all of them exit 0 (network
-   examples against loopback). The package ships `sqlite3.dll` or links SQLite
-   statically.
+7. **Partial (v2.4.20).** The release gate executes 17 supported examples with
+   expected exit codes; five network/SQLite demos are build-only. `sqlite3.dll` is
+   documented in `docs/RUNTIME.md` but is **not** shipped or statically linked.
 8. A deliberately failing test makes `forge test` fail; assertion failures are no
-   longer retried.
+   longer retried. **Done:** `assert_true` exits non-zero and retry loops were
+   removed.
 9. `README.md`/`docs/SYNTAX.md` match observed behavior; the README showcase is a
-   compile test.
-10. A fresh re-audit (`docs/AUDIT-v2.5.0.md`) reproduces every P0/P1 acceptance check.
+   compile test. **Done for v2.4.20**; the README escape-analysis claim now matches
+   the documented indirect-escape limitation.
+10. The maintainer-run `docs/AUDIT-v2.5.0.md` reproduces every P0/P1 acceptance
+   check from the release commit. External review is desirable but is **not** a
+   release prerequisite.
 
 ### 15.2 P0 — release blockers (v2.5.0)
 
@@ -800,8 +819,8 @@ region-escape rules depend on those kinds.
 | **P0-1** | **Data-loss guard landed 2026-11-08.** Remaining: make the printer lossless for imports, `effect`, `pub`, `yields`, comments, and pointer/ref syntax instead of refusing those files. Keep the parse-error and token-stream gates, and keep the temp+backup write. | `forge fmt` on every `examples/*.mw` and `compiler/*.mw` yields a file that re-parses, re-typechecks, and preserves comments/declarations; invalid input leaves the file untouched. | C-01 |
 | **P0-2** | **Done 2026-11-09.** Remove the lexical, signature-blind built-in rewrite in `tir.mw`; install static default frames consulted only after the dynamic handler stack, gated on the canonical effect signatures (FS six ops, Process `spawn`, IO `print(String)`). | Callee-under-handler tests for `IO.print`, `FS.read_file`, and `Process.spawn`; `FS.read_file` mock returns `MOCKED`; `IO.print(42)` invokes the handler; `generics_and_relational.mw` runs; defaults still work without a handler. | C-02 |
 | **P0-3** | **Done 2026-11-09.** Preserve pointer/reference types; lower scalar `&lvalue` to storage; type-directed integer casts; diagnose `&rvalue`. | `&mut counter` + `ptr[0] = 100` prints 100; `ffi_demo.exe` exits 0; cast matrix for `i8/u8/i16/u16/i32/u32` truncates/sign-extends; pointer fields and byte indexing work. | C-03, H-07 |
-| **P0-4** | Run examples in the release gate and fix the package's runtime dependencies: execute each runnable example with a timeout (loopback for `Net`), fail on abnormal exit, ship `sqlite3.dll` (or static-link SQLite), and check PE imports against the package. | Pipeline fails if any runnable example exits non-zero; all runnable examples exit 0 (`wasm_sample` behavior defined, `player` GUI skipped); `sqlite_benchmark`/`web_service` start; every non-system DLL import is present in `dist/`. | H-05 |
-| **P0-5** | Make the test harness honest: `assert_true` exits non-zero; remove the 10× retry of assertion failures; add negative-control tests (deliberately fail) for each suite family; add formatter golden tests and known-answer crypto vectors. | A deliberately failing suite fails `forge test` and the local gate; no assertion is retried; a broken invariant in the formal suite fails the gate. | H-06 |
+| **P0-4** | **Partial (v2.4.20).** Run examples in the release gate and fix the package's runtime dependencies: execute each runnable example with a timeout (loopback for `Net`), fail on abnormal exit, ship `sqlite3.dll` (or static-link SQLite), and check PE imports against the package. | Pipeline fails if any runnable example exits non-zero; all runnable examples exit 0 (`wasm_sample` behavior defined, `player` GUI skipped); `sqlite_benchmark`/`web_service` start; every non-system DLL import is present in `dist/`. | H-05 |
+| **P0-5** | **Done 2026-11-12.** Make the test harness honest: `assert_true` exits non-zero; remove the 10× retry of assertion failures; add negative-control tests (deliberately fail) for each suite family; add formatter golden tests and known-answer crypto vectors. | A deliberately failing suite fails `forge test` and the local gate; no assertion is retried; a broken invariant in the formal suite fails the gate. | H-06 |
 
 ### 15.3 P1 — soundness and security (v2.5.0)
 
@@ -812,21 +831,21 @@ region-escape rules depend on those kinds.
 | **P1-3** | **Done 2026-11-09.** Runtime traps: null-check the handler frame with an `unhandled effect <name>::<op>` message; divisor-zero guards on `/`, `%`, `sdiv`, `udiv`, `srem`, `urem`; controlled exit status. | Minimal unhandled-effect program prints the effect/op and exits 1, not `0xC0000005`; `10 / z` with `z = 0` prints division by zero and exits 1, not `0xC0000094`; `tests/runtime_diagnostics_test.mw` checks both. | H-03 |
 | **P1-4** | **Done 2026-11-09.** Process spawning without a shell: Windows uses `CreateProcessA` and returns the child exit code; POSIX uses `wordexp(WRDE_NOCMD)` + `posix_spawnp`/`waitpid`. `forge` quotes `-o` paths. | `forge build -o "target/inj/p & exit 99"` succeeds without running `exit 99`, creates the literal file, and a bad output path returns non-zero; `tests/process_injection_test.mw` covers both. | H-04 |
 | **P1-5** | **Done 2026-11-09.** Integer width semantics: truncate/sign-extend arithmetic, assignments, fields, and index loads/stores; signed/unsigned `div`/`rem` and comparisons; literal overflow diagnostics. | `u8 250 + 10 == 4`, `300 as u8 == 44`, `-1 as u8 == 255`, `i8` load of -1 is -1; over-large literals are rejected. | H-07 |
-| **P1-6** | Documentation truth pass: update README/SYNTAX §14 for `let`, `\0`, narrowing, affine, effects, integer widths; remove “CSPRNG”/“injection-safe”/“standalone” until earned; add the README showcase to the test suite. | README/SYNTAX claims match tests; the README snippet compiles; a grep gate rejects banned security adjectives. | H-08 |
+| **P1-6** | **Done 2026-11-19.** Documentation truth pass: update README/SYNTAX §14 for `let`, `\0`, narrowing, affine, effects, integer widths; remove “CSPRNG”/“injection-safe”/“standalone” until earned; add the README showcase to the test suite. | README/SYNTAX claims match tests; the README snippet compiles; a grep gate rejects banned security adjectives. | H-08 |
 | **P1-7** | **Done 2026-11-09 for paths/targets/scaffolding.** Resolve `lib/crt`/`std` from the executable, validate `--target`, make `forge new` buildable. Non-destructive scaffold overwrite remains. | Build from a temp directory and a freshly scaffolded project succeeds; `--target bogus` is an error; `forge new` twice does not overwrite. | H-09 |
 
 ### 15.4 P2 — robustness, API, and process (v2.5.1)
 
 | ID | Work item | Acceptance test | Audit ref |
 |---|---|---|---|
-| **P2-1** | Short-circuit logical AND/OR via control flow (`br`/`phi`). | `false && boom()` and the logical-OR counterpart do not evaluate `boom()`; guarded null access is safe. | M-01 |
-| **P2-2** | Parser robustness: nesting-depth limit with diagnostic, unterminated-comment diagnostic, explicit source length instead of `strlen`, fuzz corpus in CI/local gate. | 20k nesting reports “nesting too deep”, not `0xC00000FD`; `/*` without `*/` errors; embedded NUL does not silently truncate. | M-02 |
-| **P2-3** | LSP resource limits: per-request arena reset, cap `Content-Length` (e.g. 8 MB), reject overflow, JSON depth limit, end-to-end stdio test, POSIX path. | Long session memory is bounded; huge frame is rejected cleanly; stdio initialize/didOpen/shutdown/exit test passes. | M-03 |
-| **P2-4** | Pipeline correctness: `--skip publish` also skips `ship` (or explicit `--ship`), no unconditional tag force-push, verify `bin` is rebuilt from current sources, compile Morrow benchmarks with `-O2`, validate tag format. | `make build/test/bench` do not touch the network; a fresh clone cannot overwrite a remote tag without `--force`; package refuses stale `bin`; bench flags match. | M-04 |
-| **P2-5** | Standard-library API hardening: bounds-check `Vec` (or mark `unsafe`), explicit lookup result instead of `-1` sentinel, append args, remove dead `string_buffer_push_str` fallback, honor alignment. | Empty `vec_pop`/OOB `vec_get` is a defined error; map can store `-1`; alignment test for 16/32/64. | M-05 |
-| **P2-6** | Hash/RNG honesty: implement standard CRC-32/FNV-1a with known vectors and a real OS CSPRNG, or rename to `fast_hash`/`lcg` and remove security claims. Remove the “injection-safe” claim from the docs until `std/sql_builder` actually escapes or parameterizes. | Known-answer vectors pass; `CryptoRng` uses an OS entropy source or is renamed; docs match. | M-06 |
-| **P2-7** | Repair or delete `benchmarks/bench_runner.py`; add a `py_compile` + UTF-8 gate for all scripts. | `python -m py_compile` passes for every `.py` in the repo; the bench runner runs. | M-07 |
-| **P2-8** | ABI/runtime debt: model `i32`/pointer/struct in extern declarations, mark `setjmp` `returns_twice` or replace the mechanism, implement or reject effects on wasm, remove name-keyed field/stride fallbacks, reject `main` parameters. | A negative-`i32` extern test returns the right value; effects still pass at `-O1`; wasm handler test is implemented or explicitly compile-fails; field layout test uses arbitrary field names. | M-08 |
+| **P2-1** | **Done 2026-11-12.** Short-circuit logical AND/OR via control flow (`br`/`phi`). | `false && boom()` and the logical-OR counterpart do not evaluate `boom()`; guarded null access is safe. | M-01 |
+| **P2-2** | **Done 2026-11-12 (nesting/comment); embedded-NUL/fuzz remains.** Parser robustness: nesting-depth limit with diagnostic, unterminated-comment diagnostic, explicit source length instead of `strlen`, fuzz corpus in CI/local gate. | 20k nesting reports “nesting too deep”, not `0xC00000FD`; `/*` without `*/` errors; embedded NUL does not silently truncate. | M-02 |
+| **P2-3** | **Partial (v2.4.20):** 8 MiB/header caps and malformed-frame rejection landed; per-request arena reset, JSON depth limits, POSIX stdio and memory-growth test remain. LSP resource limits: per-request arena reset, cap `Content-Length` (e.g. 8 MB), reject overflow, JSON depth limit, end-to-end stdio test, POSIX path. | Long session memory is bounded; huge frame is rejected cleanly; stdio initialize/didOpen/shutdown/exit test passes. | M-03 |
+| **P2-4** | **Partial (v2.4.20):** `--publish` is explicit, tag force-push removed by default, tag format checked, Python scripts linted. Stale-bin hash check and `-O2` benchmark parity remain. Pipeline correctness: `--skip publish` also skips `ship` (or explicit `--ship`), no unconditional tag force-push, verify `bin` is rebuilt from current sources, compile Morrow benchmarks with `-O2`, validate tag format. | `make build/test/bench` do not touch the network; a fresh clone cannot overwrite a remote tag without `--force`; package refuses stale `bin`; bench flags match. | M-04 |
+| **P2-5** | **Partial (v2.4.20):** Vec/HashMap bounds and allocation failures are safe; the `-1` lookup sentinel remains (use `hashmap_contains`), as do dead `string_buffer_push_str` fallback and alignment work. Standard-library API hardening: bounds-check `Vec` (or mark `unsafe`), explicit lookup result instead of `-1` sentinel, append args, remove dead `string_buffer_push_str` fallback, honor alignment. | Empty `vec_pop`/OOB `vec_get` is a defined error; map can store `-1`; alignment test for 16/32/64. | M-05 |
+| **P2-6** | **Partial (v2.4.20):** standard FNV-1a/CRC-32 vectors and corrected SQL-safety docs landed; `CryptoRng` is documented as a deterministic non-cryptographic LCG rather than replaced. Hash/RNG honesty: implement standard CRC-32/FNV-1a with known vectors and a real OS CSPRNG, or rename to `fast_hash`/`lcg` and remove security claims. Remove the “injection-safe” claim from the docs until `std/sql_builder` actually escapes or parameterizes. | Known-answer vectors pass; `CryptoRng` uses an OS entropy source or is renamed; docs match. | M-06 |
+| **P2-7** | **Done 2026-11-12.** Repair or delete `benchmarks/bench_runner.py`; add a `py_compile` + UTF-8 gate for all scripts. | `python -m py_compile` passes for every `.py` in the repo; the bench runner runs. | M-07 |
+| **P2-8** | **Partial (v2.4.20):** typed extern ABI, narrow-return conversion, struct-by-value rejection, and `returns_twice` setjmp landed; wasm effects and name-keyed layout fallbacks remain. ABI/runtime debt: model `i32`/pointer/struct in extern declarations, mark `setjmp` `returns_twice` or replace the mechanism, implement or reject effects on wasm, remove name-keyed field/stride fallbacks, reject `main` parameters. | A negative-`i32` extern test returns the right value; effects still pass at `-O1`; wasm handler test is implemented or explicitly compile-fails; field layout test uses arbitrary field names. | M-08 |
 | **P2-9** | `println` of dynamic strings: choose `%s` from the static `String` type (and `%lld` for integers). | `println(s)` and `println("{}", s)` print the string for variables/returns; integers still print numerically. | M-09 |
 | **P2-10** | CLI nits: bare `mwc` prints usage (or documents the default), `forge new` refuses existing files, `forge clean` reports failures, escape TOML in `forge add`, unique temp paths for `run`. | CLI tests for each behavior. | L-01 |
 | **P2-11** | Docs/process nits: refresh `docs/GENERIC-TYPES.md`, correct `AUDIT.md`'s F-07 status, add a CI/local-gate job, verify unlisted `dist/` files before upload. | Docs build/lint; stale claims gone; a local one-command gate runs tests + examples. | L-02 |
@@ -849,12 +868,13 @@ region-escape rules depend on those kinds.
 
 ### 15.6 Release gate for v2.5.0
 
-- `forge test` green (23 + 18), **with** the repaired formal suite and no retries.
+- `forge test` green (currently 30 + 20), **with** the repaired formal suite and no retries.
 - Every runnable example green under the new example runner; network examples use
   loopback; GUI examples explicitly skipped.
 - Bootstrap fixed point reproduced; `bin` hashes match the release ledger.
-- `docs/AUDIT-v2.5.0.md` re-checks each P0/P1 acceptance item and records the
-  before/after evidence.
+- The maintainer-run `docs/AUDIT-v2.5.0.md` re-checks each P0/P1 acceptance item
+  and records the before/after evidence. No independent audit is claimed; external
+  review is desirable but not a release gate.
 - No tag is cut from a dirty tree, no tag is force-pushed without `--force`, and
   `make build/test/bench` do not perform network operations.
 
@@ -879,3 +899,40 @@ region-escape rules depend on those kinds.
 | Built-in effects: “user handlers take precedence” (Phase 14.4) | Only when `perform` is **lexically inside** the `handle`; callee performs are bypassed. Reopened as P0-2. |
 | “22/22 examples built by CI; benchmarks run on every push” (verification list) | 22/22 build in the **local** pipeline, but are not executed; benchmarks run locally on release; no CI. |
 | “Every current entry is backed by a test” (Feature Matrix intro) | Several entries were contradicted by the audit; v2.5 adds the missing tests before re-asserting them. |
+
+---
+
+## Phase 16: Next Correctness Completion & Reproducible Verification (v2.5.0)
+
+> **Opened 2026-11-19 after v2.4.20.** This is the next milestone. It is deliberately
+> about closing correctness gaps and earning independent verification, not adding
+> syntax. No new language surface should land before these items are resolved.
+
+### 16.1 Required work
+
+| ID | Work item | Acceptance |
+|---|---|---|
+| **C1** | **Indirect region-escape analysis.** Track region-tagged values through calls, returns, references, containers, and callback arguments instead of only direct returns/assignments/field/index stores. | A callee that stores or returns a region pointer is rejected at the call boundary or at the escape site; negative tests cover indirect return/store/callback paths; `region_escape_test.mw` expands accordingly. |
+| **C2** | **Structured concurrency and fibers: implement or explicitly retire.** Either ship a real scoped `nursery`/fiber runtime with cancellation and join guarantees, or remove the remaining aspirational claims and mark the feature unsupported in README/SYNTAX/ROADMAP. | Docs and tests agree: either a concurrency suite passes or every "fibers/nursery" claim is gone and a compile-fail test pins the unsupported syntax. |
+| **C3** | **Variable-range and interprocedural refinement proofs.** Beyond literal casts and divisor-span checks, propagate variable intervals through branches and across function contracts. | `v: i64` refined by `if v > 0` can flow to `Port` without a cast error; interprocedural precondition/postcondition tests; known false-positive corpus stays clean. |
+| **C4** | **Lossless formatter (Phase 15 P0-1).** Preserve imports, `effect`, `pub`, `yields`, comments, and pointer/ref spelling instead of refusing those files. | `forge fmt` on every `examples/*.mw` and `compiler/*.mw` re-parses, re-typechecks, preserves comments/declarations, and leaves invalid files untouched. |
+| **C5** | **SQLite/runtime packaging and full example execution.** Ship `sqlite3.dll` or static-link SQLite; make the documented network examples deterministic under loopback or keep them explicitly build-only with no runtime claim. | The release archive contains every required non-system DLL; all non-GUI examples execute with defined expected codes; `docs/RUNTIME.md` matches the gate. |
+| **C6** | **LSP lifecycle hardening.** Per-request arena reset, JSON depth limit, POSIX stdio path, and memory-growth test. | A long session stays within a documented RSS bound; deeply nested JSON is rejected; initialize/didOpen/shutdown/exit passes end-to-end. |
+| **C7** | **Reproducible maintainer verification; external review desirable but non-blocking.** Keep every check in this document runnable from a clean checkout and record the evidence against the tested commit/version. | `docs/AUDIT-v2.5.0.md` is updated for the release commit, names the exact commands and results, and replays on a clean machine. No independent audit is claimed or implied. External review is encouraged but is not a release prerequisite. |
+
+### 16.2 Release condition
+
+**v2.5.0 may be released when all of the following hold:**
+
+- C1–C6 are closed with regression tests that fail on v2.4.20 and pass on the
+  candidate.
+- `README.md` and `docs/SYNTAX.md` contain no capability claim contradicted by a
+  test or by §14.
+- The release pipeline is green and reproducible from a clean checkout.
+- The maintainer-run `docs/AUDIT-v2.5.0.md` is updated with the candidate commit,
+  exact commands, and observed results.
+
+**No independent audit is claimed or implied.** External review remains desirable
+but is not a release prerequisite. Reproducible verification by the maintainer is
+the standard for v2.5.0; an independent audit would be additional evidence, not a
+condition.

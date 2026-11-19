@@ -63,7 +63,7 @@
 ## Core Differentiators
 
 1. **Region-Based Memory Management (No explicit `<'a>` lifetimes)**  
-   Allocations are grouped into compile-time inferred regions (`region r { ... }`). When a region exits scope, memory is reclaimed en masse in $\mathcal{O}(1)$ without lifetime annotations polluting struct and function definitions. Strict linear escape analysis guarantees reference safety.
+   Allocations are grouped into compile-time inferred regions (`region r { ... }`). When a region exits scope, memory is reclaimed en masse in $\mathcal{O}(1)$ without lifetime annotations polluting struct and function definitions. Escape analysis rejects direct region-to-outer escapes (returns, outer assignments, and field/element stores); **indirect escapes through calls are not yet detected**, so this is a partial safety check, not a full reference-safety guarantee. See [`docs/SYNTAX.md` §4](docs/SYNTAX.md#escape-analysis-what-is-and-is-not-rejected).
 
 2. **Colorless Functions via Algebraic Effects**  
    No `async` or `await` infection. Functions declare effect capabilities (`yields [Db, IOError, Diagnostics]`). Delimited handlers with native machine-level continuations (`resume`) support synchronous execution, fiber suspension, or pure unit-test mocking.
