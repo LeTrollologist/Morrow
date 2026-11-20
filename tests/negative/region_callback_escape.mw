@@ -1,0 +1,20 @@
+extern "C" {
+    fn morrow_region_alloc(arena: *mut u8, size: i64, align: i64) -> *mut u8;
+    fn register_callback(cb: i64, ctx: *mut i64) -> i64;
+}
+
+fn callback(value: i64) -> i64 {
+    value
+}
+
+fn escape() -> i64 {
+    region r {
+        let p = unsafe { morrow_region_alloc(r, 8, 8) } as *mut i64;
+        register_callback(callback, p);
+    }
+    0
+}
+
+fn main() -> i64 {
+    0
+}

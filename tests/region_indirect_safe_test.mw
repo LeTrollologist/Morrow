@@ -7,6 +7,25 @@ extern "C" {
     fn morrow_region_alloc(arena: *mut u8, size: i64, align: i64) -> *mut u8;
 }
 
+effect Peek {
+    fn peek(src: *mut i64) -> i64;
+}
+
+effect HandleScope {
+    fn noop() -> i64;
+}
+
+fn handle_scope_capture() -> i64 {
+    let base = 40;
+    handle {
+        base + 2
+    } with HandleScope {
+        fn noop(k) {
+            resume(k, 0)
+        }
+    }
+}
+
 fn read_value(p: *mut i64) -> i64 {
     unsafe { p[0] }
 }
@@ -28,8 +47,24 @@ fn region_local_container() -> i64 {
     }
 }
 
+fn region_effect_read() -> i64 {
+    region r {
+        let p = unsafe { morrow_region_alloc(r, 8, 8) } as *mut i64;
+        unsafe { p[0] = 7; }
+        handle {
+            perform Peek.peek(p)
+        } with Peek {
+            fn peek(k, src: *mut i64) {
+                src[0]
+            }
+        }
+    }
+}
+
 fn main() -> i64 {
     assert_eq(read_only_helper(), 42, "read-only region helper is accepted");
     assert_eq(region_local_container(), 1, "region-local container store is accepted");
+    assert_eq(region_effect_read(), 7, "read-only effect handler is accepted");
+    assert_eq(handle_scope_capture(), 42, "handle body can capture outer variables");
     0
 }

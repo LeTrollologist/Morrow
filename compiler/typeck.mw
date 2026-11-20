@@ -1378,6 +1378,30 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
         let ext_val = hashmap_get(ext_defs, s);
         if ext_val != 0 - 1 {
             let ext = ext_val as *mut AstExternFn;
+            // A C callback registration that also receives a region-scoped pointer
+            // can retain it past the region. We cannot inspect arbitrary C code, so
+            // reject the direct registration pattern conservatively.
+            let mut has_fn_symbol = false;
+            let mut has_region_arg = false;
+            let mut ci: i64 = 0;
+            while ci < expr.args.len {
+                let ce = vec_get(&expr.args, ci);
+                if ce != (0 as *mut AstExpr) && ce.kind == expr_var() && ci < arg_types.len {
+                    let cname = interner_lookup(interner_ref, ce.sym);
+                    if hashmap_get(fn_defs, cname) != 0 - 1 {
+                        has_fn_symbol = true;
+                    }
+                    if tc_region_type_tag(vec_get(&arg_types, ci)) != (0 as *mut TcType) {
+                        has_region_arg = true;
+                    }
+                }
+                ci = ci + 1;
+            }
+            if has_fn_symbol && has_region_arg {
+                let base = tc_compose_callee_msg(tc.arena, "Region Escape Violation: region-scoped value passed to C callback registration " as String, s);
+                report_err(base, 1, 1);
+                tc.pos = tc.pos + 1;
+            }
             let ret_sym = ext.ret_ty_sym;
             return tc_region_with_tag(tc_resolve_type(tc, types, struct_defs, ret_sym), call_ret_tag);
         }
@@ -1678,11 +1702,12 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
             let arm = vec_get(&handler.arms, arm_idx);
             let mut arm_vars = hashmap_new_in(tc.arena, 32);
             let mut vi: i64 = 0;
-            while vi < vars.occupied.len {
-                let idx = vec_get(&vars.occupied, vi);
-                let k = vec_get(&vars.keys, idx);
-                let v = vec_get(&vars.vals, idx);
-                hashmap_insert(&mut arm_vars, k, v);
+            while vi < vars.cap {
+                if unsafe { vars.occupied[vi] } != 0 {
+                    let k = unsafe { vars.keys[vi] };
+                    let v = unsafe { vars.vals[vi] };
+                    hashmap_insert(&mut arm_vars, k, v);
+                }
                 vi = vi + 1;
             }
             let k_name = interner_lookup(interner_ref, arm.continuation_sym);
@@ -1755,11 +1780,12 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
         let mut bi: i64 = 0;
         let mut body_vars = hashmap_new_in(tc.arena, 32);
         let mut vi: i64 = 0;
-        while vi < vars.occupied.len {
-            let idx = vec_get(&vars.occupied, vi);
-            let k = vec_get(&vars.keys, idx);
-            let v = vec_get(&vars.vals, idx);
-            hashmap_insert(&mut body_vars, k, v);
+        while vi < vars.cap {
+            if unsafe { vars.occupied[vi] } != 0 {
+                let k = unsafe { vars.keys[vi] };
+                let v = unsafe { vars.vals[vi] };
+                hashmap_insert(&mut body_vars, k, v);
+            }
             vi = vi + 1;
         }
         while bi < expr.stmts.len {
