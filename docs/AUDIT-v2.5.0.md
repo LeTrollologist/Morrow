@@ -37,8 +37,8 @@ Self-hosting fixed point (three stages):
 |---|---|
 | Toolchain | `forge 2.4.20 (morrow standalone 2026)` |
 | Test suites | `test result: ok. 31 positive suites, 24 compile-fail suites passed.` |
-| Fixed point | `FF961335DC9F2E94D052F0FD730304CC130CB753D5E3799AD8662EBBF9EA7E5F` |
-| Binary parity | stage2.exe == stage3.exe, 635904 bytes |
+| Fixed point | `473E1F0A808673FC8B8F9F34D0B3AA1C4D83FEAE851F4DC51E308D68847598D8` |
+| Binary parity | stage2.exe == stage3.exe, 638464 bytes |
 | Examples | 22 built; 17 executed with expected exit codes; 5 build-only |
 | Benchmark runner | `bench result: ok. all benchmark programs completed.` |
 | Python helpers | `py_compile` passes for `scripts/*.py` and `benchmarks/*.py` |

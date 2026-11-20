@@ -507,6 +507,7 @@ pub struct TypeChecker {
     last_expr_set: i64,             // 13: 1 when last_expr_ty is valid
     current_fn_name: String,        // 14: Diagnostic context for return checks
     region_summaries: *mut HashMap, // 15: Interprocedural region-escape summaries
+    handler_region_stack: *mut Vec<i64>, // 16: Active lexical handler arm summaries
 }
 
 pub fn typechecker_new_in(interner: *mut Interner, arena: *mut u8) -> TypeChecker {
@@ -528,6 +529,7 @@ pub fn typechecker_new_in(interner: *mut Interner, arena: *mut u8) -> TypeChecke
         last_expr_set: 0,
         current_fn_name: "",
         region_summaries: 0 as *mut HashMap,
+        handler_region_stack: 0 as *mut Vec<i64>,
     }
 }
 
@@ -1511,6 +1513,7 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
         }
 
         // Validate argument count and types
+        let mut arg_types: Vec<*mut TcType> = vec_new_in(tc.arena);
         if expr.args.len != target_op.params.len {
             report_err("Effect operation argument count mismatch", 1, 1);
             tc.pos = tc.pos + 1;
@@ -1518,8 +1521,52 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
             let mut ai: i64 = 0;
             while ai < expr.args.len {
                 let arg_node = vec_get(&expr.args, ai);
-                let _arg_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, arg_node);
+                let arg_ty = tc_expr(tc, vars, fn_defs, ext_defs, types, struct_defs, ret_ty, arg_node);
+                vec_push(&mut arg_types, arg_ty);
                 ai = ai + 1;
+            }
+        }
+
+        let mut perform_ret_tag: *mut TcType = 0 as *mut TcType;
+        if tc.handler_region_stack != (0 as *mut Vec<i64>) {
+            let stack = unsafe { tc.handler_region_stack as &Vec<i64> };
+            let op_name = interner_lookup(interner_ref, op_sym);
+            let mut hi: i64 = stack.len - 1;
+            while hi >= 0 {
+                let ctx = vec_get(stack, hi) as *mut HashMap;
+                let sv = hashmap_get(ctx, op_name);
+                if sv != 0 - 1 {
+                    let arm_sum = sv as *mut TcRegionSummary;
+                    let mut ei: i64 = 0;
+                    while ei < arm_sum.store_dst.len {
+                        let d = vec_get(&arm_sum.store_dst, ei);
+                        let src = vec_get(&arm_sum.store_src, ei);
+                        if d >= 0 && src >= 0 && d < arg_types.len && src < arg_types.len {
+                            let src_tag = tc_region_type_tag(vec_get(&arg_types, src));
+                            let dst_tag = tc_region_type_tag(vec_get(&arg_types, d));
+                            if src_tag != (0 as *mut TcType) && dst_tag == (0 as *mut TcType) {
+                                let base = tc_compose_callee_msg(tc.arena, "Region Escape Violation: region-scoped value passed to escaping effect parameter of " as String, op_name);
+                                report_err(base, 1, 1);
+                                tc.pos = tc.pos + 1;
+                            }
+                        }
+                        ei = ei + 1;
+                    }
+                    ei = 0;
+                    while ei < arm_sum.ret_params.len {
+                        let pi = vec_get(&arm_sum.ret_params, ei);
+                        if pi >= 0 && pi < arg_types.len {
+                            let tag = tc_region_type_tag(vec_get(&arg_types, pi));
+                            if tag != (0 as *mut TcType) {
+                                perform_ret_tag = tag;
+                                break;
+                            }
+                        }
+                        ei = ei + 1;
+                    }
+                    break;
+                }
+                hi = hi - 1;
             }
         }
 
@@ -1565,7 +1612,7 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
             tc.pos = tc.pos + 1;
         }
 
-        return tc_resolve_type(tc, types, struct_defs, target_op.ret_ty_sym);
+        return tc_region_with_tag(tc_resolve_type(tc, types, struct_defs, target_op.ret_ty_sym), perform_ret_tag);
     }
 
     if kind == expr_resume() {
@@ -1671,6 +1718,35 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
         }
 
         // Push effect onto handled_effects stack
+        let mut arm_ctx = hashmap_new_in(tc.arena, 16);
+        arm_idx = 0;
+        while arm_idx < handler.arms.len {
+            let arm = vec_get(&handler.arms, arm_idx);
+            let op_name = interner_lookup(interner_ref, arm.op_sym);
+            let arm_params = hashmap_new_in(tc.arena, 8);
+            let mut arm_aliases = hashmap_new_in(tc.arena, 8);
+            let mut api: i64 = 0;
+            while api < arm.params.len {
+                let p = vec_get(&arm.params, api);
+                let pname = interner_lookup(interner_ref, p.name_sym);
+                hashmap_insert(&mut arm_params, pname, api);
+                hashmap_insert(&mut arm_aliases, pname, api);
+                api = api + 1;
+            }
+            let arm_sum = tc_region_summary_new(tc.arena);
+            let mut abi: i64 = 0;
+            while abi < arm.body.len {
+                tc_region_scan_stmt(tc, vec_get(&arm.body, abi), &arm_params, &mut arm_aliases, tc.region_summaries, arm_sum);
+                abi = abi + 1;
+            }
+            hashmap_insert(&mut arm_ctx, op_name, arm_sum as i64);
+            arm_idx = arm_idx + 1;
+        }
+        if tc.handler_region_stack != (0 as *mut Vec<i64>) {
+            let stack = unsafe { tc.handler_region_stack as &mut Vec<i64> };
+            vec_push(stack, &mut arm_ctx as *mut HashMap as i64);
+        }
+
         let handled_vec = unsafe { tc.handled_effects as &mut Vec<i64> };
         vec_push(handled_vec, eff_sym);
 
@@ -1702,6 +1778,12 @@ pub fn tc_expr(tc: &mut TypeChecker, vars: &mut HashMap, fn_defs: &HashMap, ext_
 
         // Pop effect from handled_effects stack
         handled_vec.len = handled_vec.len - 1;
+        if tc.handler_region_stack != (0 as *mut Vec<i64>) {
+            let stack = unsafe { tc.handler_region_stack as &mut Vec<i64> };
+            if stack.len > 0 {
+                stack.len = stack.len - 1;
+            }
+        }
 
         return body_ty;
     }
@@ -3057,6 +3139,8 @@ prog: *mut AstProgram, interner: *mut Interner, arena: *mut u8, arg_report: i64)
     tc.effect_defs = &mut effect_defs as *mut HashMap;
     let mut handled_vec: Vec<i64> = vec_new_in(arena);
     tc.handled_effects = &mut handled_vec as *mut Vec<i64>;
+    let mut handler_region_stack: Vec<i64> = vec_new_in(arena);
+    tc.handler_region_stack = &mut handler_region_stack as *mut Vec<i64>;
 
     tc_init_prelude(&mut tc, &mut types);
 
