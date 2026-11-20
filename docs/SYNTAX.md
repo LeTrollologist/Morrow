@@ -262,6 +262,7 @@ boundaries. A value is region-scoped when
 | Handler arm storing a captured function parameter through an outer destination | **Rejected** — handler-arm bodies contribute store edges to the function summary |
 | Effect operation parameter stored by a handler arm | **Not fully analyzed** — effect parameters are not region-tagged across `perform`/`handle` |
 | Arbitrary C callback that retains a region pointer | **Not analyzed** — extern calls have no summary |
+| Branch alias: let mut r = p; if cond { r = q; } return r; | **Rejected** when p or q is region-scoped — the flow-insensitive summary keeps both aliases |
 | Alias chain deeper than the summary pass / indirect function-pointer call | **Not fully analyzed** |
 
 Consequences worth stating plainly:

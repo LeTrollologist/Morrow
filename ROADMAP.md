@@ -868,7 +868,7 @@ region-escape rules depend on those kinds.
 
 ### 15.6 Release gate for v2.5.0
 
-- `forge test` green (currently 31 + 24), **with** the repaired formal suite and no retries.
+- `forge test` green (currently 31 + 25), **with** the repaired formal suite and no retries.
 - Every runnable example green under the new example runner; network examples use
   loopback; GUI examples explicitly skipped.
 - Bootstrap fixed point reproduced; `bin` hashes match the release ledger.
@@ -913,7 +913,7 @@ region-escape rules depend on those kinds.
 > **Progress (2026-11-19):** C1 is partially landed. Interprocedural summaries now
 > propagate region tags through returns and destination-parameter stores, including
 > container mutators. New negative tests fail on v2.4.20 and pass with the summaries;
-> the suite is 31 positive + 24 compile-fail. Handler-arm bodies are scanned for
+> the suite is 31 positive + 25 compile-fail. Handler-arm bodies are scanned for
 > captured parameter stores; effect-operation parameter flows, arbitrary C callbacks,
 > and deep alias chains remain open.
 

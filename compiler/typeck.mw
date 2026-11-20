@@ -3022,7 +3022,15 @@ fn tc_region_scan_stmt(tc: &mut TypeChecker, st: *mut AstStmt, params: &HashMap,
         tc_region_scan_expr(tc, st.expr, params, aliases, summaries, sum);
         let pi = tc_region_expr_param(tc, st.expr, params, aliases, summaries);
         let name = interner_lookup(interner_ref, st.sym);
-        hashmap_insert(aliases, name, pi);
+        let old = hashmap_get(aliases, name);
+        if pi >= 0 {
+            hashmap_insert(aliases, name, pi);
+        } else if old == 0 - 1 {
+            hashmap_insert(aliases, name, 0 - 1);
+        }
+        // If a branch reassigns a name away from a parameter, keep the parameter
+        // alias: the summary is flow-insensitive and must over-approximate both
+        // paths rather than lose the escaping branch.
         return;
     }
     if st.kind == stmt_field_assign() || st.kind == stmt_index_assign() {
