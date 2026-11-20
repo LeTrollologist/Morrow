@@ -259,8 +259,10 @@ boundaries. A value is region-scoped when
 | Indirect store: `stash(&mut outer, p)` where `stash(dst, src) { dst[0] = src; }` | **Rejected** — `Region Escape Violation: region-scoped value passed to escaping parameter of stash` |
 | Indirect container store: `vec_push(&mut outer_vec, p)` with `outer_vec` outside the region | **Rejected** — same call-boundary diagnostic |
 | Indirect read/query: `read_value(p)` that only loads or computes a scalar | Accepted — no escaping parameter edge is inferred |
-| Callback body / handler arm that stores or returns a region value | **Not fully analyzed** — callbacks and handler arms are outside the summary pass |
-| Alias chain deeper than the summary pass / function-pointer store | **Not fully analyzed** |
+| Handler arm storing a captured function parameter through an outer destination | **Rejected** — handler-arm bodies contribute store edges to the function summary |
+| Effect operation parameter stored by a handler arm | **Not fully analyzed** — effect parameters are not region-tagged across `perform`/`handle` |
+| Arbitrary C callback that retains a region pointer | **Not analyzed** — extern calls have no summary |
+| Alias chain deeper than the summary pass / indirect function-pointer call | **Not fully analyzed** |
 
 Consequences worth stating plainly:
 
@@ -268,9 +270,10 @@ Consequences worth stating plainly:
   through another pointer parameter**. A region-tagged argument is rejected when it
   flows to an outer destination; container mutators such as `vec_push` participate
   through the same summaries.
-- The analysis is intentionally conservative: callback bodies and handler arms are
-  not scanned, and alias chains beyond the summary pass can still lose a tag. Treat
-  this as a strong partial check, not a proof.
+- Handler-arm bodies are scanned for stores of captured function parameters. The
+  analysis is still conservative: effect-operation parameters are not tagged across
+  `perform`/`handle`, arbitrary C callbacks are invisible, and alias chains beyond
+  the summary pass can lose a tag. Treat this as a strong partial check, not a proof.
 - The escape checks are **not gated on being inside the region**. Because tags
   survive a region expression, a value produced by `region r { … }` is still checked
   when it is returned or assigned later, outside the block.
@@ -812,8 +815,9 @@ Implemented but weaker than older drafts claimed:
   struct-field and element stores into an outer-scope value. Interprocedural
   summaries additionally reject a region value returned through a callee, stored
   through an outer destination parameter, or inserted into an outer container.
-  Callback bodies and handler arms remain uncovered. The full detection matrix is
-  in [§4](#escape-analysis-what-is-and-is-not-rejected).
+  Handler-arm bodies are scanned for captured parameter stores; effect-operation
+  parameter flows and arbitrary C callbacks remain uncovered. The full detection
+  matrix is in [§4](#escape-analysis-what-is-and-is-not-rejected).
 - **`println`**: one value per call, no `{}` interpolation.
 - **Call signatures**: callee existence, argument count, and argument/return kinds
   are enforced; generic parameters are exempt. Call-site inference remains

@@ -2858,6 +2858,26 @@ fn tc_region_scan_expr(tc: &mut TypeChecker, e: *mut AstExpr, params: &HashMap, 
             tc_region_scan_expr(tc, hs.expr, params, aliases, summaries, sum);
             hi = hi + 1;
         }
+        // Handler arms can capture a region-scoped parameter and store it through
+        // an outer destination. Scan their bodies for call/store edges, but do not
+        // turn an arm's return value into the enclosing function's return summary:
+        // the arm's result is consumed by the handle expression, not returned from
+        // the function unless the handle itself is returned (checked directly).
+        let handler = e.left as *mut AstHandler;
+        if handler != (0 as *mut AstHandler) {
+            let mut ai: i64 = 0;
+            while ai < handler.arms.len {
+                let arm = vec_get(&handler.arms, ai);
+                let saved_ret = sum.ret_params.len;
+                let mut bi: i64 = 0;
+                while bi < arm.body.len {
+                    tc_region_scan_stmt(tc, vec_get(&arm.body, bi), params, aliases, summaries, sum);
+                    bi = bi + 1;
+                }
+                sum.ret_params.len = saved_ret;
+                ai = ai + 1;
+            }
+        }
         return;
     }
     if e.kind == expr_call() {

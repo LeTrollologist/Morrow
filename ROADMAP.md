@@ -868,7 +868,7 @@ region-escape rules depend on those kinds.
 
 ### 15.6 Release gate for v2.5.0
 
-- `forge test` green (currently 31 + 23), **with** the repaired formal suite and no retries.
+- `forge test` green (currently 31 + 24), **with** the repaired formal suite and no retries.
 - Every runnable example green under the new example runner; network examples use
   loopback; GUI examples explicitly skipped.
 - Bootstrap fixed point reproduced; `bin` hashes match the release ledger.
@@ -913,12 +913,13 @@ region-escape rules depend on those kinds.
 > **Progress (2026-11-19):** C1 is partially landed. Interprocedural summaries now
 > propagate region tags through returns and destination-parameter stores, including
 > container mutators. New negative tests fail on v2.4.20 and pass with the summaries;
-> the suite is 31 positive + 23 compile-fail. Callback bodies, handler arms, and deep
-> alias chains remain open.
+> the suite is 31 positive + 24 compile-fail. Handler-arm bodies are scanned for
+> captured parameter stores; effect-operation parameter flows, arbitrary C callbacks,
+> and deep alias chains remain open.
 
 | ID | Work item | Acceptance |
 |---|---|---|
-| **C1** | **Partial (2026-11-19):** interprocedural summaries now reject region values returned through a callee, stored through an outer destination parameter, and inserted into an outer container; read-only helpers and region-local containers stay accepted. Remaining: callback bodies, handler arms, and deep alias chains. **Indirect region-escape analysis.** Track region-tagged values through calls, returns, references, containers, and callback arguments instead of only direct returns/assignments/field/index stores. | A callee that stores or returns a region pointer is rejected at the call boundary or at the escape site; negative tests cover indirect return/store/callback paths; `region_escape_test.mw` expands accordingly. |
+| **C1** | **Partial (2026-11-19):** interprocedural summaries now reject region values returned through a callee, stored through an outer destination parameter, and inserted into an outer container; read-only helpers and region-local containers stay accepted. Handler-arm bodies are scanned for captured parameter stores. Remaining: effect-operation parameter flows, arbitrary C callbacks, and deep alias chains. **Indirect region-escape analysis.** Track region-tagged values through calls, returns, references, containers, and callback arguments instead of only direct returns/assignments/field/index stores. | A callee that stores or returns a region pointer is rejected at the call boundary or at the escape site; negative tests cover indirect return/store/callback paths; `region_escape_test.mw` expands accordingly. |
 | **C2** | **Structured concurrency and fibers: implement or explicitly retire.** Either ship a real scoped `nursery`/fiber runtime with cancellation and join guarantees, or remove the remaining aspirational claims and mark the feature unsupported in README/SYNTAX/ROADMAP. | Docs and tests agree: either a concurrency suite passes or every "fibers/nursery" claim is gone and a compile-fail test pins the unsupported syntax. |
 | **C3** | **Variable-range and interprocedural refinement proofs.** Beyond literal casts and divisor-span checks, propagate variable intervals through branches and across function contracts. | `v: i64` refined by `if v > 0` can flow to `Port` without a cast error; interprocedural precondition/postcondition tests; known false-positive corpus stays clean. |
 | **C4** | **Lossless formatter (Phase 15 P0-1).** Preserve imports, `effect`, `pub`, `yields`, comments, and pointer/ref spelling instead of refusing those files. | `forge fmt` on every `examples/*.mw` and `compiler/*.mw` re-parses, re-typechecks, preserves comments/declarations, and leaves invalid files untouched. |
