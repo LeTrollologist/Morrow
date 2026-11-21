@@ -1,9 +1,9 @@
 # Morrow v2.5.0 Verification Report
 
 **Status:** Maintainer-run verification, **not an independent audit**.
-**Date:** 2026-11-19
-**Evaluated baseline:** v2.4.20 (commit `90d8749`)
-**Candidate work:** post-v2.4.20 C1 indirect region-escape summaries
+**Date:** 2026-11-21
+**Evaluated release:** v2.4.21
+**Scope:** C1 indirect region-escape summaries
 **Author:** Morrow maintainer toolchain (automated commands below)
 
 This report exists because `ROADMAP.md` Phase 15 promised a fresh
@@ -37,7 +37,7 @@ Self-hosting fixed point (three stages):
 |---|---|
 | Toolchain | `forge 2.4.20 (morrow standalone 2026)` |
 | Test suites | `test result: ok. 31 positive suites, 27 compile-fail suites passed.` |
-| Fixed point | `7AA7DF748F4EA972F5091E23F68B3E4674455AA27AF1FC8F4DB2B2CB4BB09067` |
+| Fixed point | `B313880F4B87AA55867C88E3BC343EE5CE2AF7541674970DC6D039D3ED087DAF` |
 | Binary parity | stage2.exe == stage3.exe, 640000 bytes |
 | Examples | 22 built; 17 executed with expected exit codes; 5 build-only |
 | Benchmark runner | `bench result: ok. all benchmark programs completed.` |
